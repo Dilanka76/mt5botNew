@@ -24,3 +24,8 @@ class KillSwitch:
     def activate(self, reason: str) -> None:
         self._path.write_text(reason)
         logger.critical("KILL SWITCH ACTIVATED: %s", reason)
+
+    def deactivate(self) -> None:
+        if self._path.exists():
+            self._path.unlink()
+            logger.info("Kill switch deactivated")

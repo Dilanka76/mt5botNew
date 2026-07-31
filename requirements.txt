@@ -2,3 +2,5 @@ MetaTrader5
 pandas
 PyYAML
 python-dotenv
+fastapi
+uvicorn[standard]
