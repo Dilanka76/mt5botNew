@@ -105,6 +105,12 @@ class MT5Connector:
     def symbol_info(self, symbol: str):
         return mt5.symbol_info(symbol)
 
+    def get_tick(self, symbol: str):
+        tick = mt5.symbol_info_tick(symbol)
+        if tick is None:
+            raise MT5ConnectionError(f"No tick data for {symbol}: {mt5.last_error()}")
+        return tick
+
     @staticmethod
     def resolve_timeframe(timeframe_str: str) -> int:
         try:
