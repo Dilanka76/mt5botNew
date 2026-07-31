@@ -38,7 +38,7 @@ execution:
   # shadow        -> evaluate + log signals, never send real orders (default, safe)
   # demo_execute  -> send real orders, but only if the connected account is confirmed DEMO
   # live_execute  -> send real orders on a real-money account (do not enable until fully tested)
-  mode: shadow
+  mode: demo_execute
   require_demo_account: true
   magic_number: 900002
   order_deviation_points: 20
