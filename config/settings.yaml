@@ -1,0 +1,52 @@
+# Central config for the bot. Secrets (MT5 login/password) live in .env, not here.
+
+mt5:
+  # Only needed if MT5_LOGIN/MT5_PASSWORD are set in .env. If MT5 is already
+  # running and logged in (current setup), the bot just attaches to it.
+  timeout_ms: 10000
+
+symbol: XAUUSD
+timeframe: M1               # strategy is defined on the 1-minute chart
+candles_to_fetch: 500        # history pulled each cycle, enough to warm up EMA21
+tick_poll_interval_seconds: 1  # how often live bid price is checked for EMA5 touch / TP fills
+
+ema_periods:
+  fast: 5
+  mid: 13
+  slow: 21
+
+gap_threshold_usd: 5.0   # |close - EMA13| at the cross candle: below this, enter immediately
+take_profit_usd: 5.0     # distance from entry to TP, in price (XAUUSD is quoted in USD)
+
+# Sri Lanka time (Asia/Colombo, fixed UTC+5:30, no DST). No NEW trades open
+# outside these windows; an already-open trade is left to run to its natural
+# TP or EMA-cross exit regardless of session end.
+sessions:
+  - {start: "04:00", end: "08:00"}
+  - {start: "12:00", end: "23:00"}
+
+# Fixed lot size by current account balance (not risk-% based). Ordered by
+# ascending max_balance; the first tier whose max_balance >= balance applies.
+# max_balance: null means "no upper bound" (> the previous tier's max).
+position_sizing:
+  - {max_balance: 100, lots: 0.02}
+  - {max_balance: 300, lots: 0.03}    # covers both the $100-200 and $200-300 tiers (same lot size)
+  - {max_balance: 1000, lots: 0.06}
+  - {max_balance: null, lots: 0.12}
+
+execution:
+  # shadow        -> evaluate + log signals, never send real orders (default, safe)
+  # demo_execute  -> send real orders, but only if the connected account is confirmed DEMO
+  # live_execute  -> send real orders on a real-money account (do not enable until fully tested)
+  mode: shadow
+  require_demo_account: true
+  magic_number: 900002
+  order_deviation_points: 20
+  order_comment: ema-scalp
+
+logging:
+  log_dir: logs
+  level: INFO
+
+kill_switch:
+  file_path: KILL_SWITCH   # if this file exists in the project root, all trading halts immediately
