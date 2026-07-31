@@ -5,7 +5,10 @@ mt5:
   # running and logged in (current setup), the bot just attaches to it.
   timeout_ms: 10000
 
-symbol: XAUUSD
+# Exact symbol name as it appears in your MT5 Market Watch — brokers often
+# add a suffix (Exness demo uses "XAUUSDm", not plain "XAUUSD"). If you get
+# "Symbol not found", check Market Watch for the exact spelling.
+symbol: XAUUSDm
 timeframe: M1               # strategy is defined on the 1-minute chart
 candles_to_fetch: 500        # history pulled each cycle, enough to warm up EMA21
 tick_poll_interval_seconds: 1  # how often live bid price is checked for EMA5 touch / TP fills
