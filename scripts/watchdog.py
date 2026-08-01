@@ -1,64 +1,63 @@
-"""Watchdog process for main.py — detects a frozen or dead bot and restarts it.
+"""Watchdog process for main.py — detects a FROZEN (hung, not crashed) bot
+and kills it so it can be restarted.
 
-WHY THIS EXISTS: main.py can go silent while its process stays alive — e.g.
-an RDP session change can trigger MT5's "disable algo trading on
-profile/account change" setting, after which any MT5 API call the bot makes
-hangs forever. Task Manager still shows python.exe running, but nothing new
-gets logged. This script runs independently of main.py and watches for that.
+DIVISION OF LABOR WITH WINDOWS TASK SCHEDULER:
+main.py runs as a Task Scheduler task with "restart on failure" enabled.
+Task Scheduler can only tell that main.py has failed when its process
+actually EXITS (crash, uncaught exception, non-zero exit code) — it cannot
+tell the difference between "running normally" and "alive but stuck",
+which is exactly the RDP/algo-trading-disabled scenario that motivated this
+script in the first place. So:
+  - Task Scheduler owns: starting main.py at boot, and restarting it after
+    a crash/exit.
+  - watchdog.py owns: noticing a HANG (process alive, but logs/app.log has
+    gone stale past all reasonable doubt) and killing it — which converts
+    the hang into an exit that Task Scheduler's restart-on-failure can then
+    pick up.
 
-WHAT IT DOES, every check_interval seconds:
-  1. Looks for a running python.exe process whose command line contains
-     "main.py" (via PowerShell/WMI — this is Windows-only, like the rest of
-     this bot).
-  2. If none is found -> launches main.py.
-  3. If one is found but logs/app.log hasn't been modified in over
-     stale_threshold seconds (and we're past the startup grace period since
-     its last (re)start) -> treats it as frozen, force-kills that specific
-     PID, and relaunches main.py.
-  4. Before relaunching, checks that the MT5 terminal process is actually
-     running — if it isn't, relaunching main.py would just fail to connect,
-     so it logs that clearly and waits rather than looping restart attempts.
-  5. Restart attempts (successful or not) are rate-limited to at most one
-     per restart_cooldown seconds.
+IMPORTANT — watchdog.py deliberately does NOT try to launch main.py just
+because it isn't currently running. An earlier version did, and running
+that alongside Task Scheduler's own startup/restart behavior caused FOUR
+duplicate main.py processes in one incident. Only after watchdog itself
+kills a hung process does it wait briefly and check whether something
+(Task Scheduler) has already restarted it before falling back to launching
+main.py itself as a last resort. Even then, main.py's own startup duplicate
+check (see main.py) is the real backstop against ending up with two copies
+running — that check is timing-independent, unlike trying to perfectly
+coordinate two separate schedulers.
 
-This script is intentionally self-contained (Python standard library only,
-no dependency on the bot/ package) so a bug in the bot's own code can never
-take the watchdog down with it.
+STALENESS DETECTION: main.py now logs a "[HEARTBEAT]" line to logs/app.log
+every 60 seconds regardless of trading activity (see main.py), so a silent
+log file now reliably means "stuck", not "no signal happened lately". This
+lets the default stale_threshold be much tighter than before.
 
-WHAT IT DELIBERATELY DOES NOT DO: touch MT5 or any open position. Positions
-live on the broker/MT5 side regardless of whether our Python process is
-running — restarting main.py just resumes monitoring; it does not open or
-close any trade itself.
-
-USAGE (run in a second Command Prompt window, alongside `python main.py` in
-the first):
+Run this as its OWN Task Scheduler task (or a second Command Prompt window)
+— separate from, and running alongside, the main.py task:
     python scripts\\watchdog.py
 
-Optional tuning flags (defaults match the ranges discussed):
-    python scripts\\watchdog.py --check-interval 150 --stale-threshold 300 ^
-        --startup-grace 300 --restart-cooldown 120
+Optional tuning flags:
+    python scripts\\watchdog.py --check-interval 150 --stale-threshold 180 ^
+        --startup-grace 120 --restart-cooldown 120 --post-kill-recheck-delay 60
 
-Stop it with Ctrl+C. Its own activity is logged to logs/watchdog.log (and
-the console) — separate from main.py's logs/app.log.
+Stop it with Ctrl+C. Logs to logs/watchdog.log (+ console), separate from
+main.py's logs/app.log.
 """
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import logging.handlers
-import os
 import subprocess
-import sys
 import time
 from pathlib import Path
 
+from bot.process_utils import find_script_process, is_process_name_running, launch_python_script
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MAIN_SCRIPT = PROJECT_ROOT / "main.py"
-MAIN_SCRIPT_MATCH = "main.py"  # substring matched (case-insensitive) against process command lines
+MAIN_SCRIPT_MATCH = "main.py"
 APP_LOG = PROJECT_ROOT / "logs" / "app.log"
 WATCHDOG_LOG_DIR = PROJECT_ROOT / "logs"
-PYTHON_EXE = sys.executable
 
 MT5_TERMINAL_PROCESS_NAMES = ("terminal64.exe", "terminal.exe")
 
@@ -82,54 +81,6 @@ def setup_logging() -> None:
     logger.addHandler(file_handler)
 
 
-def _run_powershell(command: str, timeout: int = 20) -> str:
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-        logger.error("PowerShell process query failed: %s", e)
-        return ""
-    return result.stdout.strip()
-
-
-def list_processes(exe_name: str) -> list[dict]:
-    """Returns [{"pid": int, "cmdline": str}] for every running process with this exe name."""
-    command = (
-        f"Get-CimInstance Win32_Process -Filter \"Name='{exe_name}'\" "
-        "| Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
-    )
-    output = _run_powershell(command)
-    if not output:
-        return []
-    try:
-        data = json.loads(output)
-    except json.JSONDecodeError:
-        logger.error("Could not parse process list for %s: %r", exe_name, output[:300])
-        return []
-    if isinstance(data, dict):  # PowerShell ConvertTo-Json gives an object, not an array, for a single match
-        data = [data]
-    return [
-        {"pid": int(p["ProcessId"]), "cmdline": p.get("CommandLine") or ""}
-        for p in data if p.get("ProcessId") is not None
-    ]
-
-
-def find_main_process() -> dict | None:
-    """Finds the running main.py process, if any. Never matches the watchdog's own PID."""
-    for proc in list_processes("python.exe"):
-        if proc["pid"] == os.getpid():
-            continue
-        if MAIN_SCRIPT_MATCH in proc["cmdline"].lower():
-            return proc
-    return None
-
-
-def is_mt5_terminal_running() -> bool:
-    return any(list_processes(name) for name in MT5_TERMINAL_PROCESS_NAMES)
-
-
 def kill_process(pid: int) -> bool:
     result = subprocess.run(
         ["taskkill", "/PID", str(pid), "/F", "/T"], capture_output=True, text=True
@@ -140,49 +91,49 @@ def kill_process(pid: int) -> bool:
     return True
 
 
-def relaunch_main() -> subprocess.Popen | None:
+def is_mt5_terminal_running() -> bool:
+    return any(is_process_name_running(name) for name in MT5_TERMINAL_PROCESS_NAMES)
+
+
+def launch_main_as_fallback() -> int | None:
+    """Only called after watchdog's own kill found nothing else took over.
+    Still re-verifies MT5 is up and no main.py has appeared in the meantime."""
+    if find_script_process(MAIN_SCRIPT_MATCH) is not None:
+        logger.info("main.py has appeared since the last check — not launching a duplicate.")
+        return None
+
     if not is_mt5_terminal_running():
         logger.error(
             "MT5 terminal does not appear to be running (no terminal64.exe/terminal.exe process). "
-            "Relaunching main.py would just fail to connect, so skipping this attempt. "
-            "Please make sure MT5 is open — will try again next cycle."
+            "Launching main.py now would just fail to connect, so skipping. "
+            "Please make sure MT5 is open — will keep checking."
         )
         return None
 
-    try:
-        creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        proc = subprocess.Popen(
-            [PYTHON_EXE, str(MAIN_SCRIPT)],
-            cwd=str(PROJECT_ROOT),
-            creationflags=creation_flags,
-        )
-        logger.info("Relaunched main.py in a new console window: pid=%s", proc.pid)
-        return proc
-    except Exception:
-        logger.exception("Failed to relaunch main.py")
-        return None
+    return launch_python_script(MAIN_SCRIPT, PROJECT_ROOT)
 
 
 def check_once(state: dict, args: argparse.Namespace) -> None:
     now = time.time()
-    proc = find_main_process()
+    proc = find_script_process(MAIN_SCRIPT_MATCH)
 
     if proc is None:
-        # Not running at all — act immediately (no grace period), but still
-        # rate-limit repeated attempts via the restart cooldown.
-        if state["last_restart_attempt_at"] is not None and (now - state["last_restart_attempt_at"]) < args.restart_cooldown:
-            logger.info("main.py is not running; restart cooldown still active, waiting.")
-            return
-        logger.warning("main.py is not running. Launching it.")
-        new_proc = relaunch_main()
-        state["last_restart_attempt_at"] = now
-        if new_proc is not None:
-            state["main_last_started_at"] = now
+        # Not running. Task Scheduler owns starting/restarting main.py now —
+        # watchdog only acts here as a fallback immediately after ITS OWN
+        # kill (handled inline below), never as a general "it's missing,
+        # launch it" reflex, to avoid racing Task Scheduler's own restart.
+        state["last_seen_pid"] = None
+        logger.info("main.py is not currently running (Task Scheduler is responsible for starting/restarting it).")
         return
 
-    # A process is running — only check for a freeze once past the startup
-    # grace period since its (assumed) last start, to avoid false positives
-    # right after boot/reconnect before it's logged anything yet.
+    if proc["pid"] != state.get("last_seen_pid"):
+        logger.info(
+            "Observed main.py pid=%s (previously %s) — treating as a fresh start, resetting startup grace period.",
+            proc["pid"], state.get("last_seen_pid"),
+        )
+        state["main_last_started_at"] = now
+        state["last_seen_pid"] = proc["pid"]
+
     if now - state["main_last_started_at"] < args.startup_grace:
         logger.info(
             "pid=%s within startup grace period (%.0fs / %ds) — skipping staleness check.",
@@ -193,11 +144,11 @@ def check_once(state: dict, args: argparse.Namespace) -> None:
     age = float("inf") if not APP_LOG.exists() else now - APP_LOG.stat().st_mtime
 
     if age <= args.stale_threshold:
-        logger.info("OK: pid=%s, app.log last updated %.0fs ago.", proc["pid"], age)
+        logger.info("OK: pid=%s, app.log (heartbeat) last updated %.0fs ago.", proc["pid"], age)
         return
 
-    # Frozen.
-    if state["last_restart_attempt_at"] is not None and (now - state["last_restart_attempt_at"]) < args.restart_cooldown:
+    # Frozen — rate-limit repeated kill attempts.
+    if state["last_kill_attempt_at"] is not None and (now - state["last_kill_attempt_at"]) < args.restart_cooldown:
         logger.warning(
             "Freeze detected (pid=%s, log age=%.0fs) but restart cooldown still active, waiting.",
             proc["pid"], age,
@@ -205,27 +156,49 @@ def check_once(state: dict, args: argparse.Namespace) -> None:
         return
 
     logger.critical(
-        "FREEZE DETECTED: pid=%s has not written to app.log in %.0fs (threshold %ds). Killing and relaunching. "
-        "Note: any position already open on MT5 is unaffected by this restart.",
+        "FREEZE DETECTED: pid=%s has not logged a heartbeat in %.0fs (threshold %ds). Killing it — "
+        "Task Scheduler's restart-on-failure should bring it back up. "
+        "Any position already open on MT5 is unaffected by this.",
         proc["pid"], age, args.stale_threshold,
     )
-    if kill_process(proc["pid"]):
-        logger.info("Killed frozen process pid=%s", proc["pid"])
-    else:
-        logger.error("Could not confirm pid=%s was killed (it may have already exited on its own).", proc["pid"])
+    state["last_kill_attempt_at"] = now
 
-    new_proc = relaunch_main()
-    state["last_restart_attempt_at"] = now
-    if new_proc is not None:
-        state["main_last_started_at"] = now
+    if not kill_process(proc["pid"]):
+        logger.error("Could not confirm pid=%s was killed (it may have already exited on its own).", proc["pid"])
+        return
+
+    logger.info(
+        "Killed pid=%s. Waiting %ds to give Task Scheduler a chance to restart it before checking.",
+        proc["pid"], args.post_kill_recheck_delay,
+    )
+    time.sleep(args.post_kill_recheck_delay)
+
+    replacement = find_script_process(MAIN_SCRIPT_MATCH)
+    if replacement is not None:
+        logger.info("Task Scheduler already restarted main.py: pid=%s.", replacement["pid"])
+        state["main_last_started_at"] = time.time()
+        state["last_seen_pid"] = replacement["pid"]
+        return
+
+    logger.warning(
+        "Task Scheduler has not restarted main.py within %ds of the kill. "
+        "Launching it directly as a fallback — if this keeps happening, check the "
+        "main.py task's restart-on-failure setting in Task Scheduler.",
+        args.post_kill_recheck_delay,
+    )
+    new_pid = launch_main_as_fallback()
+    if new_pid is not None:
+        state["main_last_started_at"] = time.time()
+        state["last_seen_pid"] = new_pid
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Watchdog for main.py — restarts it if frozen or not running.")
+    parser = argparse.ArgumentParser(description="Watchdog for main.py — kills it if hung; Task Scheduler handles restarting/crashes.")
     parser.add_argument("--check-interval", type=float, default=150, help="Seconds between checks (default: 150 = 2.5min)")
-    parser.add_argument("--stale-threshold", type=float, default=300, help="app.log silence (s) before treating main.py as frozen (default: 300 = 5min)")
-    parser.add_argument("--startup-grace", type=float, default=300, help="Seconds after a (re)start before staleness checks begin (default: 300 = 5min)")
-    parser.add_argument("--restart-cooldown", type=float, default=120, help="Minimum seconds between restart attempts (default: 120 = 2min)")
+    parser.add_argument("--stale-threshold", type=float, default=180, help="app.log silence (s) before treating main.py as frozen (default: 180 = 3min = 3 missed heartbeats)")
+    parser.add_argument("--startup-grace", type=float, default=120, help="Seconds after a (re)start before staleness checks begin (default: 120 = 2min)")
+    parser.add_argument("--restart-cooldown", type=float, default=120, help="Minimum seconds between kill attempts (default: 120 = 2min)")
+    parser.add_argument("--post-kill-recheck-delay", type=float, default=60, help="Seconds to wait after a kill before falling back to launching main.py itself (default: 60)")
     return parser.parse_args()
 
 
@@ -234,22 +207,22 @@ def main() -> None:
     setup_logging()
 
     logger.info(
-        "Watchdog starting. check_interval=%ss stale_threshold=%ss startup_grace=%ss restart_cooldown=%ss",
-        args.check_interval, args.stale_threshold, args.startup_grace, args.restart_cooldown,
+        "Watchdog starting. check_interval=%ss stale_threshold=%ss startup_grace=%ss "
+        "restart_cooldown=%ss post_kill_recheck_delay=%ss",
+        args.check_interval, args.stale_threshold, args.startup_grace,
+        args.restart_cooldown, args.post_kill_recheck_delay,
     )
-    logger.info("Watching: %s (via process command line containing '%s')", MAIN_SCRIPT, MAIN_SCRIPT_MATCH)
+    logger.info(
+        "Role: hang detection only. Task Scheduler is responsible for starting main.py "
+        "and restarting it on crash/exit. Watching: %s", MAIN_SCRIPT,
+    )
 
-    state = {"main_last_started_at": time.time(), "last_restart_attempt_at": None}
-
-    existing = find_main_process()
-    if existing is not None:
-        logger.info("main.py already running at startup: pid=%s. Applying startup grace period before first check.", existing["pid"])
-    check_once(state, args)  # immediate check at boot, mainly to catch "forgot to start it"
+    state = {"main_last_started_at": time.time(), "last_kill_attempt_at": None, "last_seen_pid": None}
 
     try:
         while True:
-            time.sleep(args.check_interval)
             check_once(state, args)
+            time.sleep(args.check_interval)
     except KeyboardInterrupt:
         logger.info("Watchdog stopped by user (Ctrl+C).")
 

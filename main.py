@@ -8,6 +8,17 @@ Every tick_poll_interval_seconds, this:
   3. Feeds the latest live tick to the state machine (EMA5-touch detection
      while pending, and TP-fill detection while in a position).
 
+Every HEARTBEAT_INTERVAL_SECONDS, a "[HEARTBEAT]" line is logged regardless
+of whether anything else happened, so logs/app.log always gets written to
+on a predictable schedule — this is what scripts/watchdog.py relies on to
+tell a genuinely frozen process apart from a healthy one that's just quiet
+because no EMA cross has fired recently.
+
+On startup, refuses to run if another main.py is already active (checked
+via bot.process_utils) — the definitive guard against duplicate/conflicting
+instances, regardless of which supervisor (Task Scheduler, watchdog.py, the
+API's /start) tried to launch a second one.
+
 execution.mode defaults to "shadow" in config/settings.yaml — no real
 orders are sent until that's deliberately changed, and even then
 require_demo_account refuses to trade on anything but a confirmed demo
@@ -16,6 +27,7 @@ account.
 from __future__ import annotations
 
 import logging
+import sys
 import time
 
 from bot.config import load_config
@@ -25,14 +37,27 @@ from bot.indicators.ema import compute_emas
 from bot.kill_switch import KillSwitch
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
+from bot.process_utils import find_script_process
+from bot.sessions import is_within_session
 from bot.strategy.state_machine import EMAScalpEngine
 
 logger = logging.getLogger("bot.main")
+
+HEARTBEAT_INTERVAL_SECONDS = 60
+THIS_SCRIPT_MATCH = "main.py"
 
 
 def run() -> None:
     config = load_config()
     setup_logging(config.logging)
+
+    existing = find_script_process(THIS_SCRIPT_MATCH)
+    if existing is not None:
+        logger.error(
+            "Another main.py is already running (pid=%s). Refusing to start a duplicate instance. Exiting.",
+            existing["pid"],
+        )
+        sys.exit(1)
 
     connector = MT5Connector(config.mt5)
     connector.connect()
@@ -54,6 +79,7 @@ def run() -> None:
     )
 
     last_closed_candle_time = None
+    last_heartbeat_at = 0.0
 
     try:
         while True:
@@ -72,6 +98,16 @@ def run() -> None:
 
                 tick = connector.get_tick(config.symbol)
                 engine.on_tick(tick)
+
+                now = time.time()
+                if now - last_heartbeat_at >= HEARTBEAT_INTERVAL_SECONDS:
+                    session_status = "ACTIVE" if is_within_session(config.sessions) else "WAITING"
+                    balance = connector.account_info().balance
+                    logger.info(
+                        "[HEARTBEAT] state=%s session=%s last_price=%.2f balance=%.2f",
+                        engine.state.value, session_status, tick.bid, balance,
+                    )
+                    last_heartbeat_at = now
 
             except Exception:
                 logger.exception("Error in main loop iteration")

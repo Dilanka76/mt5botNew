@@ -107,11 +107,12 @@ fresh cross that happens *after* a session has opened.
 ## 9. Position size (based on account balance, not risk %)
 
 | Account balance | Lot size |
-|---|---|
-| Under $100 | 0.02 |
-| $100 – $300 | 0.03 |
-| $300 – $1,000 | 0.06 |
-| Over $1,000 | 0.12 |
+|-----------------|----------|
+| Under $100      | 0.02     |
+| $100 – $200     | 0.03     |
+| $200 – $300     | 0.04     |
+| $300 – $1,000   | 0.06     |
+| Over $1,000     | 0.12     |
 
 This is a fixed lookup table, checked fresh at the moment each trade opens
 — it is **not** a percentage-of-balance risk calculation.

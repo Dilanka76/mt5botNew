@@ -30,8 +30,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
-import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -44,6 +42,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from bot.config import load_config
 from bot.kill_switch import KillSwitch
 from bot.mt5_connector import MT5Connector
+from bot.process_utils import find_script_process, launch_python_script
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 MAIN_SCRIPT = PROJECT_ROOT / "main.py"
@@ -76,59 +75,6 @@ def verify_api_key(x_api_key: str | None = Header(default=None)) -> None:
         raise HTTPException(status_code=500, detail="API_KEY is not configured on the server (.env)")
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
-
-
-# --- process helpers: self-contained, same approach as scripts/watchdog.py ---
-
-def _run_powershell(command: str, timeout: int = 15) -> str:
-    try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
-        logger.error("PowerShell process query failed: %s", e)
-        return ""
-    return result.stdout.strip()
-
-
-def find_main_process() -> dict | None:
-    command = (
-        "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" "
-        "| Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
-    )
-    output = _run_powershell(command)
-    if not output:
-        return None
-    try:
-        data = json.loads(output)
-    except json.JSONDecodeError:
-        logger.error("Could not parse process list output: %r", output[:300])
-        return None
-    if isinstance(data, dict):  # PowerShell gives an object, not an array, for a single match
-        data = [data]
-
-    for item in data:
-        pid = item.get("ProcessId")
-        cmdline = item.get("CommandLine") or ""
-        if pid is not None and int(pid) != os.getpid() and MAIN_SCRIPT_MATCH in cmdline.lower():
-            return {"pid": int(pid), "cmdline": cmdline}
-    return None
-
-
-def launch_main() -> int | None:
-    try:
-        creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        proc = subprocess.Popen(
-            [sys.executable, str(MAIN_SCRIPT)],
-            cwd=str(PROJECT_ROOT),
-            creationflags=creation_flags,
-        )
-        logger.info("Launched main.py: pid=%s", proc.pid)
-        return proc.pid
-    except Exception:
-        logger.exception("Failed to launch main.py")
-        return None
 
 
 # --- state readers ---
@@ -221,7 +167,7 @@ def get_recent_closed_trades(limit: int = 5, lookback_days: int = 7) -> list[dic
 
 @app.get("/status", dependencies=[Depends(verify_api_key)])
 def status():
-    proc = find_main_process()
+    proc = find_script_process(MAIN_SCRIPT_MATCH)
     account = connector.account_info()
     open_position = get_open_position()
 
@@ -253,8 +199,12 @@ def start():
     if was_active:
         kill_switch.deactivate()
 
-    proc = find_main_process()
-    launched_pid = launch_main() if proc is None else None
+    proc = find_script_process(MAIN_SCRIPT_MATCH)
+    launched_pid = None
+    if proc is not None:
+        logger.info("main.py already running (pid=%s), skipping launch.", proc["pid"])
+    else:
+        launched_pid = launch_python_script(MAIN_SCRIPT, PROJECT_ROOT)
 
     return {
         "ok": True,

@@ -30,7 +30,8 @@ sessions:
 # max_balance: null means "no upper bound" (> the previous tier's max).
 position_sizing:
   - {max_balance: 100, lots: 0.02}
-  - {max_balance: 300, lots: 0.03}    # covers both the $100-200 and $200-300 tiers (same lot size)
+  - {max_balance: 200, lots: 0.03}
+  - {max_balance: 300, lots: 0.04}
   - {max_balance: 1000, lots: 0.06}
   - {max_balance: null, lots: 0.12}
 
