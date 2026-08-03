@@ -130,6 +130,13 @@ class EMAScalpEngine:
             return
 
         gap = calculate_gap(event)
+        self._decide_entry(event, gap)
+
+    def _decide_entry(self, event: CrossEvent, gap: float) -> None:
+        """Gap-threshold rule: small gap enters immediately, large gap waits
+        for an EMA5 touch. Overridden by EMA5OnlyEngine (state_machine_ema5_only.py)
+        to always wait for the touch, ignoring the gap entirely."""
+        symbol = self.config.symbol
         if gap < self.config.gap_threshold_usd:
             self._enter(event.direction, reason=f"{event.direction.value} cross, gap={gap:.2f} < threshold, immediate entry")
         else:

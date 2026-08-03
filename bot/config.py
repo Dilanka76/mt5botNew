@@ -69,6 +69,7 @@ class AppConfig:
     ema_periods: EMAPeriodsConfig
     gap_threshold_usd: float
     take_profit_usd: float
+    strategy_variant: str  # "gap_threshold" | "ema5_only"
     sessions: list[SessionWindow]
     position_sizing: list[PositionSizingTier]
     execution: ExecutionConfig
@@ -100,6 +101,7 @@ def load_config(settings_path: str | Path = PROJECT_ROOT / "config" / "settings.
         ema_periods=EMAPeriodsConfig(**raw["ema_periods"]),
         gap_threshold_usd=raw["gap_threshold_usd"],
         take_profit_usd=raw["take_profit_usd"],
+        strategy_variant=raw.get("strategy_variant", "gap_threshold"),
         sessions=[SessionWindow(**s) for s in raw["sessions"]],
         position_sizing=[PositionSizingTier(**t) for t in raw["position_sizing"]],
         execution=ExecutionConfig(**raw["execution"]),

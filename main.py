@@ -40,11 +40,17 @@ from bot.mt5_connector import MT5Connector
 from bot.process_utils import find_script_process
 from bot.sessions import is_within_session
 from bot.strategy.state_machine import EMAScalpEngine
+from bot.strategy.state_machine_ema5_only import EMA5OnlyEngine
 
 logger = logging.getLogger("bot.main")
 
 HEARTBEAT_INTERVAL_SECONDS = 60
 THIS_SCRIPT_MATCH = "main.py"
+
+STRATEGY_ENGINES = {
+    "gap_threshold": EMAScalpEngine,
+    "ema5_only": EMA5OnlyEngine,
+}
 
 
 def run() -> None:
@@ -68,14 +74,22 @@ def run() -> None:
             "require_demo_account is true but the connected MT5 account is not a demo account. Aborting."
         )
 
+    engine_cls = STRATEGY_ENGINES.get(config.strategy_variant)
+    if engine_cls is None:
+        connector.disconnect()
+        raise ValueError(
+            f"Unknown strategy_variant '{config.strategy_variant}' in config/settings.yaml. "
+            f"Valid options: {list(STRATEGY_ENGINES)}"
+        )
+
     kill_switch = KillSwitch(config.kill_switch)
     executor = TradeExecutor(config.execution, connector, config.symbol)
-    engine = EMAScalpEngine(config, connector, executor)
+    engine = engine_cls(config, connector, executor)
     engine.reconcile_on_startup()
 
     logger.info(
-        "Bot started: symbol=%s timeframe=%s mode=%s state=%s",
-        config.symbol, config.timeframe, config.execution.mode, engine.state.value,
+        "Bot started: symbol=%s timeframe=%s mode=%s strategy_variant=%s state=%s",
+        config.symbol, config.timeframe, config.execution.mode, config.strategy_variant, engine.state.value,
     )
 
     last_closed_candle_time = None

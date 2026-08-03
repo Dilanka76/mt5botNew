@@ -61,6 +61,22 @@ avoids false signals from noise.
 6. **Exit:** an opposite (bullish) cross closes the trade immediately,
    regardless of profit or loss.
 
+## 5a. Optional variant: skip the gap check, always wait for EMA5
+
+The bot supports a second mode, switched via `strategy_variant` in
+`config/settings.yaml`:
+
+- `gap_threshold` (default, described above) — small gap enters
+  immediately, large gap waits for EMA5.
+- `ema5_only` — the $5 gap check is ignored completely. **Every** cross,
+  no matter how small the gap, waits for price to touch EMA5 before
+  entering. Everything else (the cancel/invalidation rule, the $5 TP, the
+  opposite-cross exit, sessions, position sizing) works exactly the same
+  either way — only step 3 (the "enter immediately" option) is removed.
+
+Only one variant runs at a time — it's a config switch, not a second bot
+trading simultaneously.
+
 ## 6. No separate stop-loss
 
 There is **no fixed stop-loss price** on any trade. The only two ways a

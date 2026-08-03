@@ -18,6 +18,10 @@ ema_periods:
 gap_threshold_usd: 5.0   # |close - EMA13| at the cross candle: below this, enter immediately
 take_profit_usd: 5.0     # distance from entry to TP, in price (XAUUSD is quoted in USD)
 
+# gap_threshold -> small gap enters immediately, large gap (>= gap_threshold_usd) waits for EMA5 touch (current live behavior)
+# ema5_only     -> ignores gap_threshold_usd entirely; every cross always waits for an EMA5 touch before entering
+strategy_variant: ema5_only
+
 # Sri Lanka time (Asia/Colombo, fixed UTC+5:30, no DST). No NEW trades open
 # outside these windows; an already-open trade is left to run to its natural
 # TP or EMA-cross exit regardless of session end.
