@@ -92,6 +92,11 @@ class EMAScalpEngine:
             position.ticket, direction.value, position.price_open, position.tp,
         )
 
+    def _active_sessions(self) -> list:
+        """Sessions are per strategy_variant (see config/settings.yaml) — this
+        looks up the schedule for whichever variant is actually running."""
+        return self.config.sessions[self.config.strategy_variant]
+
     def on_new_candle(self, df_with_emas: pd.DataFrame) -> None:
         """Call once per newly closed candle (df's iloc[-2])."""
         self.current_ema5 = float(df_with_emas.iloc[-2]["ema5"])
@@ -121,7 +126,7 @@ class EMAScalpEngine:
         self.state = TradeState.IDLE
 
         # 2. Freshly evaluate the new setup — but only if we're in a session.
-        if not is_within_session(self.config.sessions):
+        if not is_within_session(self._active_sessions()):
             log_decision(
                 symbol,
                 "cross_ignored_outside_session",
@@ -165,7 +170,7 @@ class EMAScalpEngine:
             return
 
         symbol = self.config.symbol
-        if is_within_session(self.config.sessions):
+        if is_within_session(self._active_sessions()):
             self._enter(
                 pending.direction,
                 reason=f"EMA5 touch after {pending.direction.value} cross, gap was {pending.gap:.2f}",

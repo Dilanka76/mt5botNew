@@ -24,10 +24,15 @@ strategy_variant: ema5_only
 
 # Sri Lanka time (Asia/Colombo, fixed UTC+5:30, no DST). No NEW trades open
 # outside these windows; an already-open trade is left to run to its natural
-# TP or EMA-cross exit regardless of session end.
+# TP or EMA-cross exit regardless of session end. Each strategy_variant has
+# its own schedule — only the one matching the active strategy_variant above
+# is used.
 sessions:
-  - {start: "04:00", end: "08:00"}
-  - {start: "12:00", end: "23:00"}
+  gap_threshold:
+    - {start: "04:00", end: "08:00"}
+    - {start: "12:00", end: "23:00"}
+  ema5_only:
+    - {start: "04:00", end: "23:00"}
 
 # Fixed lot size by current account balance (not risk-% based). Ordered by
 # ascending max_balance; the first tier whose max_balance >= balance applies.

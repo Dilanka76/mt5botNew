@@ -70,7 +70,7 @@ class AppConfig:
     gap_threshold_usd: float
     take_profit_usd: float
     strategy_variant: str  # "gap_threshold" | "ema5_only"
-    sessions: list[SessionWindow]
+    sessions: dict[str, list[SessionWindow]]  # keyed by strategy_variant — each variant has its own schedule
     position_sizing: list[PositionSizingTier]
     execution: ExecutionConfig
     logging: LoggingConfig
@@ -85,6 +85,14 @@ def load_config(settings_path: str | Path = PROJECT_ROOT / "config" / "settings.
 
     mt5_raw = raw.get("mt5", {})
     mt5_login = os.getenv("MT5_LOGIN")
+
+    strategy_variant = raw.get("strategy_variant", "gap_threshold")
+    sessions_raw = raw["sessions"]
+    if strategy_variant not in sessions_raw:
+        raise ValueError(
+            f"config/settings.yaml: strategy_variant '{strategy_variant}' has no matching "
+            f"entry under 'sessions:'. Available: {list(sessions_raw)}"
+        )
 
     return AppConfig(
         mt5=MT5Config(
@@ -101,8 +109,11 @@ def load_config(settings_path: str | Path = PROJECT_ROOT / "config" / "settings.
         ema_periods=EMAPeriodsConfig(**raw["ema_periods"]),
         gap_threshold_usd=raw["gap_threshold_usd"],
         take_profit_usd=raw["take_profit_usd"],
-        strategy_variant=raw.get("strategy_variant", "gap_threshold"),
-        sessions=[SessionWindow(**s) for s in raw["sessions"]],
+        strategy_variant=strategy_variant,
+        sessions={
+            variant: [SessionWindow(**s) for s in windows]
+            for variant, windows in sessions_raw.items()
+        },
         position_sizing=[PositionSizingTier(**t) for t in raw["position_sizing"]],
         execution=ExecutionConfig(**raw["execution"]),
         logging=LoggingConfig(**raw["logging"]),

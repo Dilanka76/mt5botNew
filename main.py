@@ -115,7 +115,7 @@ def run() -> None:
 
                 now = time.time()
                 if now - last_heartbeat_at >= HEARTBEAT_INTERVAL_SECONDS:
-                    session_status = "ACTIVE" if is_within_session(config.sessions) else "WAITING"
+                    session_status = "ACTIVE" if is_within_session(config.sessions[config.strategy_variant]) else "WAITING"
                     balance = connector.account_info().balance
                     logger.info(
                         "[HEARTBEAT] state=%s session=%s last_price=%.2f balance=%.2f",
