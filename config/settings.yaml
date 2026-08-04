@@ -5,7 +5,7 @@ mt5:
   # running and logged in (current setup), the bot just attaches to it.
   timeout_ms: 10000
 
-symbol: XAUUSDm
+symbol: XAUUSDp
 timeframe: M1               # strategy is defined on the 1-minute chart
 candles_to_fetch: 500        # history pulled each cycle, enough to warm up EMA21
 tick_poll_interval_seconds: 1  # how often live bid price is checked for EMA5 touch / TP fills
@@ -20,7 +20,7 @@ take_profit_usd: 5.0     # distance from entry to TP, in price (XAUUSD is quoted
 
 # gap_threshold -> small gap enters immediately, large gap (>= gap_threshold_usd) waits for EMA5 touch (current live behavior)
 # ema5_only     -> ignores gap_threshold_usd entirely; every cross always waits for an EMA5 touch before entering
-strategy_variant: ema5_only
+strategy_variant: gap_threshold
 
 # Sri Lanka time (Asia/Colombo, fixed UTC+5:30, no DST). No NEW trades open
 # outside these windows; an already-open trade is left to run to its natural
