@@ -30,7 +30,14 @@ def is_within_session(sessions: list[SessionWindow], now_utc: datetime | None = 
     for window in sessions:
         start = _parse_hhmm(window.start)
         end = _parse_hhmm(window.end)
-        if start <= current_time <= end:
-            return True
+        if start <= end:
+            # normal same-day window, e.g. 04:00-08:00
+            if start <= current_time <= end:
+                return True
+        else:
+            # overnight window that wraps past midnight, e.g. 12:00-02:30
+            # (active from start through midnight, then from midnight through end)
+            if current_time >= start or current_time <= end:
+                return True
 
     return False
