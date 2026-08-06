@@ -31,6 +31,18 @@ every 60 seconds regardless of trading activity (see main.py), so a silent
 log file now reliably means "stuck", not "no signal happened lately". This
 lets the default stale_threshold be much tighter than before.
 
+WHO WATCHES THE WATCHDOG: this script itself can crash too (e.g. it did once,
+within 3 seconds of launch, with nothing logged to explain why). Its own
+Task Scheduler task ("MT5-Bot-Watchdog") should have TWO triggers — "At
+startup" AND "every 5 minutes" — so a crash is noticed and recovered from
+automatically rather than leaving the bot unmonitored until someone checks.
+The 5-minute repeat trigger would just relaunch a duplicate if the previous
+run were still alive and healthy, so main() checks for an existing
+watchdog.py process first and exits immediately, harmlessly, if one is
+already running (same approach as main.py's own duplicate check). Any crash
+is now logged with a full traceback to logs/watchdog.log before exiting, so
+it stays diagnosable instead of just going silent.
+
 Run this as its OWN Task Scheduler task (or a second Command Prompt window)
 — separate from, and running alongside, the main.py task:
     python scripts\\watchdog.py
@@ -48,6 +60,7 @@ import argparse
 import logging
 import logging.handlers
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -56,6 +69,7 @@ from bot.process_utils import find_script_process, is_process_name_running, laun
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MAIN_SCRIPT = PROJECT_ROOT / "main.py"
 MAIN_SCRIPT_MATCH = "main.py"
+THIS_SCRIPT_MATCH = "watchdog.py"
 APP_LOG = PROJECT_ROOT / "logs" / "app.log"
 WATCHDOG_LOG_DIR = PROJECT_ROOT / "logs"
 
@@ -206,25 +220,40 @@ def main() -> None:
     args = parse_args()
     setup_logging()
 
-    logger.info(
-        "Watchdog starting. check_interval=%ss stale_threshold=%ss startup_grace=%ss "
-        "restart_cooldown=%ss post_kill_recheck_delay=%ss",
-        args.check_interval, args.stale_threshold, args.startup_grace,
-        args.restart_cooldown, args.post_kill_recheck_delay,
-    )
-    logger.info(
-        "Role: hang detection only. Task Scheduler is responsible for starting main.py "
-        "and restarting it on crash/exit. Watching: %s", MAIN_SCRIPT,
-    )
-
-    state = {"main_last_started_at": time.time(), "last_kill_attempt_at": None, "last_seen_pid": None}
-
+    # Everything below is wrapped so a crash — including one during startup,
+    # like the duplicate-check call below — gets a full traceback logged to
+    # watchdog.log instead of vanishing silently. Task Scheduler is expected
+    # to also poll every 5 minutes (in addition to "at startup"), so letting
+    # this process actually exit after logging is correct: it'll be relaunched
+    # automatically rather than limping along in a broken state.
     try:
+        existing = find_script_process(THIS_SCRIPT_MATCH)
+        if existing is not None:
+            logger.info("Another watchdog.py is already running (pid=%s). Exiting harmlessly.", existing["pid"])
+            return
+
+        logger.info(
+            "Watchdog starting. check_interval=%ss stale_threshold=%ss startup_grace=%ss "
+            "restart_cooldown=%ss post_kill_recheck_delay=%ss",
+            args.check_interval, args.stale_threshold, args.startup_grace,
+            args.restart_cooldown, args.post_kill_recheck_delay,
+        )
+        logger.info(
+            "Role: hang detection only. Task Scheduler is responsible for starting main.py "
+            "and restarting it on crash/exit. Watching: %s", MAIN_SCRIPT,
+        )
+
+        state = {"main_last_started_at": time.time(), "last_kill_attempt_at": None, "last_seen_pid": None}
+
         while True:
             check_once(state, args)
             time.sleep(args.check_interval)
+
     except KeyboardInterrupt:
         logger.info("Watchdog stopped by user (Ctrl+C).")
+    except Exception:
+        logger.critical("Watchdog crashed with an unhandled exception:", exc_info=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
