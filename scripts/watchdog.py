@@ -64,6 +64,11 @@ import sys
 import time
 from pathlib import Path
 
+# Must come before any bot.* import — Task Scheduler launches this without
+# the project root on sys.path (working directory / "Start in" is not
+# guaranteed), unlike running it manually after cd-ing into the project.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from bot.process_utils import find_script_process, is_process_name_running, launch_python_script
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
