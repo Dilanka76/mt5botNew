@@ -3,13 +3,13 @@ not a backtest. Read-only: connects to MT5 to query account info and trade
 history only. Never places, modifies, or closes a trade.
 
 Usage:
-    python scripts/daily_report.py                    # today (Asia/Colombo calendar day)
-    python scripts/daily_report.py --date 2026-08-03   # a specific past day
+    python scripts/daily_report.py --account demo1                    # today (Asia/Colombo calendar day)
+    python scripts/daily_report.py --account demo1 --date 2026-08-03  # a specific past day
 
 Designed to also run unattended once a day via a Windows Scheduled Task —
-no arguments needed for that (defaults to "today").
+one task per account, each passing that account's --account.
 
-Writes reports/daily/<date>.md.
+Writes reports/daily/<account>/<date>.md.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import MetaTrader5 as mt5
 
-from bot.config import load_config
+from bot.config import load_config, validate_account_name
 from bot.mt5_connector import MT5Connector
 
 COLOMBO = ZoneInfo("Asia/Colombo")
@@ -32,6 +32,10 @@ LOOKBACK_DAYS = 5  # how far before the report date to search for a trade's ENTR
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate a daily trading report from real MT5 trade history.")
+    parser.add_argument(
+        "--account", required=True, type=validate_account_name,
+        help="Account name, e.g. demo1, live1. Selects .env.<account>/config/settings.<account>.yaml.",
+    )
     parser.add_argument("--date", type=str, default=None, help="YYYY-MM-DD (Asia/Colombo calendar day). Defaults to today.")
     args = parser.parse_args()
     if args.date:
@@ -189,7 +193,7 @@ def main() -> None:
     args = parse_args()
     target_date = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else datetime.now(COLOMBO).date()
 
-    config = load_config()
+    config = load_config(args.account)
     connector = MT5Connector(config.mt5)
     connector.connect()
 
@@ -206,7 +210,7 @@ def main() -> None:
 
         report = build_report_markdown(target_date, trades, start_balance, end_balance, current_equity, config.symbol)
 
-        reports_dir = Path(__file__).resolve().parent.parent / "reports" / "daily"
+        reports_dir = Path(__file__).resolve().parent.parent / "reports" / "daily" / args.account
         reports_dir.mkdir(parents=True, exist_ok=True)
         out_path = reports_dir / f"{target_date.isoformat()}.md"
         out_path.write_text(report)

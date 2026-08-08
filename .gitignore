@@ -4,12 +4,17 @@ __pycache__/
 venv/
 env/
 .env
+.env.*
+!.env.*.example
 
-logs/*.log
-logs/*.jsonl
+logs/**/*.log
+logs/**/*.jsonl
 !logs/.gitkeep
 
 KILL_SWITCH
+KILL_SWITCH_*
+
+reports/daily/**/*.md
 
 .idea/
 .vscode/

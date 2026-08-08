@@ -2,7 +2,7 @@
 history so it can be checked by eye against the MT5 chart.
 
 Not part of the trading bot itself — run this manually on the EC2 server:
-    python scripts/check_crosses.py
+    python scripts/check_crosses.py --account demo1
 
 For each cross it prints the candle time, direction, close, EMA13, EMA21,
 and the calculated gap (see bot.strategy.cross_detector.calculate_gap) so you
@@ -11,20 +11,31 @@ before any entry/exit logic gets wired up.
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bot.config import load_config
+from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
 from bot.strategy.cross_detector import calculate_gap, detect_all_crosses
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Prints recent EMA13/21 crosses for a given account's configured symbol.")
+    parser.add_argument(
+        "--account", required=True, type=validate_account_name,
+        help="Account name, e.g. demo1, live1. Selects .env.<account>/config/settings.<account>.yaml.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    config = load_config()
+    args = parse_args()
+    config = load_config(args.account)
 
     connector = MT5Connector(config.mt5)
     connector.connect()

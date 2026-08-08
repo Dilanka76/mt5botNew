@@ -6,12 +6,20 @@ detection), and api_server.py (status + start/stop) — kept in one place so
 all three always agree on exactly what counts as "the main.py process."
 Standard library only, no dependency on the rest of the bot/ package, so a
 bug elsewhere can't take process supervision down with it.
+
+Multi-account: several main.py (and watchdog.py) processes now run at once,
+one per account, distinguished only by a "--account <name>" command-line
+argument. find_account_process() is the account-aware counterpart to
+find_script_process() — use it wherever "is *this account's* instance
+already running" is the question, which is everywhere duplicate-instance
+detection matters now.
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -67,17 +75,35 @@ def find_script_process(script_match: str, exclude_pid: int | None = None) -> di
     return None
 
 
+def find_account_process(script_match: str, account: str, exclude_pid: int | None = None) -> dict | None:
+    """Like find_script_process(), but also requires the command line to
+    carry `--account <account>` as a whole argument — so "demo1" doesn't
+    also match a running "demo10" instance. This is what makes it safe for
+    multiple accounts' main.py/watchdog.py processes to run side by side:
+    each one only ever conflicts with another instance of the SAME account."""
+    exclude_pid = os.getpid() if exclude_pid is None else exclude_pid
+    account_pattern = re.compile(rf"--account[=\s]+{re.escape(account)}(?:\s|$)", re.IGNORECASE)
+    for proc in list_processes("python.exe"):
+        if proc["pid"] == exclude_pid:
+            continue
+        cmdline = proc["cmdline"]
+        if script_match.lower() not in cmdline.lower():
+            continue
+        if account_pattern.search(cmdline):
+            return proc
+    return None
+
+
 def is_process_name_running(exe_name: str) -> bool:
     return bool(list_processes(exe_name))
 
 
-def launch_python_script(script_path: Path, cwd: Path) -> int | None:
+def launch_python_script(script_path: Path, cwd: Path, extra_args: list[str] | None = None) -> int | None:
     try:
         creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        proc = subprocess.Popen(
-            [sys.executable, str(script_path)], cwd=str(cwd), creationflags=creation_flags,
-        )
-        logger.info("Launched %s: pid=%s", script_path.name, proc.pid)
+        args = [sys.executable, str(script_path), *(extra_args or [])]
+        proc = subprocess.Popen(args, cwd=str(cwd), creationflags=creation_flags)
+        logger.info("Launched %s: pid=%s args=%s", script_path.name, proc.pid, extra_args or [])
         return proc.pid
     except Exception:
         logger.exception("Failed to launch %s", script_path.name)

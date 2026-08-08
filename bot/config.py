@@ -1,7 +1,10 @@
-"""Loads config/settings.yaml + .env into typed config objects."""
+"""Loads config/settings.<account>.yaml + .env.<account> into typed config
+objects. Every account (demo1, live1, ...) gets its own settings file and
+env file so accounts are fully independent — see SETUP.md."""
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -9,6 +12,20 @@ import yaml
 from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def validate_account_name(name: str) -> str:
+    """Shared --account validator (used as argparse `type=`) — account names
+    flow straight into file paths (.env.<account>, settings.<account>.yaml,
+    logs/<account>/, KILL_SWITCH_<account>), so this keeps them restricted
+    to a safe charset instead of allowing path separators or traversal."""
+    if not ACCOUNT_NAME_RE.match(name):
+        raise ValueError(
+            f"Invalid account name {name!r}. Only letters, digits, '-' and '_' are allowed."
+        )
+    return name
 
 
 @dataclass
@@ -61,6 +78,7 @@ class KillSwitchConfig:
 
 @dataclass
 class AppConfig:
+    account: str
     mt5: MT5Config
     symbol: str
     timeframe: str
@@ -77,8 +95,33 @@ class AppConfig:
     kill_switch: KillSwitchConfig
 
 
-def load_config(settings_path: str | Path = PROJECT_ROOT / "config" / "settings.yaml") -> AppConfig:
-    load_dotenv(PROJECT_ROOT / ".env")
+def load_config(account: str, settings_path: str | Path | None = None) -> AppConfig:
+    """Loads the account-scoped config. `account` selects .env.<account> and
+    config/settings.<account>.yaml (unless settings_path overrides the latter) —
+    see SETUP.md. Every account is fully independent: its own MT5 credentials,
+    lot sizing, sessions, logs, and kill switch."""
+    account = validate_account_name(account)
+
+    env_path = PROJECT_ROOT / f".env.{account}"
+    if not env_path.exists():
+        raise FileNotFoundError(
+            f"{env_path} not found. Copy .env.demo1.example to {env_path.name} and fill in "
+            f"real values (see SETUP.md)."
+        )
+    # override=True: an account's own .env.<account> must always win over
+    # anything already in the environment (a stale OS-level var, or another
+    # account's .env loaded earlier in the same process) — accounts must
+    # stay fully independent, per SETUP.md.
+    load_dotenv(env_path, override=True)
+
+    if settings_path is None:
+        settings_path = PROJECT_ROOT / "config" / f"settings.{account}.yaml"
+    settings_path = Path(settings_path)
+    if not settings_path.exists():
+        raise FileNotFoundError(
+            f"{settings_path} not found. Copy config/settings.demo1.example.yaml to "
+            f"{settings_path.name} and adjust as needed (see SETUP.md)."
+        )
 
     with open(settings_path, "r") as f:
         raw = yaml.safe_load(f)
@@ -90,11 +133,12 @@ def load_config(settings_path: str | Path = PROJECT_ROOT / "config" / "settings.
     sessions_raw = raw["sessions"]
     if strategy_variant not in sessions_raw:
         raise ValueError(
-            f"config/settings.yaml: strategy_variant '{strategy_variant}' has no matching "
+            f"{settings_path}: strategy_variant '{strategy_variant}' has no matching "
             f"entry under 'sessions:'. Available: {list(sessions_raw)}"
         )
 
     return AppConfig(
+        account=account,
         mt5=MT5Config(
             login=int(mt5_login) if mt5_login else None,
             password=os.getenv("MT5_PASSWORD") or None,

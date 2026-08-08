@@ -1,5 +1,12 @@
 """Entry point: connects to MT5 and runs the EMA-cross scalping loop.
 
+Multi-account: this process always runs for exactly one account, given via
+the required --account flag (e.g. `python main.py --account demo1`). That
+name selects .env.<account>, config/settings.<account>.yaml, logs/<account>/,
+and KILL_SWITCH_<account> — see SETUP.md. Run one main.py process per
+account (up to 5, per the current setup), each against its own MT5
+terminal instance.
+
 Every tick_poll_interval_seconds, this:
   1. Fetches recent OHLC + recomputes EMAs.
   2. If a new candle has closed since the last check, feeds it to the state
@@ -9,35 +16,39 @@ Every tick_poll_interval_seconds, this:
      while pending, and TP-fill detection while in a position).
 
 Every HEARTBEAT_INTERVAL_SECONDS, a "[HEARTBEAT]" line is logged regardless
-of whether anything else happened, so logs/app.log always gets written to
-on a predictable schedule — this is what scripts/watchdog.py relies on to
-tell a genuinely frozen process apart from a healthy one that's just quiet
-because no EMA cross has fired recently.
+of whether anything else happened, so logs/<account>/app.log always gets
+written to on a predictable schedule — this is what scripts/watchdog.py
+relies on to tell a genuinely frozen process apart from a healthy one
+that's just quiet because no EMA cross has fired recently.
 
-On startup, refuses to run if another main.py is already active (checked
-via bot.process_utils) — the definitive guard against duplicate/conflicting
-instances, regardless of which supervisor (Task Scheduler, watchdog.py, the
-API's /start) tried to launch a second one.
+On startup, refuses to run if another main.py for the SAME account is
+already active (checked via bot.process_utils.find_account_process) — the
+definitive guard against duplicate/conflicting instances of one account,
+regardless of which supervisor (Task Scheduler, watchdog.py, the API's
+/start) tried to launch a second one. Different accounts' main.py
+processes are expected to run concurrently and never conflict with
+each other.
 
-execution.mode defaults to "shadow" in config/settings.yaml — no real
-orders are sent until that's deliberately changed, and even then
+execution.mode defaults to "shadow" in config/settings.<account>.yaml — no
+real orders are sent until that's deliberately changed, and even then
 require_demo_account refuses to trade on anything but a confirmed demo
 account.
 """
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
 import time
 
-from bot.config import load_config
+from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc
 from bot.execution.trade_executor import TradeExecutor
 from bot.indicators.ema import compute_emas
 from bot.kill_switch import KillSwitch
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
-from bot.process_utils import find_script_process
+from bot.process_utils import find_account_process
 from bot.sessions import is_within_session
 from bot.strategy.state_machine import EMAScalpEngine
 from bot.strategy.state_machine_ema5_only import EMA5OnlyEngine
@@ -53,15 +64,27 @@ STRATEGY_ENGINES = {
 }
 
 
-def run() -> None:
-    config = load_config()
-    setup_logging(config.logging)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Runs the EMA-cross scalping bot for one MT5 account.")
+    parser.add_argument(
+        "--account", required=True, type=validate_account_name,
+        help="Account name, e.g. demo1, live1. Selects .env.<account> and config/settings.<account>.yaml.",
+    )
+    return parser.parse_args()
 
-    existing = find_script_process(THIS_SCRIPT_MATCH)
+
+def run() -> None:
+    args = parse_args()
+
+    config = load_config(args.account)
+    setup_logging(config.logging, args.account)
+
+    existing = find_account_process(THIS_SCRIPT_MATCH, args.account)
     if existing is not None:
         logger.error(
-            "Another main.py is already running (pid=%s). Refusing to start a duplicate instance. Exiting.",
-            existing["pid"],
+            "Another main.py for account '%s' is already running (pid=%s). "
+            "Refusing to start a duplicate instance. Exiting.",
+            args.account, existing["pid"],
         )
         sys.exit(1)
 
@@ -78,18 +101,18 @@ def run() -> None:
     if engine_cls is None:
         connector.disconnect()
         raise ValueError(
-            f"Unknown strategy_variant '{config.strategy_variant}' in config/settings.yaml. "
+            f"Unknown strategy_variant '{config.strategy_variant}' in config/settings.{args.account}.yaml. "
             f"Valid options: {list(STRATEGY_ENGINES)}"
         )
 
-    kill_switch = KillSwitch(config.kill_switch)
+    kill_switch = KillSwitch(config.kill_switch, args.account)
     executor = TradeExecutor(config.execution, connector, config.symbol)
     engine = engine_cls(config, connector, executor)
     engine.reconcile_on_startup()
 
     logger.info(
-        "Bot started: symbol=%s timeframe=%s mode=%s strategy_variant=%s state=%s",
-        config.symbol, config.timeframe, config.execution.mode, config.strategy_variant, engine.state.value,
+        "Bot started: account=%s symbol=%s timeframe=%s mode=%s strategy_variant=%s state=%s",
+        args.account, config.symbol, config.timeframe, config.execution.mode, config.strategy_variant, engine.state.value,
     )
 
     last_closed_candle_time = None

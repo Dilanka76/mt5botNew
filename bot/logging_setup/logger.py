@@ -1,6 +1,6 @@
 """App-wide logging setup, plus a structured per-decision log.
 
-Two separate logs are produced under logging.log_dir:
+Two separate logs are produced under logging.log_dir/<account>:
 - app.log        human-readable log of everything the bot does
 - decisions.jsonl  one JSON line per strategy evaluation: symbol, whether a
                     trade was taken or skipped, and why (for later review)
@@ -18,8 +18,8 @@ from bot.config import LoggingConfig, PROJECT_ROOT
 _decision_logger: logging.Logger | None = None
 
 
-def setup_logging(config: LoggingConfig) -> None:
-    log_dir = PROJECT_ROOT / config.log_dir
+def setup_logging(config: LoggingConfig, account: str) -> None:
+    log_dir = PROJECT_ROOT / config.log_dir / account
     log_dir.mkdir(parents=True, exist_ok=True)
 
     root = logging.getLogger("bot")

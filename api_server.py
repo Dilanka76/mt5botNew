@@ -4,6 +4,16 @@ Runs alongside main.py as a SEPARATE process on the same Windows server —
 intended for a future Flutter app to check status and start/stop the bot
 remotely.
 
+MULTI-ACCOUNT: this server always controls exactly one account, given via
+the required --account flag (e.g. `python api_server.py --account demo1
+--port 8001`). Run one instance per account you want remote control over,
+each on its own --port, e.g.:
+    python api_server.py --account demo1 --port 8001
+    python api_server.py --account live1 --port 8002
+Because --account is required, this can no longer be launched via
+`uvicorn api_server:app` directly (uvicorn's own CLI has no way to forward
+it) — always run it as `python api_server.py --account ... [--port ...]`.
+
 Deliberately reads state from the outside rather than reaching into
 main.py's live objects: the OS process list (is main.py running), the
 decisions log (best-effort inference of IDLE vs PENDING_ENTRY), and MT5
@@ -15,18 +25,14 @@ account/position/history data at the same time main.py is trading is safe;
 this server never places or closes trades itself.
 
 SECURITY: every endpoint requires the X-API-Key header to match API_KEY in
-.env. That is the ONLY protection right now. Before exposing this port to
-the internet (vs. just the local machine/LAN), you still need HTTPS (e.g. a
-reverse proxy) and a firewall/security-group rule limiting who can reach
-port 8000 — do not point this at the internet as-is.
-
-Run with:
-    python api_server.py
-or:
-    uvicorn api_server:app --host 0.0.0.0 --port 8000
+.env.<account>. That is the ONLY protection right now. Before exposing this
+port to the internet (vs. just the local machine/LAN), you still need HTTPS
+(e.g. a reverse proxy) and a firewall/security-group rule limiting who can
+reach the port — do not point this at the internet as-is.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -39,40 +45,56 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException
 
-from bot.config import load_config
+from bot.config import load_config, validate_account_name
 from bot.kill_switch import KillSwitch
 from bot.mt5_connector import MT5Connector
-from bot.process_utils import find_script_process, launch_python_script
+from bot.process_utils import find_account_process, launch_python_script
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 MAIN_SCRIPT = PROJECT_ROOT / "main.py"
 MAIN_SCRIPT_MATCH = "main.py"  # substring matched (case-insensitive) against process command lines
 
-load_dotenv(PROJECT_ROOT / ".env")
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Per-account control/monitoring API for the MT5 trading bot.")
+    parser.add_argument(
+        "--account", required=True, type=validate_account_name,
+        help="Account name, e.g. demo1, live1. Selects .env.<account>/config/settings.<account>.yaml and controls "
+             "only that account's main.py.",
+    )
+    parser.add_argument("--port", type=int, default=8000, help="Port to serve on (default: 8000). Use a different port per account.")
+    return parser.parse_args()
+
+
+args = parse_args()
+ACCOUNT = args.account
+PORT = args.port
+
+load_dotenv(PROJECT_ROOT / f".env.{ACCOUNT}")
 API_KEY = os.getenv("API_KEY")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("bot.api_server")
 
-config = load_config()
+config = load_config(ACCOUNT)
 connector = MT5Connector(config.mt5)
-kill_switch = KillSwitch(config.kill_switch)
+kill_switch = KillSwitch(config.kill_switch, ACCOUNT)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     connector.connect()
-    logger.info("api_server connected to MT5 (read-only queries)")
+    logger.info("api_server (account=%s) connected to MT5 (read-only queries)", ACCOUNT)
     yield
     connector.disconnect()
 
 
-app = FastAPI(title="MT5 Bot Control API", lifespan=lifespan)
+app = FastAPI(title=f"MT5 Bot Control API ({ACCOUNT})", lifespan=lifespan)
 
 
 def verify_api_key(x_api_key: str | None = Header(default=None)) -> None:
     if not API_KEY:
-        raise HTTPException(status_code=500, detail="API_KEY is not configured on the server (.env)")
+        raise HTTPException(status_code=500, detail=f"API_KEY is not configured on the server (.env.{ACCOUNT})")
     if x_api_key != API_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
 
@@ -80,7 +102,7 @@ def verify_api_key(x_api_key: str | None = Header(default=None)) -> None:
 # --- state readers ---
 
 def read_last_decisions(n: int) -> list[dict]:
-    path = PROJECT_ROOT / config.logging.log_dir / "decisions.jsonl"
+    path = PROJECT_ROOT / config.logging.log_dir / ACCOUNT / "decisions.jsonl"
     if not path.exists():
         return []
     lines = path.read_text(errors="ignore").splitlines()
@@ -167,16 +189,17 @@ def get_recent_closed_trades(limit: int = 5, lookback_days: int = 7) -> list[dic
 
 @app.get("/status", dependencies=[Depends(verify_api_key)])
 def status():
-    proc = find_script_process(MAIN_SCRIPT_MATCH)
+    proc = find_account_process(MAIN_SCRIPT_MATCH, ACCOUNT)
     account = connector.account_info()
     open_position = get_open_position()
 
     return {
+        "account": ACCOUNT,
         "main_process": {"running": proc is not None, "pid": proc["pid"] if proc else None},
         "bot_state": infer_bot_state(position_open=open_position is not None),
         "execution_mode": config.execution.mode,
         "kill_switch_active": kill_switch.is_active(),
-        "account": {
+        "account_info": {
             "balance": account.balance,
             "equity": account.equity,
             "profit": account.profit,
@@ -199,15 +222,16 @@ def start():
     if was_active:
         kill_switch.deactivate()
 
-    proc = find_script_process(MAIN_SCRIPT_MATCH)
+    proc = find_account_process(MAIN_SCRIPT_MATCH, ACCOUNT)
     launched_pid = None
     if proc is not None:
-        logger.info("main.py already running (pid=%s), skipping launch.", proc["pid"])
+        logger.info("main.py --account %s already running (pid=%s), skipping launch.", ACCOUNT, proc["pid"])
     else:
-        launched_pid = launch_python_script(MAIN_SCRIPT, PROJECT_ROOT)
+        launched_pid = launch_python_script(MAIN_SCRIPT, PROJECT_ROOT, extra_args=["--account", ACCOUNT])
 
     return {
         "ok": True,
+        "account": ACCOUNT,
         "kill_switch_was_active": was_active,
         "main_process_was_already_running": proc is not None,
         "launched_pid": launched_pid,
@@ -215,4 +239,4 @@ def start():
 
 
 if __name__ == "__main__":
-    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="info")

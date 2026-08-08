@@ -1,7 +1,9 @@
 """Emergency stop: if this file exists, the bot refuses to place any trade.
+Per-account — each account has its own KILL_SWITCH_<account> file, so
+stopping one account never affects the others.
 
 Trip it from the running server (or a remote script) with:
-    touch KILL_SWITCH
+    touch KILL_SWITCH_demo1
 Remove the file to resume trading.
 """
 from __future__ import annotations
@@ -15,8 +17,8 @@ logger = logging.getLogger("bot.kill_switch")
 
 
 class KillSwitch:
-    def __init__(self, config: KillSwitchConfig):
-        self._path = PROJECT_ROOT / config.file_path
+    def __init__(self, config: KillSwitchConfig, account: str):
+        self._path = PROJECT_ROOT / f"{config.file_path}_{account}"
 
     def is_active(self) -> bool:
         return self._path.exists()

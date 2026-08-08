@@ -1,0 +1,72 @@
+# Per-account config. Copy this file to config/settings.<account>.yaml for
+# each account you run, e.g.:
+#   cp config/settings.demo1.example.yaml config/settings.demo1.yaml
+#   cp config/settings.demo1.example.yaml config/settings.demo2.yaml
+#   cp config/settings.demo1.example.yaml config/settings.live1.yaml
+#   cp config/settings.demo1.example.yaml config/settings.live2.yaml
+#   cp config/settings.demo1.example.yaml config/settings.live3.yaml
+# and adjust per account (e.g. different lot sizing or session windows).
+# Secrets (MT5 login/password) live in .env.<account>, not here.
+
+mt5:
+  # Only needed if MT5_LOGIN/MT5_PASSWORD are set in .env.<account>. If MT5
+  # is already running and logged in, the bot just attaches to it.
+  timeout_ms: 10000
+
+symbol: XAUUSDp
+timeframe: M1               # strategy is defined on the 1-minute chart
+candles_to_fetch: 500        # history pulled each cycle, enough to warm up EMA21
+tick_poll_interval_seconds: 1  # how often live bid price is checked for EMA5 touch / TP fills
+
+ema_periods:
+  fast: 5
+  mid: 13
+  slow: 21
+
+gap_threshold_usd: 5.0   # |close - EMA13| at the cross candle: below this, enter immediately
+take_profit_usd: 5.0     # distance from entry to TP, in price (XAUUSD is quoted in USD)
+
+# gap_threshold -> small gap enters immediately, large gap (>= gap_threshold_usd) waits for EMA5 touch (current live behavior)
+# ema5_only     -> ignores gap_threshold_usd entirely; every cross always waits for an EMA5 touch before entering
+strategy_variant: gap_threshold
+
+# Sri Lanka time (Asia/Colombo, fixed UTC+5:30, no DST). No NEW trades open
+# outside these windows; an already-open trade is left to run to its natural
+# TP or EMA-cross exit regardless of session end. Each strategy_variant has
+# its own schedule — only the one matching the active strategy_variant above
+# is used. Different accounts can use different windows by editing this
+# file per account.
+sessions:
+  gap_threshold:
+    - {start: "04:00", end: "08:00"}
+    - {start: "12:00", end: "02:30"}   # overnight window: noon through 2:30 AM the next day
+  ema5_only:
+    - {start: "04:00", end: "23:00"}
+
+# Fixed lot size by current account balance (not risk-% based). Ordered by
+# ascending max_balance; the first tier whose max_balance >= balance applies.
+# max_balance: null means "no upper bound" (> the previous tier's max).
+# Adjust per account — e.g. smaller lots for live accounts than demo.
+position_sizing:
+  - {max_balance: 100, lots: 0.02}
+  - {max_balance: 200, lots: 0.03}
+  - {max_balance: 300, lots: 0.04}
+  - {max_balance: 1000, lots: 0.06}
+  - {max_balance: null, lots: 0.12}
+
+execution:
+  # shadow        -> evaluate + log signals, never send real orders (default, safe)
+  # demo_execute  -> send real orders, but only if the connected account is confirmed DEMO
+  # live_execute  -> send real orders on a real-money account (do not enable until fully tested)
+  mode: demo_execute
+  require_demo_account: true
+  magic_number: 900002   # use a distinct magic number per account if they ever share a symbol/server
+  order_deviation_points: 20
+  order_comment: ema-scalp
+
+logging:
+  log_dir: logs   # actual logs go to logs/<account>/ — the account name is appended automatically
+  level: INFO
+
+kill_switch:
+  file_path: KILL_SWITCH   # actual file is KILL_SWITCH_<account> in the project root — the account name is appended automatically
