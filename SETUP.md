@@ -96,14 +96,52 @@ its command line) and its own `logs/demo1/watchdog.log`. Run one
 `watchdog.py --account <account>` per account you want hang-detection on,
 same duplicate-instance rules as `main.py`.
 
-## 5. Control API (optional, per account)
+## 5. Control API — unified gateway (optional, ONE process for all accounts)
+
+Unlike `main.py`/`watchdog.py`, `api_server.py` runs as a **single process
+for all 5 accounts**, not one per account — so a Flutter (or any) mobile
+app only needs one public URL/tunnel to control every account.
 
 ```
-python api_server.py --account demo1 --port 8001
+cp .env.gateway.example .env.gateway   # fill in one master API_KEY
+python api_server.py --port 8000
 ```
 
-Run one instance per account you want remote status/start/stop for, each
-on its own `--port` (e.g. 8001–8005 for the 5 accounts).
+It discovers which accounts to serve by scanning for
+`config/settings.<account>.yaml` files at startup — so it automatically
+picks up whichever accounts you've configured so far (just `demo1`
+today; more as you add them). **Adding a new account's config later
+requires restarting this process** to pick it up.
+
+Every request needs `X-API-Key: <the value from .env.gateway>` — this is
+ONE shared master key for all accounts (not the per-account `API_KEY` in
+`.env.<account>`, which this no longer uses). Routes:
+
+```
+GET  /accounts              list which accounts are currently served
+GET  /{account}/status      e.g. GET /demo1/status
+POST /{account}/start       e.g. POST /live1/start
+POST /{account}/stop        e.g. POST /live1/stop
+POST /stop-all              stop EVERY configured account in one call
+```
+
+An unconfigured-but-validly-named account (e.g. `demo2` before its
+`.env.demo2`/`config/settings.demo2.yaml` exist) returns `404`; a
+malformed account name returns `400` — it's never used to construct a
+file path from unvalidated input.
+
+**Why this process never opens its own MT5 connection**: the
+`MetaTrader5` Python package only supports one live terminal connection
+per process, so a single gateway process cannot hold live connections to
+5 different terminals — and an earlier per-account version of this file,
+which *did* hold its own MT5 connection alongside that account's
+`main.py`'s independent connection to the same terminal, intermittently
+hung the whole server after its first request. Instead, `main.py` writes
+a small `logs/<account>/status.json` snapshot every heartbeat (60s), and
+the gateway just reads that file — `/status` tells you how stale that
+data is (`status_file.age_seconds` / `status_file.stale`) so the app can
+show "may be out of date" rather than confidently displaying dead numbers
+if a bot has actually frozen.
 
 ## 6. Daily report / cross-check scripts
 
@@ -114,7 +152,18 @@ python scripts\check_crosses.py --account demo1
 
 `daily_report.py` writes to `reports/daily/<account>/<date>.md`.
 
-## 7. Task Scheduler (production)
+## 7. Health check — all 5 accounts at a glance
+
+```
+python scripts\health_check.py
+```
+
+Prints one table covering all 5 accounts: whether `main.py` and
+`watchdog.py` are running, and how old each one's last heartbeat is —
+useful before relying on the Control API gateway, and doesn't need it
+running. Exit code 0 if all healthy, 1 if any aren't (usable in a script).
+
+## 8. Task Scheduler (production)
 
 Give each account its own pair of Scheduled Tasks (main + watchdog), each
 with `--account <name>` in the task's arguments, e.g.:
@@ -125,3 +174,7 @@ with `--account <name>` in the task's arguments, e.g.:
 Repeat for `demo2`, `live1`, `live2`, `live3`. Since duplicate-instance
 detection is per-account, these 10 tasks (5 accounts × main + watchdog) can
 all run concurrently without stepping on each other.
+
+If you're running the Control API gateway (Section 5), it only needs
+**one** additional Scheduled Task total (not one per account) —
+e.g. "MT5-Gateway" → `python api_server.py --port 8000`.

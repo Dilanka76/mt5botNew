@@ -39,7 +39,7 @@ strategy_variant: gap_threshold
 sessions:
   gap_threshold:
     - {start: "04:00", end: "08:00"}
-    - {start: "12:00", end: "02:30"}   # overnight window: noon through 2:30 AM the next day
+    - {start: "12:00", end: "23:00"}
   ema5_only:
     - {start: "04:00", end: "23:00"}
 

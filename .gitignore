@@ -9,6 +9,8 @@ env/
 
 logs/**/*.log
 logs/**/*.jsonl
+logs/**/*.json
+logs/**/*.json.tmp
 !logs/.gitkeep
 
 KILL_SWITCH

@@ -40,6 +40,9 @@ import argparse
 import logging
 import sys
 import time
+from datetime import datetime, timezone
+
+import MetaTrader5 as mt5
 
 from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc
@@ -50,6 +53,7 @@ from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
 from bot.process_utils import find_account_process
 from bot.sessions import is_within_session
+from bot.status_writer import build_status_payload, status_file_path, write_status_atomic
 from bot.strategy.state_machine import EMAScalpEngine
 from bot.strategy.state_machine_ema5_only import EMA5OnlyEngine
 
@@ -62,6 +66,24 @@ STRATEGY_ENGINES = {
     "gap_threshold": EMAScalpEngine,
     "ema5_only": EMA5OnlyEngine,
 }
+
+
+def _format_open_position(position) -> dict | None:
+    """Converts a raw MT5 position object (or None) into a plain dict —
+    keeps bot/status_writer.py's build_status_payload() free of any MT5
+    object dependency. Shape matches what api_server.py's gateway exposes."""
+    if position is None:
+        return None
+    return {
+        "ticket": position.ticket,
+        "direction": "BUY" if position.type == mt5.ORDER_TYPE_BUY else "SELL",
+        "volume": position.volume,
+        "price_open": position.price_open,
+        "price_current": position.price_current,
+        "take_profit": position.tp,
+        "profit": position.profit,
+        "open_time": datetime.fromtimestamp(position.time, tz=timezone.utc).isoformat(),
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -139,11 +161,38 @@ def run() -> None:
                 now = time.time()
                 if now - last_heartbeat_at >= HEARTBEAT_INTERVAL_SECONDS:
                     session_status = "ACTIVE" if is_within_session(config.sessions[config.strategy_variant]) else "WAITING"
-                    balance = connector.account_info().balance
+                    account_info = connector.account_info()
                     logger.info(
                         "[HEARTBEAT] state=%s session=%s last_price=%.2f balance=%.2f",
-                        engine.state.value, session_status, tick.bid, balance,
+                        engine.state.value, session_status, tick.bid, account_info.balance,
                     )
+
+                    # Status snapshot for api_server.py's gateway — reads
+                    # this file instead of opening its own MT5 connection
+                    # (which would contend with this one; see SETUP.md).
+                    # A write failure here is caught by the outer except
+                    # below and just logged; it never interrupts trading.
+                    payload = build_status_payload(
+                        account=args.account,
+                        bot_state=engine.state.value,
+                        session_status=session_status,
+                        execution_mode=config.execution.mode,
+                        symbol=config.symbol,
+                        kill_switch_active=kill_switch.is_active(),
+                        account_info={
+                            "balance": account_info.balance,
+                            "equity": account_info.equity,
+                            "profit": account_info.profit,
+                            "currency": account_info.currency,
+                        },
+                        tick={"bid": tick.bid, "ask": tick.ask},
+                        open_position=_format_open_position(executor.get_open_position()),
+                        recent_closed_trades=connector.get_recent_closed_trades(
+                            config.symbol, config.execution.magic_number,
+                        ),
+                    )
+                    write_status_atomic(status_file_path(config.logging.log_dir, args.account), payload)
+
                     last_heartbeat_at = now
 
             except Exception:

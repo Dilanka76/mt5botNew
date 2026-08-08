@@ -163,3 +163,26 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         logging=LoggingConfig(**raw["logging"]),
         kill_switch=KillSwitchConfig(**raw["kill_switch"]),
     )
+
+
+SETTINGS_FILENAME_RE = re.compile(r"^settings\.([A-Za-z0-9_-]+)\.yaml$")
+
+
+def discover_configured_accounts() -> list[str]:
+    """Account names with a settings.<account>.yaml present in config/ —
+    used by api_server.py's unified gateway to find out which accounts to
+    serve without hardcoding the list. Deliberately excludes
+    *.example.yaml templates and the legacy pre-multi-account
+    config/settings.yaml (neither matches the ACCOUNT_NAME_RE-validated
+    group this regex requires)."""
+    accounts = []
+    for path in (PROJECT_ROOT / "config").glob("settings.*.yaml"):
+        match = SETTINGS_FILENAME_RE.match(path.name)
+        if match is None:
+            continue  # e.g. settings.demo1.example.yaml, or a malformed name
+        account = match.group(1)
+        try:
+            accounts.append(validate_account_name(account))
+        except ValueError:
+            continue
+    return sorted(accounts)
