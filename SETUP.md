@@ -104,8 +104,13 @@ app only needs one public URL/tunnel to control every account.
 
 ```
 cp .env.gateway.example .env.gateway   # fill in one master API_KEY
-python api_server.py --port 8000
+python api_server.py --port 6970
 ```
+
+(Port `6970` here matches the Cloudflare Tunnel this is currently
+deployed behind — see "Cloudflare Tunnel" below. Any port works if
+you're not using that specific tunnel; just keep the tunnel's Service
+URL and this `--port` in sync.)
 
 It discovers which accounts to serve by scanning for
 `config/settings.<account>.yaml` files at startup — so it automatically
@@ -115,14 +120,42 @@ requires restarting this process** to pick it up.
 
 Every request needs `X-API-Key: <the value from .env.gateway>` — this is
 ONE shared master key for all accounts (not the per-account `API_KEY` in
-`.env.<account>`, which this no longer uses). Routes:
+`.env.<account>`, which this no longer uses). Every route lives under an
+`/apiconnect` prefix (required because the Cloudflare Tunnel forwards the
+full matched path, including that prefix, to this origin — see below):
 
 ```
-GET  /accounts              list which accounts are currently served
-GET  /{account}/status      e.g. GET /demo1/status
-POST /{account}/start       e.g. POST /live1/start
-POST /{account}/stop        e.g. POST /live1/stop
-POST /stop-all              stop EVERY configured account in one call
+GET  /apiconnect/accounts              list which accounts are currently served
+GET  /apiconnect/{account}/status      e.g. GET /apiconnect/demo1/status
+POST /apiconnect/{account}/start       e.g. POST /apiconnect/live1/start
+POST /apiconnect/{account}/stop        e.g. POST /apiconnect/live1/stop
+POST /apiconnect/stop-all              stop EVERY configured account in one call
+POST /apiconnect/start-all             start EVERY configured account in one call
+```
+
+### Cloudflare Tunnel (how the app actually reaches this from outside)
+
+The server's firewall only allows local/RDP access — port `6970` is
+**not** open to the internet directly, by design (see the security note
+above). A Cloudflare Tunnel (`cloudflared`, installed as a Windows
+service on the server) gives it a public HTTPS URL instead:
+`https://projectx.nst3ch.com/apiconnect/...`.
+
+The tunnel's account/domain is managed by someone else at the company —
+if it ever needs reconfiguring, the two settings that matter are:
+- **Public hostname path**: `/apiconnect` (must match this app's route prefix)
+- **Service URL**: `http://localhost:6970` (**http**, not https — the
+  tunnel-to-origin hop never leaves the server, so there's nothing to
+  gain from encrypting it, and this app doesn't serve TLS)
+
+If you ever change the gateway's `--port`, the tunnel's Service URL must
+be updated to match, or requests will time out.
+
+**Windows Firewall note**: a new port needs an explicit inbound allow
+rule on this server before even *local* requests to it will work — this
+tripped us up once already:
+```powershell
+New-NetFirewallRule -DisplayName "MT5 Gateway <port>" -Direction Inbound -LocalPort <port> -Protocol TCP -Action Allow
 ```
 
 An unconfigured-but-validly-named account (e.g. `demo2` before its
@@ -177,4 +210,8 @@ all run concurrently without stepping on each other.
 
 If you're running the Control API gateway (Section 5), it only needs
 **one** additional Scheduled Task total (not one per account) —
-e.g. "MT5-Gateway" → `python api_server.py --port 8000`.
+e.g. "MT5-Gateway" → `python api_server.py --port 6970` (match whatever
+port the Cloudflare Tunnel's Service URL points at). The `Cloudflared`
+Windows service (installed separately via `cloudflared.exe service
+install <token>`) handles the tunnel itself and doesn't need its own
+Scheduled Task — it already runs as a persistent Windows service.

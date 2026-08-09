@@ -8,16 +8,20 @@ Run with:
 or:
     uvicorn api_server:app --host 0.0.0.0 --port 8000 [--reload]
 
-Routes are account-scoped by URL path parameter:
-    GET  /accounts             list configured account names
-    GET  /{account}/status     that account's status (see below)
-    POST /{account}/start      launch that account's main.py if not running
-    POST /{account}/stop       activate that account's kill switch
-    POST /stop-all             activate EVERY configured account's kill
-                                switch in one call (master "all off")
-    POST /start-all            start EVERY configured account in one call
-                                (master "all on") — no per-account
-                                confirmation; see note on the endpoint
+Routes are account-scoped by URL path parameter, all under an
+/apiconnect prefix (matches the Cloudflare Tunnel path rule this is
+deployed behind — see SETUP.md; Cloudflare forwards the full path,
+including the prefix, to the origin, so the app must define routes
+with it rather than expecting the tunnel to strip it):
+    GET  /apiconnect/accounts             list configured account names
+    GET  /apiconnect/{account}/status     that account's status (see below)
+    POST /apiconnect/{account}/start      launch that account's main.py if not running
+    POST /apiconnect/{account}/stop       activate that account's kill switch
+    POST /apiconnect/stop-all             activate EVERY configured account's kill
+                                           switch in one call (master "all off")
+    POST /apiconnect/start-all            start EVERY configured account in one call
+                                           (master "all on") — no per-account
+                                           confirmation; see note on the endpoint
 
 Which accounts are served is discovered at startup by scanning
 config/settings.<account>.yaml (bot.config.discover_configured_accounts())
@@ -60,7 +64,7 @@ from pathlib import Path
 
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
 
 from bot.config import AppConfig, discover_configured_accounts, load_config, validate_account_name
 from bot.kill_switch import KillSwitch
@@ -105,6 +109,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MT5 Bot Control Gateway", lifespan=lifespan)
 
+# All routes live under /apiconnect — required because the Cloudflare
+# Tunnel this is deployed behind forwards the FULL request path (including
+# the "/apiconnect" prefix it matched on) to this origin, rather than
+# stripping it. See SETUP.md.
+router = APIRouter(prefix="/apiconnect")
+
 
 def verify_api_key(x_api_key: str | None = Header(default=None)) -> None:
     if not API_KEY:
@@ -131,12 +141,12 @@ def get_account_config(account: str, _: None = Depends(verify_api_key)) -> AppCo
 
 # --- endpoints ---
 
-@app.get("/accounts", dependencies=[Depends(verify_api_key)])
+@router.get("/accounts", dependencies=[Depends(verify_api_key)])
 def list_accounts():
     return {"accounts": sorted(app.state.configs)}
 
 
-@app.get("/{account}/status")
+@router.get("/{account}/status")
 def status(config: AppConfig = Depends(get_account_config)):
     account = config.account
     proc = find_account_process(MAIN_SCRIPT_MATCH, account)
@@ -163,7 +173,7 @@ def status(config: AppConfig = Depends(get_account_config)):
     }
 
 
-@app.post("/{account}/start")
+@router.post("/{account}/start")
 def start(config: AppConfig = Depends(get_account_config)):
     account = config.account
     kill_switch = app.state.kill_switches[account]
@@ -188,14 +198,14 @@ def start(config: AppConfig = Depends(get_account_config)):
     }
 
 
-@app.post("/{account}/stop")
+@router.post("/{account}/stop")
 def stop(config: AppConfig = Depends(get_account_config)):
     account = config.account
     app.state.kill_switches[account].activate(reason="Stopped via API")
     return {"ok": True, "account": account, "message": "Kill switch activated — main.py will halt gracefully on its next check."}
 
 
-@app.post("/stop-all", dependencies=[Depends(verify_api_key)])
+@router.post("/stop-all", dependencies=[Depends(verify_api_key)])
 def stop_all():
     """Master 'all off' — activates every configured account's kill
     switch in one call, independent of per-account UI state."""
@@ -208,7 +218,7 @@ def stop_all():
     return {"ok": True, "accounts": results}
 
 
-@app.post("/start-all", dependencies=[Depends(verify_api_key)])
+@router.post("/start-all", dependencies=[Depends(verify_api_key)])
 def start_all():
     """Master 'all on' — deactivates every configured account's kill
     switch and launches its main.py if not already running, in one call.
@@ -237,6 +247,9 @@ def start_all():
             "launched_pid": launched_pid,
         })
     return {"ok": True, "accounts": results}
+
+
+app.include_router(router)
 
 
 def parse_args() -> argparse.Namespace:
