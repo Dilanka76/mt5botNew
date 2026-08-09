@@ -22,6 +22,9 @@ with it rather than expecting the tunnel to strip it):
     POST /apiconnect/start-all            start EVERY configured account in one call
                                            (master "all on") — no per-account
                                            confirmation; see note on the endpoint
+    GET  /apiconnect/{account}/analytics  daily/hourly P/L breakdown + win
+                                           rate, computed live from that
+                                           account's local trade ledger
 
 Which accounts are served is discovered at startup by scanning
 config/settings.<account>.yaml (bot.config.discover_configured_accounts())
@@ -44,7 +47,14 @@ The fix: main.py (which already holds the one healthy connection to its
 own account's terminal) periodically writes a small status snapshot to
 logs/<account>/status.json (see bot/status_writer.py); this gateway only
 ever reads that file. /start and /stop never needed MT5 either (pure
-process-launch / kill-switch-file operations) — see SETUP.md.
+process-launch / kill-switch-file operations) — see SETUP.md. /analytics
+follows the same pattern one step further: main.py appends every closed
+trade to a local ledger (logs/<account>/trade_history.jsonl, see
+bot/trade_ledger.py) as it happens, and this gateway computes the
+daily/hourly breakdown live from that ledger (bot/trade_stats.py) — never
+querying MT5's own trade history, so the ledger is also this bot's
+permanent record, independent of whatever history depth MT5 itself
+happens to retain.
 
 SECURITY: every endpoint requires the X-API-Key header to match the
 single master API_KEY in .env.gateway (NOT any per-account .env.<account>
@@ -60,6 +70,7 @@ import argparse
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 import uvicorn
@@ -70,6 +81,8 @@ from bot.config import AppConfig, discover_configured_accounts, load_config, val
 from bot.kill_switch import KillSwitch
 from bot.process_utils import find_account_process, launch_python_script
 from bot.status_writer import STATUS_STALE_THRESHOLD_SECONDS, read_status, status_file_path
+from bot.trade_ledger import trade_ledger_path
+from bot.trade_stats import COLOMBO, compute_daily_breakdown, compute_hourly_breakdown, read_trade_ledger
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 MAIN_SCRIPT = PROJECT_ROOT / "main.py"
@@ -170,6 +183,29 @@ def status(config: AppConfig = Depends(get_account_config)):
         "tick": payload.get("tick") if payload else None,
         "open_position": payload.get("open_position") if payload else None,
         "recent_closed_trades": payload.get("recent_closed_trades", []) if payload else [],
+    }
+
+
+@router.get("/{account}/analytics")
+def analytics(config: AppConfig = Depends(get_account_config)):
+    """Daily/hourly P/L breakdown + win rate, computed live from this
+    account's local trade ledger (never MT5) — see module docstring."""
+    account = config.account
+    trades = read_trade_ledger(trade_ledger_path(config.logging.log_dir, account))
+    today = datetime.now(COLOMBO).date()
+
+    # compute_daily_breakdown's loop always ends on `today` (i=0 last), so
+    # its final bucket IS today's stats — reuse it rather than re-deriving
+    # "today's trades" with a second, easy-to-get-wrong timezone comparison
+    # (close_time is stored in UTC; today is a Colombo-local date).
+    daily_breakdown = compute_daily_breakdown(trades, days=30, today=today)
+
+    return {
+        "account": account,
+        "total_trades_recorded": len(trades),
+        "today": daily_breakdown[-1],
+        "daily_breakdown": daily_breakdown,
+        "hourly_breakdown_today": compute_hourly_breakdown(trades, today),
     }
 
 

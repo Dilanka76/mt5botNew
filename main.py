@@ -56,6 +56,7 @@ from bot.sessions import is_within_session
 from bot.status_writer import build_status_payload, status_file_path, write_status_atomic
 from bot.strategy.state_machine import EMAScalpEngine
 from bot.strategy.state_machine_ema5_only import EMA5OnlyEngine
+from bot.trade_ledger import append_new_trades, trade_ledger_path
 
 logger = logging.getLogger("bot.main")
 
@@ -172,6 +173,10 @@ def run() -> None:
                     # (which would contend with this one; see SETUP.md).
                     # A write failure here is caught by the outer except
                     # below and just logged; it never interrupts trading.
+                    recent_closed_trades = connector.get_recent_closed_trades(
+                        config.symbol, config.execution.magic_number,
+                    )
+
                     payload = build_status_payload(
                         account=args.account,
                         bot_state=engine.state.value,
@@ -187,11 +192,17 @@ def run() -> None:
                         },
                         tick={"bid": tick.bid, "ask": tick.ask},
                         open_position=_format_open_position(executor.get_open_position()),
-                        recent_closed_trades=connector.get_recent_closed_trades(
-                            config.symbol, config.execution.magic_number,
-                        ),
+                        recent_closed_trades=recent_closed_trades,
                     )
                     write_status_atomic(status_file_path(config.logging.log_dir, args.account), payload)
+
+                    # Permanent local record for the analytics dashboard —
+                    # independent of status.json (which is just the current
+                    # snapshot). Dedupes by ticket, so seeing the same
+                    # recent trades again next heartbeat is a no-op.
+                    append_new_trades(
+                        trade_ledger_path(config.logging.log_dir, args.account), recent_closed_trades,
+                    )
 
                     last_heartbeat_at = now
 

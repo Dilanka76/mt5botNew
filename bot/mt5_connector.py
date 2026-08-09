@@ -116,34 +116,46 @@ class MT5Connector:
         """This bot's own closed trades (matched by symbol + magic number),
         most recent first — plain dicts, not raw MT5 deal objects, so
         callers (e.g. bot/status_writer.py) never need to import MetaTrader5
-        themselves just to consume this."""
+        themselves just to consume this.
+
+        Pairs each closing deal with its opening deal (by position_id) so
+        "profit" includes swap + commission from BOTH legs, matching
+        bot/analytics.py's trade_profit() — not just the exit deal's own
+        .profit, which understates true realized P/L whenever commission is
+        charged on the entry leg."""
+        from bot.analytics import trade_profit  # local import: keeps this MT5-touching module's only extra dependency scoped to where it's used
+
         date_to = datetime.now(timezone.utc)
         date_from = date_to - timedelta(days=lookback_days)
         deals = mt5.history_deals_get(date_from, date_to)
         if not deals:
             return []
 
-        closing_deals = [
-            d for d in deals
-            if d.symbol == symbol
-            and d.magic == magic_number
-            and d.entry == mt5.DEAL_ENTRY_OUT  # the deal that closes a position, carries the realized profit
-        ]
-        closing_deals.sort(key=lambda d: d.time, reverse=True)
+        relevant = [d for d in deals if d.symbol == symbol and d.magic == magic_number]
+        by_position: dict[int, list] = {}
+        for d in relevant:
+            by_position.setdefault(d.position_id, []).append(d)
 
-        return [
-            {
-                "ticket": d.ticket,
-                "position_id": d.position_id,
+        trades = []
+        for position_id, deal_list in by_position.items():
+            entry_deal = next((d for d in deal_list if d.entry == mt5.DEAL_ENTRY_IN), None)
+            exit_deal = next((d for d in deal_list if d.entry == mt5.DEAL_ENTRY_OUT), None)
+            if entry_deal is None or exit_deal is None:
+                continue  # still open, or entry fell outside the lookback window
+
+            trades.append({
+                "ticket": exit_deal.ticket,
+                "position_id": position_id,
                 # closing deal type is the OPPOSITE of the position that was closed
-                "direction": "SELL" if d.type == mt5.DEAL_TYPE_SELL else "BUY",
-                "volume": d.volume,
-                "price": d.price,
-                "profit": d.profit,
-                "close_time": datetime.fromtimestamp(d.time, tz=timezone.utc).isoformat(),
-            }
-            for d in closing_deals[:limit]
-        ]
+                "direction": "SELL" if exit_deal.type == mt5.DEAL_TYPE_SELL else "BUY",
+                "volume": exit_deal.volume,
+                "price": exit_deal.price,
+                "profit": trade_profit(exit_deal, entry_deal),
+                "close_time": datetime.fromtimestamp(exit_deal.time, tz=timezone.utc).isoformat(),
+            })
+
+        trades.sort(key=lambda t: t["close_time"], reverse=True)
+        return trades[:limit]
 
     @staticmethod
     def resolve_timeframe(timeframe_str: str) -> int:
