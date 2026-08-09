@@ -15,6 +15,9 @@ Routes are account-scoped by URL path parameter:
     POST /{account}/stop       activate that account's kill switch
     POST /stop-all             activate EVERY configured account's kill
                                 switch in one call (master "all off")
+    POST /start-all            start EVERY configured account in one call
+                                (master "all on") — no per-account
+                                confirmation; see note on the endpoint
 
 Which accounts are served is discovered at startup by scanning
 config/settings.<account>.yaml (bot.config.discover_configured_accounts())
@@ -195,16 +198,44 @@ def stop(config: AppConfig = Depends(get_account_config)):
 @app.post("/stop-all", dependencies=[Depends(verify_api_key)])
 def stop_all():
     """Master 'all off' — activates every configured account's kill
-    switch in one call, independent of per-account UI state. Does NOT
-    have a symmetric /start-all: starting every account (including live
-    ones) from a single tap is a materially different risk than stopping
-    them, so each account is still started individually and deliberately."""
+    switch in one call, independent of per-account UI state."""
     results = []
     for account, kill_switch in app.state.kill_switches.items():
         was_active = kill_switch.is_active()
         if not was_active:
             kill_switch.activate(reason="Stopped via API (stop-all)")
         results.append({"account": account, "was_already_stopped": was_active})
+    return {"ok": True, "accounts": results}
+
+
+@app.post("/start-all", dependencies=[Depends(verify_api_key)])
+def start_all():
+    """Master 'all on' — deactivates every configured account's kill
+    switch and launches its main.py if not already running, in one call.
+
+    DELIBERATE PRODUCT DECISION, not an oversight: this starts every
+    account with NO per-account confirmation, including live-money
+    accounts once they're set to live_execute. The caller (the mobile
+    app's single master toggle) was explicitly chosen this way — see
+    SETUP.md. If that ever needs to change, add confirmation in the
+    client, not here."""
+    results = []
+    for account, kill_switch in app.state.kill_switches.items():
+        was_active = kill_switch.is_active()
+        if was_active:
+            kill_switch.deactivate()
+
+        proc = find_account_process(MAIN_SCRIPT_MATCH, account)
+        launched_pid = None
+        if proc is None:
+            launched_pid = launch_python_script(MAIN_SCRIPT, PROJECT_ROOT, extra_args=["--account", account])
+
+        results.append({
+            "account": account,
+            "kill_switch_was_active": was_active,
+            "main_process_was_already_running": proc is not None,
+            "launched_pid": launched_pid,
+        })
     return {"ok": True, "accounts": results}
 
 
