@@ -23,7 +23,8 @@ triggering cross was detected.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from enum import Enum
 
 import MetaTrader5 as mt5
@@ -38,6 +39,15 @@ from bot.sessions import is_within_session
 from bot.strategy.cross_detector import CrossEvent, Direction, calculate_gap, detect_cross
 
 logger = logging.getLogger("bot.strategy.state_machine")
+
+# Grace period after opening a position before we trust a "position not
+# found" result as a real close. A live broker can take a moment to make a
+# just-filled order visible via positions_get() — without this, that lag
+# gets misread as an instant TP fill, the bot loses track of a position
+# that's actually still open, and a subsequent cross can open a second,
+# genuinely overlapping position. A real TP fill takes minutes to reach the
+# $5 target, so this grace period never delays detecting an actual close.
+POSITION_CLOSE_GRACE_PERIOD_SECONDS = 5.0
 
 
 class TradeState(Enum):
@@ -59,6 +69,7 @@ class OpenPosition:
     ticket: int | None  # None in shadow mode
     entry_price: float
     take_profit: float
+    opened_monotonic: float = field(default_factory=time.monotonic)
 
 
 class EMAScalpEngine:
@@ -186,8 +197,16 @@ class EMAScalpEngine:
         self.pending = None
 
     def _check_position_closed(self, tick) -> None:
-        """Detects a broker-side TP fill (or, in shadow mode, simulates one)."""
+        """Detects a broker-side TP fill (or, in shadow mode, simulates one).
+
+        Skipped for a short grace period right after opening: a live broker
+        can take a moment to make a just-filled order visible via
+        positions_get(), and without this grace period that lag gets
+        misread as an instant TP fill (see POSITION_CLOSE_GRACE_PERIOD_SECONDS)."""
         position = self.open_position
+
+        if time.monotonic() - position.opened_monotonic < POSITION_CLOSE_GRACE_PERIOD_SECONDS:
+            return
 
         if self.config.execution.mode == "shadow":
             hit = (
