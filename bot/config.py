@@ -63,6 +63,11 @@ class ExecutionConfig:
     magic_number: int
     order_deviation_points: int
     order_comment: str
+    # Force-closes any position on the symbol whose magic number doesn't
+    # match magic_number above — i.e. anything opened by hand in the MT5
+    # terminal GUI (manual orders always carry magic=0, confirmed from
+    # live account deal history; MT5's order dialog has no magic field).
+    reject_manual_trades: bool = False
 
 
 @dataclass
@@ -93,6 +98,11 @@ class AppConfig:
     execution: ExecutionConfig
     logging: LoggingConfig
     kill_switch: KillSwitchConfig
+    # Optional dollar stop-loss, checked every tick alongside the existing
+    # opposite-cross exit — whichever happens first closes the trade.
+    # None (default) = no stop-loss, matching historical behavior
+    # (docs/STRATEGY.md #6). Bot-managed, not broker-side.
+    stop_loss_usd: float | None = None
 
 
 def load_config(account: str, settings_path: str | Path | None = None) -> AppConfig:
@@ -137,6 +147,16 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
             f"entry under 'sessions:'. Available: {list(sessions_raw)}"
         )
 
+    execution = ExecutionConfig(**raw["execution"])
+    if execution.reject_manual_trades and execution.magic_number == 0:
+        # magic_number=0 is what MT5 assigns to manual trades — with that
+        # value, reject_manual_trades could never tell "ours" apart from
+        # "manual" and would silently never close anything.
+        raise ValueError(
+            f"{settings_path}: reject_manual_trades is true but magic_number is 0 — "
+            f"every manual trade would be indistinguishable from the bot's own."
+        )
+
     return AppConfig(
         account=account,
         mt5=MT5Config(
@@ -159,9 +179,10 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
             for variant, windows in sessions_raw.items()
         },
         position_sizing=[PositionSizingTier(**t) for t in raw["position_sizing"]],
-        execution=ExecutionConfig(**raw["execution"]),
+        execution=execution,
         logging=LoggingConfig(**raw["logging"]),
         kill_switch=KillSwitchConfig(**raw["kill_switch"]),
+        stop_loss_usd=raw.get("stop_loss_usd"),
     )
 
 

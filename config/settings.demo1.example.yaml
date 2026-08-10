@@ -26,6 +26,13 @@ ema_periods:
 gap_threshold_usd: 5.0   # |close - EMA13| at the cross candle: below this, enter immediately
 take_profit_usd: 5.0     # distance from entry to TP, in price (XAUUSD is quoted in USD)
 
+# Optional dollar stop-loss, checked every tick alongside the existing
+# opposite-cross exit — whichever happens first closes the trade. null
+# (default) = no stop-loss, matching historical behavior (docs/STRATEGY.md
+# #6). Bot-managed, not broker-side: only takes effect while main.py is
+# actually running.
+stop_loss_usd: null
+
 # gap_threshold -> small gap enters immediately, large gap (>= gap_threshold_usd) waits for EMA5 touch (current live behavior)
 # ema5_only     -> ignores gap_threshold_usd entirely; every cross always waits for an EMA5 touch before entering
 strategy_variant: gap_threshold
@@ -63,6 +70,11 @@ execution:
   magic_number: 900002   # use a distinct magic number per account if they ever share a symbol/server
   order_deviation_points: 20
   order_comment: ema-scalp
+  # Force-closes any position on this symbol that isn't the bot's own
+  # (matched by magic number) — i.e. anything opened by hand in the MT5
+  # terminal. Protects against manual intervention during live trading;
+  # leave false on demo accounts if you want to place manual test trades.
+  reject_manual_trades: false
 
 logging:
   log_dir: logs   # actual logs go to logs/<account>/ — the account name is appended automatically

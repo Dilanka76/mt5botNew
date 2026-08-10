@@ -51,6 +51,12 @@ class TradeExecutor:
                 return position
         return None
 
+    def get_all_positions(self):
+        """Every open position for this symbol, unfiltered by magic number —
+        used by the manual-trade-rejection safety check to see positions
+        get_open_position() deliberately filters out."""
+        return list(mt5.positions_get(symbol=self.symbol) or [])
+
     def open_market_order(self, direction: Direction, lots: float, take_profit_distance: float) -> OrderResult:
         tick = self.connector.get_tick(self.symbol)
         price = tick.ask if direction == Direction.BUY else tick.bid

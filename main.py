@@ -134,8 +134,10 @@ def run() -> None:
     engine.reconcile_on_startup()
 
     logger.info(
-        "Bot started: account=%s symbol=%s timeframe=%s mode=%s strategy_variant=%s state=%s",
+        "Bot started: account=%s symbol=%s timeframe=%s mode=%s strategy_variant=%s state=%s "
+        "reject_manual_trades=%s stop_loss_usd=%s",
         args.account, config.symbol, config.timeframe, config.execution.mode, config.strategy_variant, engine.state.value,
+        config.execution.reject_manual_trades, config.stop_loss_usd,
     )
 
     last_closed_candle_time = None

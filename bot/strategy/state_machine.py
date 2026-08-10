@@ -70,6 +70,7 @@ class OpenPosition:
     entry_price: float
     take_profit: float
     opened_monotonic: float = field(default_factory=time.monotonic)
+    stop_loss: float | None = None  # None = no stop-loss configured for this account
 
 
 class EMAScalpEngine:
@@ -85,7 +86,11 @@ class EMAScalpEngine:
 
     def reconcile_on_startup(self) -> None:
         """If a position from a previous run is still open, adopt it instead
-        of risking a second, conflicting position."""
+        of risking a second, conflicting position. Also runs the
+        manual-trade-rejection check, so a stray manual position left open
+        from before a restart doesn't linger."""
+        self._reject_manual_positions(source="startup")
+
         position = self.executor.get_open_position()
         if position is None:
             return
@@ -96,12 +101,55 @@ class EMAScalpEngine:
             ticket=position.ticket,
             entry_price=position.price_open,
             take_profit=position.tp,
+            stop_loss=self._compute_stop_loss(direction, position.price_open),
         )
         self.state = TradeState.IN_POSITION
         logger.info(
             "Reconciled existing open position on startup: ticket=%s direction=%s entry=%.2f tp=%.2f",
             position.ticket, direction.value, position.price_open, position.tp,
         )
+
+    def _compute_stop_loss(self, direction: Direction, entry_price: float) -> float | None:
+        if self.config.stop_loss_usd is None:
+            return None
+        return (
+            entry_price - self.config.stop_loss_usd if direction == Direction.BUY
+            else entry_price + self.config.stop_loss_usd
+        )
+
+    def _reject_manual_positions(self, source: str) -> None:
+        """If execution.reject_manual_trades is enabled, force-closes any open
+        position on this symbol that doesn't carry the bot's own magic number —
+        i.e. anything opened by hand in the MT5 terminal GUI (manual orders
+        always carry magic=0; MT5's order dialog has no magic field, confirmed
+        from live1's real deal history). Never touches the bot's own tracked
+        position, which is matched purely by magic and left alone here."""
+        if not self.config.execution.reject_manual_trades:
+            return
+        shadow = self.config.execution.mode == "shadow"
+        for position in self.executor.get_all_positions():
+            if position.magic == self.config.execution.magic_number:
+                continue
+            try:
+                self.executor.close_position(position.ticket)
+            except Exception:
+                logger.exception(
+                    "Failed to close manual/foreign position ticket=%s — will retry next tick",
+                    position.ticket,
+                )
+                continue
+            log_decision(
+                self.config.symbol,
+                "manual_trade_rejected",
+                f"{'[SHADOW] would close' if shadow else 'closed'} foreign position "
+                f"(magic={position.magic}) not opened by this bot, detected via {source}",
+                ticket=position.ticket,
+                direction="BUY" if position.type == mt5.ORDER_TYPE_BUY else "SELL",
+                volume=position.volume,
+                price=position.price_open,
+                magic=position.magic,
+                detected_via=source,
+            )
 
     def _active_sessions(self) -> list:
         """Sessions are per strategy_variant (see config/settings.yaml) — this
@@ -166,6 +214,7 @@ class EMAScalpEngine:
 
     def on_tick(self, tick) -> None:
         """Call frequently (e.g. every ~1s) with the latest tick."""
+        self._reject_manual_positions(source="tick")
         if self.state == TradeState.PENDING_ENTRY and self.pending is not None and self.current_ema5 is not None:
             self._check_ema5_touch(tick)
         elif self.state == TradeState.IN_POSITION and self.open_position is not None:
@@ -208,6 +257,19 @@ class EMAScalpEngine:
         if time.monotonic() - position.opened_monotonic < POSITION_CLOSE_GRACE_PERIOD_SECONDS:
             return
 
+        # Bot-managed stop-loss: a second, independent exit condition
+        # alongside the opposite-cross exit — whichever happens first wins.
+        # Never broker-side, so this applies identically in every mode.
+        if position.stop_loss is not None:
+            stop_hit = (
+                (position.direction == Direction.BUY and tick.bid <= position.stop_loss)
+                or (position.direction == Direction.SELL and tick.bid >= position.stop_loss)
+            )
+            if stop_hit:
+                self._close_open_position(reason=f"stop-loss hit at {position.stop_loss:.2f}")
+                self.state = TradeState.IDLE
+                return
+
         if self.config.execution.mode == "shadow":
             hit = (
                 (position.direction == Direction.BUY and tick.bid >= position.take_profit)
@@ -240,6 +302,7 @@ class EMAScalpEngine:
 
         self.open_position = OpenPosition(
             direction=direction, ticket=result.ticket, entry_price=result.price, take_profit=result.take_profit,
+            stop_loss=self._compute_stop_loss(direction, result.price),
         )
         self.state = TradeState.IN_POSITION
 
