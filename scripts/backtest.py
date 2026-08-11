@@ -4,10 +4,13 @@ accounts have accumulated so far.
 
     python scripts/backtest.py --account demo1 --from 2026-02-01 --to 2026-08-01
 
-Writes reports/backtest/<account>/<from>_<to>.md (summary + methodology)
-and a sibling trades.jsonl (every simulated trade, raw). See
-bot/backtest/runner.py's module docstring for exactly what this
-approximates and how — read that before trusting the numbers.
+Writes reports/backtest/<account>/<from>_<to>.md (summary + methodology),
+a sibling trades.jsonl (every simulated trade, raw), and a sibling .json
+(the same summary/session/daily numbers as the markdown, machine-readable
+— this is what the mobile app's GET /apiconnect/{account}/backtest
+endpoint serves; see api_server.py). See bot/backtest/runner.py's module
+docstring for exactly what this approximates and how — read that before
+trusting the numbers.
 
 Connects to MT5 only to pull historical data and the symbol's contract
 size/point/current balance, then disconnects before the (offline) replay
@@ -140,8 +143,30 @@ This is an approximation, not ground truth — read results with that in mind:
 """
 
     (out_dir / f"{stem}.md").write_text(report)
+
+    # Machine-readable sibling — same numbers as the markdown report above,
+    # reused unmodified (not re-derived), so the two can never disagree.
+    # This is what api_server.py's /backtest endpoint reads for the mobile
+    # app; the app has no use for the markdown/prose form.
+    summary_json = {
+        "account": args.account,
+        "date_from": args.date_from,
+        "date_to": args.date_to,
+        "strategy_variant": config.strategy_variant,
+        "symbol": config.symbol,
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "summary": {
+            **summary,
+            "starting_balance": starting_balance,
+            "final_balance": final_balance,
+        },
+        "session_breakdown": sessions,
+        "daily_breakdown": [d for d in daily if d["total_trades"] > 0],
+    }
+    (out_dir / f"{stem}.json").write_text(json.dumps(summary_json, indent=2))
+
     print(report)
-    print(f"\nWritten to {out_dir / f'{stem}.md'} and {out_dir / f'{stem}.trades.jsonl'}")
+    print(f"\nWritten to {out_dir / f'{stem}.md'}, {out_dir / f'{stem}.json'} and {out_dir / f'{stem}.trades.jsonl'}")
 
 
 if __name__ == "__main__":

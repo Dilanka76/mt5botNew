@@ -25,6 +25,11 @@ with it rather than expecting the tunnel to strip it):
     GET  /apiconnect/{account}/analytics  daily/hourly P/L breakdown + win
                                            rate, computed live from that
                                            account's local trade ledger
+    GET  /apiconnect/{account}/backtest   most recent historical backtest
+                                           report (see scripts/backtest.py)
+                                           for that account, by session
+                                           window — a separate, much larger
+                                           simulated sample, not live data
 
 Which accounts are served is discovered at startup by scanning
 config/settings.<account>.yaml (bot.config.discover_configured_accounts())
@@ -67,6 +72,7 @@ limiting who can reach the port — do not point this at the internet as-is.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -208,6 +214,30 @@ def analytics(config: AppConfig = Depends(get_account_config)):
         "hourly_breakdown_today": compute_hourly_breakdown(trades, today),
         "session_breakdown": compute_session_breakdown(trades, config.sessions[config.strategy_variant]),
     }
+
+
+@router.get("/{account}/backtest")
+def backtest(config: AppConfig = Depends(get_account_config)):
+    """Most recent historical backtest report for this account (see
+    scripts/backtest.py — run manually on the server, not on-demand here:
+    a multi-month replay takes real minutes, far too slow for a request).
+    This gateway makes ZERO MT5 calls (see module docstring) — it only
+    ever reads the .json summary the script already wrote to disk, never
+    computes anything itself.
+
+    Reports live at reports/backtest/<account>/<from>_<to>.json — several
+    can accumulate over time from different runs, so "most recent" means
+    most recently generated (file mtime), not the widest date range.
+    """
+    account = config.account
+    out_dir = PROJECT_ROOT / "reports" / "backtest" / account
+    reports = list(out_dir.glob("*.json")) if out_dir.is_dir() else []
+    if not reports:
+        return {"account": account, "available": False}
+
+    latest = max(reports, key=lambda p: p.stat().st_mtime)
+    data = json.loads(latest.read_text())
+    return {"account": account, "available": True, **data}
 
 
 @router.post("/{account}/start")
