@@ -7,7 +7,7 @@ just these fixed rules, checked automatically every minute.
 
 ## 1. What it trades
 
-- **Instrument:** XAU/USD (Gold), broker symbol `XAUUSDm` (Exness demo)
+- **Instrument:** XAU/USD (Gold), broker symbol `XAUUSDp` (BlackBull Markets — separate `-Demo` and `-Live` server environments per account, see `config/settings.<account>.yaml`)
 - **Chart:** 1-minute candles
 - **Price used:** BID price (not ask) for all indicator calculations
 
@@ -133,6 +133,36 @@ fresh cross that happens *after* a session has opened.
 This is a fixed lookup table, checked fresh at the moment each trade opens
 — it is **not** a percentage-of-balance risk calculation.
 
+## 10. Optional per-account safety features (opt-in, off by default)
+
+Added 2026-08-10/11. Both are per-account config flags in
+`config/settings.<account>.yaml`, default off — an account with neither
+set behaves exactly as described in sections 1-9 above, unchanged.
+
+**`reject_manual_trades: true`** — protects against a trade being placed
+or left open by hand in the MT5 terminal GUI (rather than by the bot
+itself). Checked continuously (every tick, plus once at startup): any open
+position on the symbol that isn't the bot's own (matched by MT5's "magic
+number" — manual clicks always carry `magic=0`, the bot's own trades carry
+whatever `execution.magic_number` is set to) gets force-closed
+automatically within about a second, logged as `manual_trade_rejected` in
+`decisions.jsonl`. This exists specifically as a safeguard against
+panic-driven manual intervention during a losing streak, not against
+unauthorized access — see the "Things worth double-checking" note below
+for its one real limitation. As of 2026-08-11, this is `true` on **both**
+`demo1` and `live1`.
+
+**`stop_loss_usd: <number>`** — adds a second, independent exit condition
+alongside the opposite-cross exit described in section 6 above. If a
+trade's loss reaches this many dollars against the entry price, it closes
+immediately — whichever happens first, the stop-loss or the opposite
+cross, wins. This is **bot-managed**, not a real stop-loss order placed
+with the broker: it's checked once per tick by the running bot process,
+the same way the opposite-cross exit already works, and therefore only
+protects a trade while `main.py` is actually running. As of 2026-08-11,
+this is `stop_loss_usd: 15.0` on `demo1` only — `live1` has no dollar cap
+on its losses, exactly as described in section 6.
+
 ---
 
 ## Things worth double-checking with your trader friend
@@ -152,3 +182,10 @@ ambiguous. Please confirm these are correct:
 4. **Ignoring crosses outside trading hours** — confirming the bot should
    NOT act on a cross that happened while the session was closed, even
    after the next session opens.
+5. **`reject_manual_trades`'s one real limitation** — it stops a *new*
+   manual trade from persisting, but it cannot detect or reverse a manual
+   *close* of the bot's own already-open position: that's indistinguishable
+   from a real take-profit fill (the position is just gone either way), and
+   MT5 has no "undo a close." A manual close of the bot's own trade is
+   already handled the same way a real TP fill is — logged, and the bot
+   moves on to watching for the next signal.
