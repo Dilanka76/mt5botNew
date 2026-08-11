@@ -14,9 +14,11 @@ ledger (bot/trade_ledger.py, simpler shape, used here) satisfy that.
 from __future__ import annotations
 
 import json
-from datetime import date as date_cls, datetime, timedelta
+from datetime import date as date_cls, datetime, time as dt_time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from bot.config import SessionWindow
 
 COLOMBO = ZoneInfo("Asia/Colombo")
 
@@ -117,3 +119,48 @@ def _matches_date(trade: dict, target_date: date_cls) -> bool:
         return _close_date_colombo(trade) == target_date
     except (KeyError, ValueError):
         return False
+
+
+def _close_time_colombo(trade: dict) -> dt_time:
+    return datetime.fromisoformat(trade["close_time"]).astimezone(COLOMBO).time()
+
+
+def _parse_hhmm(value: str) -> dt_time:
+    hour, minute = value.split(":")
+    return dt_time(int(hour), int(minute))
+
+
+def _in_window(close_time: dt_time, window: SessionWindow) -> bool:
+    """Same overnight-wrap handling as bot/sessions.py::is_within_session,
+    applied to a single already-computed close time instead of "now"."""
+    start = _parse_hhmm(window.start)
+    end = _parse_hhmm(window.end)
+    if start <= end:
+        return start <= close_time <= end
+    return close_time >= start or close_time <= end  # wraps past midnight
+
+
+def compute_session_breakdown(trades: list[dict], sessions: list[SessionWindow]) -> list[dict]:
+    """One compute_day_stats() bucket per configured session window, across
+    all trades passed in (caller controls the date range — api_server.py
+    passes the last 30 days to match daily_breakdown). A trade closing
+    outside every configured window is dropped from this view (shouldn't
+    happen in practice — new trades only ever open inside a session, see
+    bot/sessions.py — but an already-open trade left running past a session
+    boundary could in principle close outside one; this breakdown is about
+    session performance, not a full accounting of every trade)."""
+    buckets: list[list[dict]] = [[] for _ in sessions]
+    for t in trades:
+        try:
+            close_time = _close_time_colombo(t)
+        except (KeyError, ValueError):
+            continue
+        for i, window in enumerate(sessions):
+            if _in_window(close_time, window):
+                buckets[i].append(t)
+                break
+
+    return [
+        {"label": f"{window.start}-{window.end}", "start": window.start, "end": window.end, **compute_day_stats(bucket)}
+        for window, bucket in zip(sessions, buckets)
+    ]

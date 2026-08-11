@@ -82,7 +82,7 @@ from bot.kill_switch import KillSwitch
 from bot.process_utils import find_account_process, launch_python_script
 from bot.status_writer import STATUS_STALE_THRESHOLD_SECONDS, read_status, status_file_path
 from bot.trade_ledger import trade_ledger_path
-from bot.trade_stats import COLOMBO, compute_daily_breakdown, compute_hourly_breakdown, read_trade_ledger
+from bot.trade_stats import COLOMBO, compute_daily_breakdown, compute_hourly_breakdown, compute_session_breakdown, read_trade_ledger
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 MAIN_SCRIPT = PROJECT_ROOT / "main.py"
@@ -206,6 +206,7 @@ def analytics(config: AppConfig = Depends(get_account_config)):
         "today": daily_breakdown[-1],
         "daily_breakdown": daily_breakdown,
         "hourly_breakdown_today": compute_hourly_breakdown(trades, today),
+        "session_breakdown": compute_session_breakdown(trades, config.sessions[config.strategy_variant]),
     }
 
 
