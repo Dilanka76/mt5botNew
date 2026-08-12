@@ -13,13 +13,19 @@ Two modes:
 
         python scripts/volatility_filter_analysis.py --account demo1 --from 2026-02-01 --to 2026-08-11
 
-2. --min-atr given: simulates "immediate entries are skipped whenever
-   ATR at entry time was below this value" and reports the before/after
-   aggregate change. EMA5-touch-wait entries are left untouched either
-   way — they already have their own built-in confirmation wait; this
-   idea (per the user's own framing) only targets the immediate path.
+2. --min-atr given (optionally with --max-atr too): simulates "immediate
+   entries are skipped whenever ATR at entry time falls outside this
+   range" and reports the before/after aggregate change. EMA5-touch-wait
+   entries are left untouched either way — they already have their own
+   built-in confirmation wait; this idea (per the user's own framing)
+   only targets the immediate path. --max-atr is for testing a middle
+   volatility band, not just a one-sided cutoff — real data on this
+   strategy showed win rate rising with volatility but P/L peaking in
+   the middle and falling again at the high end, so a pure lower-bound
+   filter alone can't fully test what the data actually suggested.
 
         python scripts/volatility_filter_analysis.py --account demo1 --from 2026-02-01 --to 2026-08-11 --min-atr 3.0
+        python scripts/volatility_filter_analysis.py --account demo1 --from 2026-02-01 --to 2026-08-11 --min-atr 1.62 --max-atr 1.94
 
 Skipping an entry does not require re-simulating the engine: every
 cross this strategy acts on is determined purely by price/EMA data, not
@@ -60,6 +66,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--to", dest="date_to", required=True, help="YYYY-MM-DD, UTC — must match an existing backtest run")
     parser.add_argument("--period", type=int, default=14, help="ATR lookback period in candles (default: 14)")
     parser.add_argument("--min-atr", type=float, default=None, help="If given, simulate skipping immediate entries below this ATR instead of showing the quintile diagnostic")
+    parser.add_argument("--max-atr", type=float, default=None, help="Optional upper bound — combine with --min-atr to test a middle volatility band instead of a one-sided cutoff")
     return parser.parse_args()
 
 
@@ -146,14 +153,18 @@ def main() -> None:
         print("pick a --min-atr near the boundary where it starts turning positive and re-run with that value.")
         return
 
-    kept = [t for t in scored if t["_atr"] >= args.min_atr]
-    skipped = [t for t in scored if t["_atr"] < args.min_atr]
+    upper = args.max_atr if args.max_atr is not None else float("inf")
+    kept = [t for t in scored if args.min_atr <= t["_atr"] <= upper]
+    skipped = [t for t in scored if not (args.min_atr <= t["_atr"] <= upper)]
     new_trades = kept + waited  # EMA5-touch-wait entries are never filtered by this rule
 
     old_summary = compute_day_stats(trades)
     new_summary = compute_day_stats(new_trades)
 
-    print(f"Simulating: skip immediate entries with ATR({args.period}) < {args.min_atr:.2f} at entry time.\n")
+    if args.max_atr is not None:
+        print(f"Simulating: keep immediate entries only when {args.min_atr:.2f} <= ATR({args.period}) <= {args.max_atr:.2f} at entry time.\n")
+    else:
+        print(f"Simulating: skip immediate entries with ATR({args.period}) < {args.min_atr:.2f} at entry time.\n")
     print(f"{'':22}{'BEFORE':>14}{'AFTER':>14}")
     print(f"{'Total trades':22}{old_summary['total_trades']:>14}{new_summary['total_trades']:>14}")
     print(f"{'Wins':22}{old_summary['wins']:>14}{new_summary['wins']:>14}")
