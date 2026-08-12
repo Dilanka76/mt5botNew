@@ -170,8 +170,17 @@ This is an approximation, not ground truth — read results with that in mind:
   are used as two synthetic ticks (in candle-direction order) rather than
   a true tick-by-tick replay. If a single bar's range spans both a profit
   target and a stop-loss, the synthetic ordering determines the outcome —
-  this only matters when `stop_loss_usd` is configured; with it off (this
-  run), the only tick-checked exit is the take-profit.
+  """ + (
+        f"and this run's config had `stop_loss_usd: {config.stop_loss_usd}` "
+        "set, so that risk is live here: a trade whose candle touched both "
+        "levels could show up as either exit depending on the synthetic "
+        "ordering heuristic, not a true replay of which one the market hit "
+        "first."
+        if config.stop_loss_usd is not None else
+        "this run's config has no `stop_loss_usd` set, so the only "
+        "tick-checked exit is the take-profit — this risk doesn't apply "
+        "here."
+    ) + """
 - **Spread is synthesized** from each candle's own MT5-reported spread
   and the symbol's point size, not the real historical spread at that
   instant.
