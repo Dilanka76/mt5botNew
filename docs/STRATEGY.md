@@ -124,14 +124,18 @@ fresh cross that happens *after* a session has opened.
 
 | Account balance | Lot size |
 |-----------------|----------|
-| Under $100      | 0.02     |
+| Under $50       | 0.01     |
+| $50 – $100      | 0.02     |
 | $100 – $200     | 0.03     |
 | $200 – $300     | 0.04     |
 | $300 – $1,000   | 0.06     |
 | Over $1,000     | 0.12     |
 
 This is a fixed lookup table, checked fresh at the moment each trade opens
-— it is **not** a percentage-of-balance risk calculation.
+— it is **not** a percentage-of-balance risk calculation. The `Under $50`
+tier was added 2026-08-13, on `demo1` only so far — trims lot size further
+once a small account is running low, rather than continuing to risk the
+same $ amount per trade as balance shrinks.
 
 ## 10. Optional per-account safety features (opt-in, off by default)
 
@@ -159,9 +163,9 @@ immediately — whichever happens first, the stop-loss or the opposite
 cross, wins. This is **bot-managed**, not a real stop-loss order placed
 with the broker: it's checked once per tick by the running bot process,
 the same way the opposite-cross exit already works, and therefore only
-protects a trade while `main.py` is actually running. As of 2026-08-11,
-this is `stop_loss_usd: 15.0` on `demo1` only — `live1` has no dollar cap
-on its losses, exactly as described in section 6.
+protects a trade while `main.py` is actually running. As of 2026-08-13,
+this is `stop_loss_usd: 10.0` on `demo1` only (lowered from `15.0`) —
+`live1` has no dollar cap on its losses, exactly as described in section 6.
 
 **`breakeven_trigger_usd: <number>`** — adds a third, independent exit
 condition. Once a trade's floating profit reaches this many dollars in
