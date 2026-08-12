@@ -58,7 +58,22 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = load_config(args.account)
-    setup_logging(config.logging, args.account)
+    # Deliberately a distinct log identity from the live account, not
+    # args.account — main.py --account <this account> is very likely
+    # running concurrently and already holds logs/<account>/app.log and
+    # decisions.jsonl open. Sharing that path here causes two independent
+    # RotatingFileHandlers to fight over the same file: a backtest burns
+    # through the rollover size threshold in seconds (months of replay
+    # trades vs. a live account's real pace), and Windows refuses to
+    # rename a file another process still has open, silently dropping
+    # whichever log record was mid-write in either process. Neither the
+    # backtest report (built entirely from the in-memory trades list
+    # below, never from decisions.jsonl) nor real trade execution (never
+    # gated on a log write) are affected either way, but the live
+    # account's own audit trail can lose entries during the collision —
+    # not worth risking for a log stream this script doesn't need to
+    # share in the first place.
+    setup_logging(config.logging, f"{args.account}-backtest")
 
     date_from = datetime.strptime(args.date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     date_to = datetime.strptime(args.date_to, "%Y-%m-%d").replace(tzinfo=timezone.utc)
