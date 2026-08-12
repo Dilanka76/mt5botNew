@@ -103,6 +103,12 @@ class AppConfig:
     # None (default) = no stop-loss, matching historical behavior
     # (docs/STRATEGY.md #6). Bot-managed, not broker-side.
     stop_loss_usd: float | None = None
+    # Optional breakeven-stop: once a trade has moved this many dollars in
+    # its favor, a return to the entry price becomes an additional exit
+    # condition, alongside the existing take-profit and opposite-cross
+    # exits. None (default) = off, matching historical behavior. Checked
+    # every tick, bot-managed, not broker-side — see docs/STRATEGY.md #10.
+    breakeven_trigger_usd: float | None = None
 
 
 def load_config(account: str, settings_path: str | Path | None = None) -> AppConfig:
@@ -183,6 +189,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         logging=LoggingConfig(**raw["logging"]),
         kill_switch=KillSwitchConfig(**raw["kill_switch"]),
         stop_loss_usd=raw.get("stop_loss_usd"),
+        breakeven_trigger_usd=raw.get("breakeven_trigger_usd"),
     )
 
 

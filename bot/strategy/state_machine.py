@@ -71,6 +71,7 @@ class OpenPosition:
     take_profit: float
     opened_monotonic: float = field(default_factory=time.monotonic)
     stop_loss: float | None = None  # None = no stop-loss configured for this account
+    breakeven_armed: bool = False  # set True once price has moved breakeven_trigger_usd in favor
 
 
 class EMAScalpEngine:
@@ -102,6 +103,10 @@ class EMAScalpEngine:
             entry_price=position.price_open,
             take_profit=position.tp,
             stop_loss=self._compute_stop_loss(direction, position.price_open),
+            # A reconciled position has no tick history from this run, so it
+            # starts unarmed regardless of its actual unrealized P/L at
+            # reconcile time — self-heals if price reaches the trigger again.
+            breakeven_armed=False,
         )
         self.state = TradeState.IN_POSITION
         logger.info(
@@ -267,6 +272,23 @@ class EMAScalpEngine:
             )
             if stop_hit:
                 self._close_open_position(reason=f"stop-loss hit at {position.stop_loss:.2f}")
+                self.state = TradeState.IDLE
+                return
+
+        # Bot-managed breakeven-stop: once armed (price moved
+        # breakeven_trigger_usd in favor), a return to the entry price is a
+        # second, independent exit condition — checked before take-profit,
+        # same reasoning and same "never broker-side" property as the
+        # stop-loss check above.
+        if self.config.breakeven_trigger_usd is not None:
+            sign = 1 if position.direction == Direction.BUY else -1
+            favorable = (tick.bid - position.entry_price) * sign
+            if not position.breakeven_armed and favorable >= self.config.breakeven_trigger_usd:
+                position.breakeven_armed = True
+            if position.breakeven_armed and favorable <= 0:
+                self._close_open_position(
+                    reason=f"breakeven-stop (armed at +{self.config.breakeven_trigger_usd:.2f}, returned to entry)"
+                )
                 self.state = TradeState.IDLE
                 return
 

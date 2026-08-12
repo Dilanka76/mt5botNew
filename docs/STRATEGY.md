@@ -135,8 +135,8 @@ This is a fixed lookup table, checked fresh at the moment each trade opens
 
 ## 10. Optional per-account safety features (opt-in, off by default)
 
-Added 2026-08-10/11. Both are per-account config flags in
-`config/settings.<account>.yaml`, default off — an account with neither
+Added 2026-08-10/11/12. All are per-account config flags in
+`config/settings.<account>.yaml`, default off — an account with none
 set behaves exactly as described in sections 1-9 above, unchanged.
 
 **`reject_manual_trades: true`** — protects against a trade being placed
@@ -162,6 +162,25 @@ the same way the opposite-cross exit already works, and therefore only
 protects a trade while `main.py` is actually running. As of 2026-08-11,
 this is `stop_loss_usd: 15.0` on `demo1` only — `live1` has no dollar cap
 on its losses, exactly as described in section 6.
+
+**`breakeven_trigger_usd: <number>`** — adds a third, independent exit
+condition. Once a trade's floating profit reaches this many dollars in
+its favor, the position becomes "armed"; if price then returns to the
+entry price, the trade closes there (a $0 result) instead of being left
+to ride out to its normal take-profit or opposite-cross exit. Checked
+every tick, same precedence as the other two dollar-based conditions:
+stop-loss first, then breakeven, then take-profit. Also **bot-managed**,
+not a broker-side order — same "only while `main.py` is running"
+caveat as `stop_loss_usd` above. This came out of backtesting several
+strategy-improvement ideas against real trade history on both accounts
+(demo1: win rate 40.1% → 25.1%, total P/L -879.72 → +431.32 at a $2
+trigger) — it lowers the win rate (some pullback-then-recover trades
+that would have become real wins now exit at breakeven instead) while
+raising total profitability, because it also cuts off a larger number of
+trades that would otherwise have gone on to a real loss. As of
+2026-08-12, this is `breakeven_trigger_usd: 2.0` on `demo1` only —
+`live1` is unset (feature off), pending enough real-time confidence on
+`demo1` first.
 
 ---
 

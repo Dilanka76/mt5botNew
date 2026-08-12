@@ -200,11 +200,21 @@ def run_backtest(
                 new_position = engine.open_position
 
                 if prev_position is not None and new_position is not prev_position:
+                    # Order matters, and matches state_machine.py's own
+                    # precedence exactly: stop-loss, then breakeven, then
+                    # take-profit. prev_position is the same object
+                    # engine.on_tick() just mutated on this call, so
+                    # .breakeven_armed already reflects this tick's state.
                     if prev_position.stop_loss is not None and (
                         (prev_position.direction == Direction.BUY and mid_price <= prev_position.stop_loss)
                         or (prev_position.direction == Direction.SELL and mid_price >= prev_position.stop_loss)
                     ):
                         _record_exit(prev_position.stop_loss, candle_time, reason="stop_loss")
+                    elif backtest_config.breakeven_trigger_usd is not None and prev_position.breakeven_armed and (
+                        (prev_position.direction == Direction.BUY and mid_price <= prev_position.entry_price)
+                        or (prev_position.direction == Direction.SELL and mid_price >= prev_position.entry_price)
+                    ):
+                        _record_exit(prev_position.entry_price, candle_time, reason="breakeven")
                     else:
                         _record_exit(prev_position.take_profit, candle_time, reason="take_profit")
                 if new_position is not None and new_position is not prev_position:

@@ -135,9 +135,9 @@ def run() -> None:
 
     logger.info(
         "Bot started: account=%s symbol=%s timeframe=%s mode=%s strategy_variant=%s state=%s "
-        "reject_manual_trades=%s stop_loss_usd=%s",
+        "reject_manual_trades=%s stop_loss_usd=%s breakeven_trigger_usd=%s",
         args.account, config.symbol, config.timeframe, config.execution.mode, config.strategy_variant, engine.state.value,
-        config.execution.reject_manual_trades, config.stop_loss_usd,
+        config.execution.reject_manual_trades, config.stop_loss_usd, config.breakeven_trigger_usd,
     )
 
     last_closed_candle_time = None
