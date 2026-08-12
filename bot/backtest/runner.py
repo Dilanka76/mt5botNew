@@ -110,7 +110,7 @@ def run_backtest(
     def _spread_price(row) -> float:
         return float(row["spread"]) * point
 
-    def _record_entry(position, lots: float, open_time) -> None:
+    def _record_entry(position, lots: float, open_time, entry_type: str) -> None:
         nonlocal current_entry
         current_entry = {
             "direction": position.direction,
@@ -119,6 +119,7 @@ def run_backtest(
             "stop_loss": position.stop_loss,
             "lots": lots,
             "open_time": open_time,
+            "entry_type": entry_type,
         }
 
     def _record_exit(exit_price: float, close_time, reason: str) -> None:
@@ -137,6 +138,7 @@ def run_backtest(
             "entry_price": current_entry["entry_price"],
             "open_time": pd.Timestamp(current_entry["open_time"]).isoformat(),
             "reason": reason,
+            "entry_type": current_entry["entry_type"],
         })
         current_entry = None
 
@@ -179,7 +181,10 @@ def run_backtest(
                 _record_exit(exit_price, candle_time, reason="opposite_cross")
             if new_position is not None and new_position is not prev_position:
                 lots = calculate_lots(connector.balance, backtest_config.position_sizing)
-                _record_entry(new_position, lots, candle_time)
+                # Always the gap < threshold path — on_new_candle only ever
+                # opens a position synchronously for an immediate entry;
+                # the EMA5-touch-wait path opens later, via on_tick below.
+                _record_entry(new_position, lots, candle_time, entry_type="immediate")
 
             if candle["close"] >= candle["open"]:
                 tick_sequence = (float(candle["low"]), float(candle["high"]))
@@ -204,7 +209,7 @@ def run_backtest(
                         _record_exit(prev_position.take_profit, candle_time, reason="take_profit")
                 if new_position is not None and new_position is not prev_position:
                     lots = calculate_lots(connector.balance, backtest_config.position_sizing)
-                    _record_entry(new_position, lots, candle_time)
+                    _record_entry(new_position, lots, candle_time, entry_type="ema5_touch")
     finally:
         state_machine_module.is_within_session = original_is_within_session
         state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period

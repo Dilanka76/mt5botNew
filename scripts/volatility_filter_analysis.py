@@ -93,7 +93,7 @@ def compute_atr(df: pd.DataFrame, period: int) -> pd.Series:
 
 
 def is_immediate_entry(trade: dict) -> bool:
-    return "immediate entry" in trade.get("reason", "")
+    return trade.get("entry_type") == "immediate"
 
 
 def main() -> None:
