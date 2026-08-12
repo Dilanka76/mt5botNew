@@ -89,6 +89,19 @@ def main() -> None:
     connector = MT5Connector(config.mt5)
     connector.connect()
     try:
+        # Printed explicitly (not just left to MT5Connector's own internal
+        # logger.info(), which needs setup_logging() to have a handler
+        # attached — this script never calls it) so a wrong-terminal
+        # connection is impossible to miss: mt5.initialize() attaches to
+        # whatever MT5 terminal it finds when this account's config doesn't
+        # pin an explicit terminal_path, which on a machine running 5
+        # concurrent terminals (one per account) is not guaranteed to be
+        # this account's own.
+        info = connector.account_info()
+        print(f"Connected to MT5 as: login={info.login} server={info.server!r} balance={info.balance:.2f}")
+        print(f"  (expected: this should be {args.account}'s own account/server — cross-check against config/settings.{args.account}.yaml / .env.{args.account})")
+        print()
+
         connector.ensure_symbol(config.symbol)
         timeframe = connector.resolve_timeframe(config.timeframe)
         window_start = trade_time - timedelta(minutes=15)
