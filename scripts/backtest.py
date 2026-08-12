@@ -33,7 +33,12 @@ from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
-from bot.trade_stats import compute_daily_breakdown, compute_day_stats, compute_session_breakdown
+from bot.trade_stats import (
+    compute_daily_breakdown,
+    compute_day_stats,
+    compute_hour_of_day_breakdown,
+    compute_session_breakdown,
+)
 
 TIMEFRAME_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
 
@@ -86,6 +91,12 @@ def main() -> None:
     summary = compute_day_stats(trades)
     daily = compute_daily_breakdown(trades, days=(date_to - date_from).days or 1, today=date_to.date())
     sessions = compute_session_breakdown(trades, config.sessions[config.strategy_variant])
+    hourly = compute_hour_of_day_breakdown(trades)
+    hourly_ranked = sorted(
+        (h for h in hourly if h["total_trades"] > 0),
+        key=lambda h: (h["win_rate"], h["total_trades"]),
+        reverse=True,
+    )
     final_balance = starting_balance + summary["total_pl"]
 
     report = f"""# Backtest report — {args.account}
@@ -111,6 +122,20 @@ def main() -> None:
 """ + "\n".join(
         f"| {s['label']} | {s['total_trades']} | {s['wins']} | {s['win_rate']:.1f}% | {s['total_pl']:+.2f} |"
         for s in sessions
+    ) + f"""
+
+## By hour of day (best to worst)
+
+Every hour that had at least one trade, ranked by win rate — trade count
+is shown alongside so you can judge how reliable each row is; a single
+trade in an hour will show 100% or 0% and shouldn't be read as a real
+edge (see the note at the bottom).
+
+| Hour | Trades | Wins | Win rate | Total P/L |
+|---|---|---|---|---|
+""" + "\n".join(
+        f"| {h['hour']:02d}:00 | {h['total_trades']} | {h['wins']} | {h['win_rate']:.1f}% | {h['total_pl']:+.2f} |"
+        for h in hourly_ranked
     ) + f"""
 
 ## By day
@@ -140,6 +165,11 @@ This is an approximation, not ground truth — read results with that in mind:
 - Assumes MT5's candle timestamps are true UTC (consistent with how the
   rest of this codebase already treats MT5 epoch timestamps for live
   trades) — not independently re-verified for this specific run.
+- **The by-hour ranking is noisy for low-trade-count hours** — an hour
+  with only 1-2 trades can show 100% or 0% purely by chance, not because
+  that hour is actually good or bad. Weight hours with a meaningfully
+  larger trade count more heavily than ones near the top/bottom with only
+  a handful.
 """
 
     (out_dir / f"{stem}.md").write_text(report)
@@ -161,6 +191,7 @@ This is an approximation, not ground truth — read results with that in mind:
             "final_balance": final_balance,
         },
         "session_breakdown": sessions,
+        "hourly_breakdown": hourly,
         "daily_breakdown": [d for d in daily if d["total_trades"] > 0],
     }
     (out_dir / f"{stem}.json").write_text(json.dumps(summary_json, indent=2))

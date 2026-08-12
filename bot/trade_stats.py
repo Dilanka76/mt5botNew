@@ -140,6 +140,26 @@ def _in_window(close_time: dt_time, window: SessionWindow) -> bool:
     return close_time >= start or close_time <= end  # wraps past midnight
 
 
+def compute_hour_of_day_breakdown(trades: list[dict]) -> list[dict]:
+    """One compute_day_stats() bucket per hour (0-23, Asia/Colombo), across
+    ALL trades passed in — unlike compute_hourly_breakdown() above, which
+    is scoped to a single calendar day ("today so far" for the live app).
+    This is the "which hour of day is actually good/bad" view over a much
+    larger sample (e.g. a multi-month backtest) — caller controls sort
+    order for display; this returns hours 0-23 in natural order, every
+    hour present (all-zero stats if it had no trades), same convention as
+    every other breakdown in this module."""
+    buckets: dict[int, list[dict]] = {}
+    for t in trades:
+        try:
+            hour = _close_hour_colombo(t)
+        except (KeyError, ValueError):
+            continue
+        buckets.setdefault(hour, []).append(t)
+
+    return [{"hour": hour, **compute_day_stats(buckets.get(hour, []))} for hour in range(24)]
+
+
 def compute_session_breakdown(trades: list[dict], sessions: list[SessionWindow]) -> list[dict]:
     """One compute_day_stats() bucket per configured session window, across
     all trades passed in (caller controls the date range — api_server.py
