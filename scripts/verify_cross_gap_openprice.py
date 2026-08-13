@@ -123,9 +123,13 @@ def main() -> None:
             print(f"  {e.direction.value} at {e.candle_time.astimezone(COLOMBO).isoformat()} (Colombo)")
         print()
 
+    cross_candle = df.iloc[cross_pos]
     print("Cross candle (the candle that confirmed the cross):")
     print(f"  time (UTC):     {nearest.candle_time.isoformat()}")
     print(f"  time (Colombo): {cross_local.isoformat()}")
+    print(f"  open:   {cross_candle['open']:.2f}")
+    print(f"  high:   {cross_candle['high']:.2f}")
+    print(f"  low:    {cross_candle['low']:.2f}")
     print(f"  close:  {nearest.close:.2f}")
     print(f"  ema13:  {nearest.ema13:.2f}")
     print(f"  ema21:  {nearest.ema21:.2f}")
@@ -134,6 +138,8 @@ def main() -> None:
     print(f"  time (UTC):     {next_candle.name.isoformat()}")
     print(f"  time (Colombo): {next_candle.name.astimezone(COLOMBO).isoformat()}")
     print(f"  open:   {next_candle['open']:.2f}")
+    print(f"  high:   {next_candle['high']:.2f}")
+    print(f"  low:    {next_candle['low']:.2f}")
 
     current_gap = calculate_gap(nearest)
     new_gap = proposed_gap(nearest.direction, float(next_candle["open"]), nearest.ema13)
