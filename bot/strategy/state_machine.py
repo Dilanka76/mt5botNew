@@ -1,11 +1,23 @@
 """The EMA-cross scalping state machine.
 
-Entry (unchanged mechanics, open-price gap formula — see
-docs/STRATEGY_PROPOSED_OPEN_GAP.md):
-  A cross is confirmed only on a closed candle. Gap is measured using
-  that cross candle's own OPEN price against EMA13. Under the threshold
-  -> enter immediately. At or over it -> wait for a live tick to touch
-  EMA5, then enter.
+Entry (open-price gap formula — see docs/STRATEGY_PROPOSED_OPEN_GAP.md;
+no-close-based-fallback rule added after that doc, see below):
+  Gap is measured using the (provisional or, once a candle closes,
+  final) cross's own OPEN-anchored price against EMA13.
+    - Under the threshold -> can ONLY be entered via the tick-based
+      near-touch check (_check_early_entry, early_entry_threshold_usd)
+      WHILE the candle is still forming. There is deliberately no
+      close-based "immediate" fallback anymore: if a cross confirms at
+      candle-close with gap < threshold but the tick-based check never
+      caught it earlier in that same candle, it is skipped outright —
+      no trade, no second chance on a later candle either. This makes
+      the entire small-gap trade category fully dependent on
+      early_entry_threshold_usd actually being configured; with it left
+      at its default (None), NO small-gap trade will ever fire, only
+      the large-gap EMA5-touch case below still can.
+    - At or over the threshold -> wait for a live tick to touch EMA5,
+      then enter (unaffected by the above; this path never used a
+      close-based fallback in the first place).
 
 Exit — this is the newer design, replacing the old "any opposite cross
 instantly closes the trade" rule:
@@ -324,12 +336,28 @@ class EMAScalpEngine:
             )
 
     def _decide_entry(self, event: CrossEvent, gap: float) -> None:
-        """Gap-threshold rule: small gap enters immediately, large gap waits
-        for an EMA5 touch. Overridden by EMA5OnlyEngine (state_machine_ema5_only.py)
-        to always wait for the touch, ignoring the gap entirely."""
+        """Gap-threshold rule: a small gap can ONLY be entered via the
+        tick-based near-touch check (_check_early_entry) while its own
+        candle is still forming — there is deliberately no close-based
+        "immediate" fallback. If that check didn't already catch it
+        earlier in this same candle's formation, this close-confirmed
+        cross is skipped outright (no trade), rather than entering late
+        off a fully-closed candle. This makes gap-threshold entries fully
+        dependent on early_entry_threshold_usd being configured — with it
+        unset (the field's default), a small-gap cross now produces no
+        trade at all, ever. Large gap still waits for an EMA5 touch,
+        unaffected. Overridden by EMA5OnlyEngine
+        (state_machine_ema5_only.py) to always wait for the touch,
+        ignoring the gap entirely."""
         symbol = self.config.symbol
         if gap < self.config.gap_threshold_usd:
-            self._enter(event.direction, reason=f"{event.direction.value} cross, gap={gap:.2f} < threshold, immediate entry")
+            log_decision(
+                symbol,
+                "cross_confirmed_not_caught_early",
+                f"{event.direction.value} cross, gap={gap:.2f} < threshold, but the tick-based "
+                f"early-entry check never caught it during this candle's own formation — "
+                f"no immediate fallback, this cross is skipped",
+            )
         else:
             self.pending = PendingSetup(direction=event.direction, cross_event=event, gap=gap)
             log_decision(
@@ -341,13 +369,23 @@ class EMAScalpEngine:
     def on_tick(self, tick) -> None:
         """Call frequently (e.g. every ~1s) with the latest tick. pending and
         open_position are independent now (see module docstring) — both get
-        checked when both are set, not just one or the other."""
+        checked when both are set, not just one or the other.
+
+        The early-entry check also needs to run whenever the current
+        position is INVALID, not only when fully idle — this is what lets
+        a genuinely new, independently confirmed small-gap opposite cross
+        auto-replace it (Path B of the exit race in the module docstring),
+        the same way it always could before "immediate" close-based entry
+        was removed. Without this, a small-gap cross could never win that
+        race at all: it would just never get evaluated while any position,
+        even an invalid one, was still open."""
         self._reject_manual_positions(source="tick")
         if self.pending is not None and self.current_ema5 is not None:
             self._check_ema5_touch(tick)
         if self.open_position is not None:
             self._check_position_closed(tick)
-        if self.open_position is None and self.pending is None:
+        idle_or_invalid = self.open_position is None or self.open_position.invalid
+        if idle_or_invalid and self.pending is None:
             self._check_early_entry(tick)
         self._update_state()
 
