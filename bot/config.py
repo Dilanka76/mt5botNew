@@ -42,6 +42,11 @@ class EMAPeriodsConfig:
     fast: int
     mid: int
     slow: int
+    # Paired with `fast` (EMA5) for the reversal-confirmation check: once an
+    # open trade's cross looks invalid, EMA5 vs this EMA9 line is watched as
+    # a faster confirmation before stopping out. Optional — defaults to 9,
+    # matching every existing account's config without requiring an edit.
+    reversal_slow: int = 9
 
 
 @dataclass

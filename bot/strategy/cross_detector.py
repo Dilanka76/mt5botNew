@@ -34,6 +34,8 @@ class CrossEvent:
     close: float
     ema13: float
     ema21: float
+    open: float = 0.0  # the cross candle's own open — this is what
+    # calculate_gap() below actually uses; close is kept for reference/logging
 
 
 def _classify(row: pd.Series) -> CrossState | None:
@@ -71,6 +73,7 @@ def detect_cross(df: pd.DataFrame) -> CrossEvent | None:
         close=last_closed["close"],
         ema13=last_closed["ema13"],
         ema21=last_closed["ema21"],
+        open=last_closed["open"],
     )
 
 
@@ -96,6 +99,7 @@ def detect_all_crosses(df: pd.DataFrame) -> list[CrossEvent]:
                     close=row["close"],
                     ema13=row["ema13"],
                     ema21=row["ema21"],
+                    open=row["open"],
                 )
             )
         if state is not None:
@@ -105,14 +109,16 @@ def detect_all_crosses(df: pd.DataFrame) -> list[CrossEvent]:
 
 
 def calculate_gap(event: CrossEvent) -> float:
-    """Distance between the cross candle's close and EMA13, mirrored by direction.
+    """Distance between the cross candle's own OPEN price and EMA13, mirrored
+    by direction (finalized design — see docs/STRATEGY_PROPOSED_OPEN_GAP.md;
+    supersedes the original close-based formula).
 
-    BUY (bullish cross):  gap = close - ema13   (positive when price is above EMA13)
-    SELL (bearish cross): gap = ema13 - close   (positive when price is below EMA13)
+    BUY (bullish cross):  gap = open - ema13   (positive when price is above EMA13)
+    SELL (bearish cross): gap = ema13 - open   (positive when price is below EMA13)
 
     Spec: gap < gap_threshold_usd -> enter immediately; otherwise wait for
     price to touch EMA5 before entering.
     """
     if event.direction == Direction.BUY:
-        return event.close - event.ema13
-    return event.ema13 - event.close
+        return event.open - event.ema13
+    return event.ema13 - event.open

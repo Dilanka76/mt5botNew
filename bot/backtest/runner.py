@@ -1,18 +1,28 @@
 """Replays historical price data through the exact same, unmodified live
 strategy engine (EMAScalpEngine/EMA5OnlyEngine) to produce a much larger
 sample of hypothetical trades than the live/demo accounts have
-accumulated so far. See docs/STRATEGY.md and the plan this was built
-from for the full methodology and its known limitations — summarized
-inline below at each point they matter.
+accumulated so far. See docs/STRATEGY.md, docs/STRATEGY_PROPOSED_OPEN_GAP.md,
+and the plan this was built from for the full methodology and its known
+limitations — summarized inline below at each point they matter.
+
+Exit classification reads engine.last_close_reason directly rather than
+re-deriving "why did it close" from raw prices — the engine's own exit
+logic (stop-loss, breakeven, take-profit, the EMA5/EMA9 reversal check,
+or a new confirmed opposite cross taking over) is the single source of
+truth for why a position closed, set on the exact same object this
+driver already diffs before/after each on_new_candle()/on_tick() call.
+This replaced an earlier version that tried to reconstruct the reason
+from stop_loss/breakeven price thresholds — worth remembering if this
+ever needs revisiting, since a threshold-guessing approach silently
+drifted out of sync once already in a related script (see
+scripts/verify_cross_gap_openprice.py's fixed bug, same class of issue).
 
 This is an approximation, not ground truth:
 - No real historical tick data — each 1-minute candle's own high/low are
   used as two synthetic ticks, in candle-direction order (close>=open ->
   low then high, else high then low). If a single bar's range spans both
-  a profit target AND a stop-loss, that ordering determines the outcome
-  (only relevant when stop_loss_usd is configured — with it off, the
-  only tick-checked exit is TP, so this doesn't apply to backtesting
-  either real account's current live configuration).
+  a profit target AND a stop-loss/EMA5-9-confirmation, that ordering
+  determines the outcome.
 - Spread is synthesized from each candle's own MT5-reported spread
   (points) and the symbol's point size, not the real historical spread
   at that instant.
@@ -20,6 +30,11 @@ This is an approximation, not ground truth:
   simulated historical ones — a cosmetic side effect of reusing
   log_decision() unmodified, not a correctness issue for the trades
   themselves.
+- An extremely rare edge case is NOT modeled: if a position opens (via an
+  EMA5 touch closing an old invalid one) and ALSO hits its own
+  take-profit/stop-loss on that exact same tick, only the close is
+  recorded — the same approximation-not-ground-truth spirit as the
+  points above, not expected to matter at realistic tick granularity.
 """
 from __future__ import annotations
 
@@ -148,6 +163,24 @@ def run_backtest(
         # (fills at ask == mid_price + spread).
         return mid_price + spread_price if direction == Direction.SELL else mid_price
 
+    def _exit_price_for_reason(category: str, position, reference_price: float, spread_price: float) -> float:
+        # stop_loss/breakeven/take_profit exit at the position's own
+        # pre-computed level (unchanged from before). ema59_reversal and
+        # new_cross_confirmed have no such fixed level — they close at
+        # whatever price was current when the engine decided to close,
+        # i.e. the same reference price the driver just fed it (this
+        # candle's close if triggered from on_new_candle, or the current
+        # synthetic tick if triggered from the on_tick loop).
+        if category == "stop_loss":
+            return position.stop_loss
+        if category == "breakeven":
+            return position.entry_price
+        if category == "take_profit":
+            return position.take_profit
+        if category in ("ema59_reversal", "new_cross_confirmed"):
+            return _closing_fill_price(position.direction, reference_price, spread_price)
+        raise ValueError(f"Unknown close category from engine.last_close_reason: {category!r}")
+
     try:
         start_idx = df_with_emas.index.searchsorted(pd.Timestamp(date_from))
         # Last usable i is len-2: on_new_candle always ignores iloc[-1] as
@@ -177,8 +210,9 @@ def run_backtest(
             new_position = engine.open_position
 
             if prev_position is not None and new_position is not prev_position:
-                exit_price = _closing_fill_price(prev_position.direction, float(candle["close"]), spread_price)
-                _record_exit(exit_price, candle_time, reason="opposite_cross")
+                category = engine.last_close_reason
+                exit_price = _exit_price_for_reason(category, prev_position, float(candle["close"]), spread_price)
+                _record_exit(exit_price, candle_time, reason=category)
             if new_position is not None and new_position is not prev_position:
                 lots = calculate_lots(connector.balance, backtest_config.position_sizing)
                 # Always the gap < threshold path — on_new_candle only ever
@@ -200,23 +234,9 @@ def run_backtest(
                 new_position = engine.open_position
 
                 if prev_position is not None and new_position is not prev_position:
-                    # Order matters, and matches state_machine.py's own
-                    # precedence exactly: stop-loss, then breakeven, then
-                    # take-profit. prev_position is the same object
-                    # engine.on_tick() just mutated on this call, so
-                    # .breakeven_armed already reflects this tick's state.
-                    if prev_position.stop_loss is not None and (
-                        (prev_position.direction == Direction.BUY and mid_price <= prev_position.stop_loss)
-                        or (prev_position.direction == Direction.SELL and mid_price >= prev_position.stop_loss)
-                    ):
-                        _record_exit(prev_position.stop_loss, candle_time, reason="stop_loss")
-                    elif backtest_config.breakeven_trigger_usd is not None and prev_position.breakeven_armed and (
-                        (prev_position.direction == Direction.BUY and mid_price <= prev_position.entry_price)
-                        or (prev_position.direction == Direction.SELL and mid_price >= prev_position.entry_price)
-                    ):
-                        _record_exit(prev_position.entry_price, candle_time, reason="breakeven")
-                    else:
-                        _record_exit(prev_position.take_profit, candle_time, reason="take_profit")
+                    category = engine.last_close_reason
+                    exit_price = _exit_price_for_reason(category, prev_position, mid_price, spread_price)
+                    _record_exit(exit_price, candle_time, reason=category)
                 if new_position is not None and new_position is not prev_position:
                     lots = calculate_lots(connector.balance, backtest_config.position_sizing)
                     _record_entry(new_position, lots, candle_time, entry_type="ema5_touch")

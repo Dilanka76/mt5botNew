@@ -1,24 +1,46 @@
-"""The one-position EMA-cross scalping state machine.
+"""The EMA-cross scalping state machine.
 
-Three states:
-  IDLE           - no open position, no pending setup, watching for a cross.
-  PENDING_ENTRY  - a cross fired with gap >= threshold; waiting for price to
-                   touch EMA5 before entering.
-  IN_POSITION    - a trade is open; watching for the opposite cross (bot-driven
-                   close) or a broker-side TP fill.
+Entry (unchanged mechanics, open-price gap formula — see
+docs/STRATEGY_PROPOSED_OPEN_GAP.md):
+  A cross is confirmed only on a closed candle. Gap is measured using
+  that cross candle's own OPEN price against EMA13. Under the threshold
+  -> enter immediately. At or over it -> wait for a live tick to touch
+  EMA5, then enter.
 
-Every valid EMA13/21 cross does two things, in this exact order (per spec):
-  1. Immediately closes whatever trade is open, regardless of P/L.
-  2. Freshly evaluates the new setup in the new direction (gap check, maybe
-     wait for EMA5) — never automatic re-entry.
+Exit — this is the newer design, replacing the old "any opposite cross
+instantly closes the trade" rule:
+  An open position is watched every candle: does EMA13/21 still match
+  the direction it was opened in?
+    - Yes -> nothing happens, keep holding.
+    - No ("invalid") -> two things now race each other, both checked
+      every candle/tick, whichever completes first closes the position:
+        (a) EMA5 vs EMA9 confirms the reversal (a faster pair, checked
+            only once a position has already gone invalid) -> close as
+            a stop-loss.
+        (b) A brand-new, independently confirmed opposite cross
+            actually completes its own full entry (same gap-check /
+            immediate-or-wait rule as any entry) -> that new trade
+            opening automatically closes the old one.
+  If EMA13/21 flips back to match the original direction before either
+  of those completes, the position simply goes back to "valid" and
+  keeps running — no exit.
+  Take-profit is checked unconditionally, independent of all the above.
+  stop_loss_usd / breakeven_trigger_usd remain supported (dormant,
+  optional, unused by the finalized design) for any account that still
+  wants them; the new design's accounts simply leave both unset.
+
+Because an invalidated position doesn't close immediately, `open_position`
+and `pending` (a fresh independent entry attempt in the new direction)
+can be set at the same time — this is intentional: the account can
+briefly hold the old (invalid, being watched) position while a new one
+is still being decided. `state` is a best-effort coarse summary for
+logging only; the real source of truth is `open_position`/`pending`.
 
 A cross that occurs outside a configured session is ignored entirely: no
 setup is created, and the bot simply waits for the next fresh cross once a
-session opens (confirmed with the user — crosses aren't "banked" across a
-session boundary). If a PENDING setup's EMA5 touch would trigger an entry
-after the session has since closed, that entry is skipped too, since the
-session rule gates when a trade may actually OPEN, not just when the
-triggering cross was detected.
+session opens (crosses aren't "banked" across a session boundary). If a
+pending setup's EMA5 touch would trigger an entry after the session has
+since closed, that entry is skipped too.
 """
 from __future__ import annotations
 
@@ -72,6 +94,7 @@ class OpenPosition:
     opened_monotonic: float = field(default_factory=time.monotonic)
     stop_loss: float | None = None  # None = no stop-loss configured for this account
     breakeven_armed: bool = False  # set True once price has moved breakeven_trigger_usd in favor
+    invalid: bool = False  # True once EMA13/21 no longer matches `direction` — see module docstring
 
 
 class EMAScalpEngine:
@@ -84,6 +107,13 @@ class EMAScalpEngine:
         self.pending: PendingSetup | None = None
         self.open_position: OpenPosition | None = None
         self.current_ema5: float | None = None
+        # Set every time a position closes, to the same short category the
+        # reason string starts with — read by bot.backtest.runner instead of
+        # re-deriving "why did it close" from raw prices, which is exactly
+        # the kind of guess that drifted out of sync once already (see
+        # scripts/verify_cross_gap_openprice.py's fixed bug). Not used by
+        # live trading itself, only by the backtest driver.
+        self.last_close_reason: str | None = None
 
     def reconcile_on_startup(self) -> None:
         """If a position from a previous run is still open, adopt it instead
@@ -103,16 +133,29 @@ class EMAScalpEngine:
             entry_price=position.price_open,
             take_profit=position.tp,
             stop_loss=self._compute_stop_loss(direction, position.price_open),
-            # A reconciled position has no tick history from this run, so it
-            # starts unarmed regardless of its actual unrealized P/L at
-            # reconcile time — self-heals if price reaches the trigger again.
+            # A reconciled position has no tick/candle history from this
+            # run, so it starts unarmed and valid regardless of its actual
+            # state at reconcile time — self-heals on the next candle.
             breakeven_armed=False,
+            invalid=False,
         )
-        self.state = TradeState.IN_POSITION
+        self._update_state()
         logger.info(
             "Reconciled existing open position on startup: ticket=%s direction=%s entry=%.2f tp=%.2f",
             position.ticket, direction.value, position.price_open, position.tp,
         )
+
+    def _update_state(self) -> None:
+        """Best-effort coarse summary for logging/status only — real
+        control flow reads open_position/pending directly, since those two
+        can now both be set at once (an invalidated position being watched
+        while a new one is independently being decided)."""
+        if self.open_position is not None:
+            self.state = TradeState.IN_POSITION
+        elif self.pending is not None:
+            self.state = TradeState.PENDING_ENTRY
+        else:
+            self.state = TradeState.IDLE
 
     def _compute_stop_loss(self, direction: Direction, entry_price: float) -> float | None:
         if self.config.stop_loss_usd is None:
@@ -163,22 +206,35 @@ class EMAScalpEngine:
 
     def on_new_candle(self, df_with_emas: pd.DataFrame) -> None:
         """Call once per newly closed candle (df's iloc[-2])."""
-        self.current_ema5 = float(df_with_emas.iloc[-2]["ema5"])
+        last_closed = df_with_emas.iloc[-2]
+        self.current_ema5 = float(last_closed["ema5"])
+
+        # Re-validate any open position against THIS candle's EMA13/21
+        # state, independent of whether a fresh cross fires below — this
+        # is what lets a position go invalid, come back to valid, or get
+        # closed via the EMA5/EMA9 fast path, on every single candle.
+        self._recheck_position_validity(last_closed)
 
         event = detect_cross(df_with_emas)
         if event is None:
+            self._update_state()
             return
 
         symbol = self.config.symbol
 
-        # 1. Close whatever is open, regardless of P/L.
-        if self.state == TradeState.IN_POSITION and self.open_position is not None:
-            self._close_open_position(reason=f"opposite EMA cross ({event.direction.value})")
+        if self.open_position is not None and event.direction == self.open_position.direction:
+            # This fresh cross just re-confirms the direction we already
+            # hold — _recheck_position_validity() above already marked it
+            # valid again if it had gone invalid. Nothing further to do;
+            # in particular, do NOT treat this as a new entry opportunity.
+            self._update_state()
+            return
 
         # A cross always invalidates any pending setup (it can only be the
         # opposite direction of whatever we were pending, by definition of
-        # what a "cross" is).
-        if self.state == TradeState.PENDING_ENTRY and self.pending is not None:
+        # what a "cross" is) — independent of whatever open_position is
+        # doing above.
+        if self.pending is not None:
             log_decision(
                 symbol,
                 "setup_invalidated",
@@ -187,19 +243,73 @@ class EMAScalpEngine:
             )
             self.pending = None
 
-        self.state = TradeState.IDLE
-
-        # 2. Freshly evaluate the new setup — but only if we're in a session.
         if not is_within_session(self._active_sessions()):
             log_decision(
                 symbol,
                 "cross_ignored_outside_session",
                 f"{event.direction.value} cross at {event.candle_time}, no session open",
             )
+            self._update_state()
             return
 
         gap = calculate_gap(event)
         self._decide_entry(event, gap)
+        self._update_state()
+
+    def _recheck_position_validity(self, last_closed: pd.Series) -> None:
+        """Every candle close: does EMA13/21 still match the open position's
+        direction? If it just flipped away, mark it invalid (armed for the
+        EMA5/EMA9 fast-exit check below, but NOT closed yet). If it was
+        already invalid and has now flipped back to match, clear the flag —
+        a false alarm, keep holding normally. If it's already invalid and
+        EMA5/EMA9 now confirm the reversal, close it as a stop-loss."""
+        position = self.open_position
+        if position is None:
+            return
+
+        ema13, ema21 = float(last_closed["ema13"]), float(last_closed["ema21"])
+        if ema13 == ema21:
+            return  # indeterminate candle — extremely rare, skip this check for now
+
+        matches = (
+            (position.direction == Direction.BUY and ema13 > ema21)
+            or (position.direction == Direction.SELL and ema13 < ema21)
+        )
+
+        if matches:
+            if position.invalid:
+                position.invalid = False
+                log_decision(
+                    self.config.symbol,
+                    "position_revalidated",
+                    f"EMA13/21 flipped back to match the {position.direction.value} position — false alarm, keep holding",
+                    ticket=position.ticket,
+                )
+            return
+
+        if not position.invalid:
+            position.invalid = True
+            log_decision(
+                self.config.symbol,
+                "position_invalidated",
+                f"EMA13/21 no longer matches the {position.direction.value} position — watching EMA5/EMA9 for confirmation",
+                ticket=position.ticket,
+            )
+            return
+
+        # Already invalid — check the faster EMA5/EMA9 pair for confirmation.
+        ema5, ema9 = float(last_closed["ema5"]), float(last_closed["ema9"])
+        if ema5 == ema9:
+            return
+        reversal_confirmed = (
+            (position.direction == Direction.BUY and ema5 < ema9)
+            or (position.direction == Direction.SELL and ema5 > ema9)
+        )
+        if reversal_confirmed:
+            self._close_open_position(
+                reason=f"EMA5/EMA9 confirmed reversal (was {position.direction.value}, invalid since EMA13/21 flipped)",
+                category="ema59_reversal",
+            )
 
     def _decide_entry(self, event: CrossEvent, gap: float) -> None:
         """Gap-threshold rule: small gap enters immediately, large gap waits
@@ -210,7 +320,6 @@ class EMAScalpEngine:
             self._enter(event.direction, reason=f"{event.direction.value} cross, gap={gap:.2f} < threshold, immediate entry")
         else:
             self.pending = PendingSetup(direction=event.direction, cross_event=event, gap=gap)
-            self.state = TradeState.PENDING_ENTRY
             log_decision(
                 symbol,
                 "setup_pending",
@@ -218,12 +327,15 @@ class EMAScalpEngine:
             )
 
     def on_tick(self, tick) -> None:
-        """Call frequently (e.g. every ~1s) with the latest tick."""
+        """Call frequently (e.g. every ~1s) with the latest tick. pending and
+        open_position are independent now (see module docstring) — both get
+        checked when both are set, not just one or the other."""
         self._reject_manual_positions(source="tick")
-        if self.state == TradeState.PENDING_ENTRY and self.pending is not None and self.current_ema5 is not None:
+        if self.pending is not None and self.current_ema5 is not None:
             self._check_ema5_touch(tick)
-        elif self.state == TradeState.IN_POSITION and self.open_position is not None:
+        if self.open_position is not None:
             self._check_position_closed(tick)
+        self._update_state()
 
     def _check_ema5_touch(self, tick) -> None:
         pending = self.pending
@@ -246,12 +358,15 @@ class EMAScalpEngine:
                 "entry_skipped_outside_session",
                 f"EMA5 touch reached for pending {pending.direction.value} setup, but session has closed",
             )
-            self.state = TradeState.IDLE
 
         self.pending = None
 
     def _check_position_closed(self, tick) -> None:
-        """Detects a broker-side TP fill (or, in shadow mode, simulates one).
+        """Detects a broker-side TP fill (or, in shadow mode, simulates one),
+        plus the still-supported (but by default unused) stop_loss_usd and
+        breakeven_trigger_usd checks. The EMA5/EMA9 reversal check lives in
+        _recheck_position_validity() instead, since it's evaluated once per
+        candle close, not per tick.
 
         Skipped for a short grace period right after opening: a live broker
         can take a moment to make a just-filled order visible via
@@ -262,24 +377,21 @@ class EMAScalpEngine:
         if time.monotonic() - position.opened_monotonic < POSITION_CLOSE_GRACE_PERIOD_SECONDS:
             return
 
-        # Bot-managed stop-loss: a second, independent exit condition
-        # alongside the opposite-cross exit — whichever happens first wins.
-        # Never broker-side, so this applies identically in every mode.
+        # Bot-managed stop-loss: still supported for any account that wants
+        # it, dormant when stop_loss_usd is unset (the finalized design
+        # leaves it unset — take-profit + the EMA5/EMA9 race are the only
+        # exits). Checked ahead of take-profit, same as always.
         if position.stop_loss is not None:
             stop_hit = (
                 (position.direction == Direction.BUY and tick.bid <= position.stop_loss)
                 or (position.direction == Direction.SELL and tick.bid >= position.stop_loss)
             )
             if stop_hit:
-                self._close_open_position(reason=f"stop-loss hit at {position.stop_loss:.2f}")
-                self.state = TradeState.IDLE
+                self._close_open_position(reason=f"stop-loss hit at {position.stop_loss:.2f}", category="stop_loss")
                 return
 
-        # Bot-managed breakeven-stop: once armed (price moved
-        # breakeven_trigger_usd in favor), a return to the entry price is a
-        # second, independent exit condition — checked before take-profit,
-        # same reasoning and same "never broker-side" property as the
-        # stop-loss check above.
+        # Bot-managed breakeven-stop: same "still supported, dormant by
+        # default" status as stop-loss above.
         if self.config.breakeven_trigger_usd is not None:
             sign = 1 if position.direction == Direction.BUY else -1
             favorable = (tick.bid - position.entry_price) * sign
@@ -287,9 +399,9 @@ class EMAScalpEngine:
                 position.breakeven_armed = True
             if position.breakeven_armed and favorable <= 0:
                 self._close_open_position(
-                    reason=f"breakeven-stop (armed at +{self.config.breakeven_trigger_usd:.2f}, returned to entry)"
+                    reason=f"breakeven-stop (armed at +{self.config.breakeven_trigger_usd:.2f}, returned to entry)",
+                    category="breakeven",
                 )
-                self.state = TradeState.IDLE
                 return
 
         if self.config.execution.mode == "shadow":
@@ -304,7 +416,7 @@ class EMAScalpEngine:
                     f"[SHADOW] would have hit TP at {position.take_profit:.2f}",
                 )
                 self.open_position = None
-                self.state = TradeState.IDLE
+                self.last_close_reason = "take_profit"
             return
 
         if self.executor.get_open_position() is None:
@@ -314,9 +426,21 @@ class EMAScalpEngine:
                 "position no longer open on broker (TP fill or external close)",
             )
             self.open_position = None
-            self.state = TradeState.IDLE
+            self.last_close_reason = "take_profit"
 
     def _enter(self, direction: Direction, reason: str) -> None:
+        # If a position is already open at this point, it can only be an
+        # invalidated one from the opposite direction (see on_new_candle —
+        # a same-direction cross never reaches _decide_entry/_enter). A
+        # genuinely new, independently confirmed cross automatically closes
+        # it here, right as the new one opens — the "normal path" from
+        # docs/STRATEGY_PROPOSED_OPEN_GAP.md.
+        if self.open_position is not None:
+            self._close_open_position(
+                reason=f"new confirmed {direction.value} cross took over (was {self.open_position.direction.value}, invalid)",
+                category="new_cross_confirmed",
+            )
+
         balance = self.connector.account_info().balance
         lots = calculate_lots(balance, self.config.position_sizing)
 
@@ -326,7 +450,6 @@ class EMAScalpEngine:
             direction=direction, ticket=result.ticket, entry_price=result.price, take_profit=result.take_profit,
             stop_loss=self._compute_stop_loss(direction, result.price),
         )
-        self.state = TradeState.IN_POSITION
 
         log_decision(
             self.config.symbol,
@@ -339,7 +462,7 @@ class EMAScalpEngine:
             balance=balance,
         )
 
-    def _close_open_position(self, reason: str) -> None:
+    def _close_open_position(self, reason: str, category: str) -> None:
         position = self.open_position
         self.executor.close_position(position.ticket)
         log_decision(
@@ -351,3 +474,4 @@ class EMAScalpEngine:
             ticket=position.ticket,
         )
         self.open_position = None
+        self.last_close_reason = category
