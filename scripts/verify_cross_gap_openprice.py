@@ -1,11 +1,18 @@
 """Verifies one real EMA13/21 cross against real MT5 candle data, and
 shows the gap calculated TWO ways side by side:
 
-  - CURRENT (live): cross candle's own CLOSE price vs EMA13
-    (bot.strategy.cross_detector.calculate_gap, unmodified)
-  - PROPOSED (not yet implemented anywhere): the NEXT candle's OPEN
-    price vs EMA13 — the candle that's just starting to form the moment
-    the cross is confirmed, a real tradeable price, not a stale one
+  - CODEBASE (calculate_gap, current code): cross candle's own OPEN
+    price vs EMA13 — the finalized design (see
+    docs/STRATEGY_PROPOSED_OPEN_GAP.md). NOTE: this is what's in the
+    repo NOW, which is NOT necessarily what any given already-running
+    main.py process is actually using — a live Python process keeps
+    running whatever code was loaded at its own startup, unaffected by
+    a later `git pull`, until it's explicitly restarted. Check the
+    process's actual start time/pid before assuming this reflects live
+    behavior.
+  - SUPERSEDED (close-based): the OLD formula, cross candle's own
+    CLOSE price vs EMA13 — computed independently here since
+    calculate_gap() no longer does this; kept only for comparison.
 
 This is a one-instance manual verification, not a backtest — the user
 wants to check one specific real cross (e.g. near 19:30 Colombo time on
@@ -54,15 +61,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def proposed_gap(direction: Direction, cross_candle_open: float, ema13: float) -> float:
-    """Mirrors calculate_gap()'s exact formula, but substituting the cross
-    candle's own OPEN price for its close — the finalized design (see
-    docs/STRATEGY_PROPOSED_OPEN_GAP.md). Not used anywhere in the live
-    engine or backtest; this script only computes it for side-by-side
-    comparison against the current close-based formula."""
+def superseded_close_based_gap(direction: Direction, cross_candle_close: float, ema13: float) -> float:
+    """The OLD formula, cross candle's own CLOSE price vs EMA13 — no
+    longer what bot.strategy.cross_detector.calculate_gap() computes
+    (that function was changed to the open-based formula as part of
+    implementing docs/STRATEGY_PROPOSED_OPEN_GAP.md). Computed
+    independently here purely for side-by-side comparison — not used
+    anywhere in the live engine or backtest."""
     if direction == Direction.BUY:
-        return cross_candle_open - ema13
-    return ema13 - cross_candle_open
+        return cross_candle_close - ema13
+    return ema13 - cross_candle_close
 
 
 def main() -> None:
@@ -160,28 +168,30 @@ def main() -> None:
     print(f"  high:   {next_candle['high']:.2f}")
     print(f"  low:    {next_candle['low']:.2f}")
 
-    current_gap = calculate_gap(nearest)
-    new_gap = proposed_gap(nearest.direction, float(cross_candle["open"]), nearest.ema13)
+    codebase_gap = calculate_gap(nearest)
+    superseded_gap = superseded_close_based_gap(nearest.direction, nearest.close, nearest.ema13)
     threshold = config.gap_threshold_usd
 
     print(f"\nGap threshold for this account: ${threshold:.2f}\n")
-    print(f"{'Method':<28}{'Gap':>10}{'Decision':>28}")
-    print("-" * 66)
-    current_decision = "IMMEDIATE entry" if current_gap < threshold else "WAIT for EMA5 touch"
-    new_decision = "IMMEDIATE entry" if new_gap < threshold else "WAIT for EMA5 touch"
-    print(f"{'CURRENT (close-based)':<28}{current_gap:>10.2f}{current_decision:>28}")
-    print(f"{'PROPOSED (open-based)':<28}{new_gap:>10.2f}{new_decision:>28}")
+    print(f"{'Method':<32}{'Gap':>10}{'Decision':>28}")
+    print("-" * 70)
+    codebase_decision = "IMMEDIATE entry" if codebase_gap < threshold else "WAIT for EMA5 touch"
+    superseded_decision = "IMMEDIATE entry" if superseded_gap < threshold else "WAIT for EMA5 touch"
+    print(f"{'CODEBASE (open-based, now)':<32}{codebase_gap:>10.2f}{codebase_decision:>28}")
+    print(f"{'SUPERSEDED (close-based, old)':<32}{superseded_gap:>10.2f}{superseded_decision:>28}")
 
     print()
-    if current_decision == new_decision:
-        print(f"Both methods agree on this trade: {current_decision}. The price difference between the")
+    if codebase_decision == superseded_decision:
+        print(f"Both formulas agree on this trade: {codebase_decision}. The price difference between the")
         print("cross candle's own open and close was too small to change the outcome here.")
     else:
-        print("*** These methods DISAGREE on this specific trade. ***")
-        print(f"Current (close-based) says: {current_decision}")
-        print(f"Proposed (open-based) says: {new_decision}")
-        print("This is a real, concrete case where switching to open-price would have changed what the")
-        print("bot actually did — worth keeping as a specific example for the fuller backtest comparison.")
+        print("*** These formulas DISAGREE on this specific trade. ***")
+        print(f"Codebase (open-based) says: {codebase_decision}")
+        print(f"Superseded (close-based) says: {superseded_decision}")
+        print("This is a real, concrete case where the two formulas would have made a different decision.")
+    print()
+    print("Reminder: 'CODEBASE' reflects what's in the repo right now, not necessarily what any given")
+    print("already-running main.py process is actually executing — check its actual pid/start time first.")
 
 
 if __name__ == "__main__":
