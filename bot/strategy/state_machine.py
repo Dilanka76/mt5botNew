@@ -28,11 +28,25 @@ instantly closes the trade" rule:
       every candle/tick, whichever completes first closes the position:
         (a) EMA5 vs EMA9 confirms the reversal (a faster pair, checked
             only once a position has already gone invalid) -> close as
-            a stop-loss.
+            a stop-loss, THEN immediately open a fresh trade in the
+            now-confirmed opposite direction at the current price (see
+            _recheck_position_validity) — not via the tick-based
+            near-touch check (which can only ever predict a RETURN to
+            the original direction from an invalid state, never a
+            continuation — see _check_early_entry's docstring for why),
+            but directly, since EMA13/21 is already known-mismatched at
+            this exact moment.
         (b) A brand-new, independently confirmed opposite cross
-            actually completes its own full entry (same gap-check /
-            immediate-or-wait rule as any entry) -> that new trade
-            opening automatically closes the old one.
+            actually completes its own full entry via the large-gap
+            EMA5-touch path -> that new trade opening automatically
+            closes the old one. (The small-gap variant of this path no
+            longer exists in its original form — see (a) above and
+            _decide_entry's docstring: a small-gap opposite cross that
+            coincides with a position going invalid, the common case,
+            can no longer be entered at all via the tick-based check;
+            deliberately accepted, since EMA5/EMA9 reliably closes the
+            invalid position first anyway, and now also handles the
+            re-entry itself.)
   If EMA13/21 flips back to match the original direction before either
   of those completes, the position simply goes back to "valid" and
   keeps running — no exit.
@@ -286,7 +300,14 @@ class EMAScalpEngine:
         EMA5/EMA9 fast-exit check below, but NOT closed yet). If it was
         already invalid and has now flipped back to match, clear the flag —
         a false alarm, keep holding normally. If it's already invalid and
-        EMA5/EMA9 now confirm the reversal, close it as a stop-loss."""
+        EMA5/EMA9 now confirm the reversal, close it as a stop-loss, then
+        immediately open a fresh trade in the now-confirmed opposite
+        direction at the current price — not via the tick-based near-touch
+        check (which can never predict a continuation in this direction,
+        only a return to the original one — see _check_early_entry), but
+        directly, because EMA13/21 is already known-mismatched at this
+        exact moment (that's why EMA5/EMA9 was even watching in the first
+        place)."""
         position = self.open_position
         if position is None:
             return
@@ -330,10 +351,38 @@ class EMAScalpEngine:
             or (position.direction == Direction.SELL and ema5 > ema9)
         )
         if reversal_confirmed:
+            old_direction = position.direction
             self._close_open_position(
-                reason=f"EMA5/EMA9 confirmed reversal (was {position.direction.value}, invalid since EMA13/21 flipped)",
+                reason=f"EMA5/EMA9 confirmed reversal (was {old_direction.value}, invalid since EMA13/21 flipped)",
                 category="ema59_reversal",
             )
+            new_direction = Direction.SELL if old_direction == Direction.BUY else Direction.BUY
+            if self.pending is not None and self.pending.direction == new_direction:
+                # A stale wide-gap pending setup in the SAME direction we're
+                # about to enter directly — drop it, or a later EMA5 touch
+                # would fire _enter() again on top of this one, closing this
+                # fresh position right after opening it for no real reason.
+                log_decision(
+                    self.config.symbol,
+                    "setup_invalidated",
+                    f"superseded by direct {new_direction.value} re-entry after EMA5/EMA9 reversal "
+                    f"(was waiting on EMA5 touch, gap was {self.pending.gap:.2f})",
+                )
+                self.pending = None
+            if is_within_session(self._active_sessions()):
+                self._enter(
+                    new_direction,
+                    reason=(
+                        f"EMA5/EMA9 reversal closed {old_direction.value}; EMA13/21 already confirms "
+                        f"{new_direction.value} (ema13={ema13:.2f}, ema21={ema21:.2f}) — entering directly"
+                    ),
+                )
+            else:
+                log_decision(
+                    self.config.symbol,
+                    "cross_ignored_outside_session",
+                    f"EMA5/EMA9 reversal would open {new_direction.value} directly, no session open",
+                )
 
     def _decide_entry(self, event: CrossEvent, gap: float) -> None:
         """Gap-threshold rule: a small gap can ONLY be entered via the

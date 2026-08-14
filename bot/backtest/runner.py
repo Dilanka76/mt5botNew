@@ -234,13 +234,12 @@ def run_backtest(
                     _record_entry(new_position, lots, candle_time, entry_type=entry_type)
 
             # PHASE 2: the candle actually "closes" now — evaluate a fresh
-            # cross using its own final, real close-based EMA13/21. An
-            # immediate entry (gap < threshold) fires synchronously inside
-            # on_new_candle, via open_market_order()'s own
-            # connector.get_tick() call — use this candle's own close as
-            # the reference, matching how live's main loop calls
-            # on_new_candle immediately followed by on_tick with a
-            # near-simultaneous real price.
+            # cross using its own final, real close-based EMA13/21, and
+            # re-check the open position's validity (which may itself
+            # synchronously close-then-reopen it — see below). Use this
+            # candle's own close as the reference, matching how live's
+            # main loop calls on_new_candle immediately followed by
+            # on_tick with a near-simultaneous real price.
             window = df_with_emas.iloc[:i + 2]
             connector.bid = float(candle["close"])
             connector.ask = connector.bid + spread_price
@@ -255,13 +254,15 @@ def run_backtest(
                 _record_exit(exit_price, candle_time, reason=category)
             if new_position is not None and new_position is not prev_position:
                 lots = calculate_lots(connector.balance, backtest_config.position_sizing)
-                # Always the gap < threshold path — on_new_candle only ever
-                # opens a position synchronously for an immediate entry;
-                # the EMA5-touch-wait path opens later, via on_tick, on a
-                # LATER candle's own tick range (see PHASE 1 above — never
-                # within the same candle that set the pending setup, since
-                # that candle has already closed by the time pending exists).
-                _record_entry(new_position, lots, candle_time, entry_type="immediate")
+                # The ONLY way on_new_candle can now open a position
+                # synchronously: _recheck_position_validity's EMA5/EMA9
+                # reversal close immediately re-entering the now-confirmed
+                # opposite direction (see state_machine.py). There is no
+                # more close-based "immediate" gap-threshold entry at all
+                # (see _decide_entry's docstring) — the EMA5-touch-wait
+                # path still opens later, via on_tick, on a LATER candle's
+                # own tick range (see PHASE 1 above).
+                _record_entry(new_position, lots, candle_time, entry_type="ema59_reentry")
     finally:
         state_machine_module.is_within_session = original_is_within_session
         state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period
