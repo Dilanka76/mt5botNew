@@ -54,14 +54,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def proposed_gap(direction: Direction, next_open: float, ema13: float) -> float:
-    """Mirrors calculate_gap()'s exact formula, but substituting the next
-    candle's open for the cross candle's close — the user's proposed
-    alternative. Not used anywhere in the live engine or backtest; this
-    script only computes it for side-by-side comparison."""
+def proposed_gap(direction: Direction, cross_candle_open: float, ema13: float) -> float:
+    """Mirrors calculate_gap()'s exact formula, but substituting the cross
+    candle's own OPEN price for its close — the finalized design (see
+    docs/STRATEGY_PROPOSED_OPEN_GAP.md). Not used anywhere in the live
+    engine or backtest; this script only computes it for side-by-side
+    comparison against the current close-based formula."""
     if direction == Direction.BUY:
-        return next_open - ema13
-    return ema13 - next_open
+        return cross_candle_open - ema13
+    return ema13 - cross_candle_open
 
 
 def main() -> None:
@@ -160,7 +161,7 @@ def main() -> None:
     print(f"  low:    {next_candle['low']:.2f}")
 
     current_gap = calculate_gap(nearest)
-    new_gap = proposed_gap(nearest.direction, float(next_candle["open"]), nearest.ema13)
+    new_gap = proposed_gap(nearest.direction, float(cross_candle["open"]), nearest.ema13)
     threshold = config.gap_threshold_usd
 
     print(f"\nGap threshold for this account: ${threshold:.2f}\n")
@@ -174,7 +175,7 @@ def main() -> None:
     print()
     if current_decision == new_decision:
         print(f"Both methods agree on this trade: {current_decision}. The price difference between the")
-        print("cross candle's close and the next candle's open was too small to change the outcome here.")
+        print("cross candle's own open and close was too small to change the outcome here.")
     else:
         print("*** These methods DISAGREE on this specific trade. ***")
         print(f"Current (close-based) says: {current_decision}")
