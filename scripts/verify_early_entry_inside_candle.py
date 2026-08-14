@@ -92,39 +92,47 @@ def main() -> None:
         "checks against [low, high + spread] for BUY and [low, high] for SELL — the real fillable range."
     )
     print()
-    print(f"{'open_time (UTC)':<22}{'dir':<6}{'low':>10}{'high':>10}{'close':>10}"
-          f"{'spread($)':>10}{'entry_price':>13}{'inside (raw)':>13}{'inside (spread-adj)':>21}{'!= close?':>11}")
-    print("-" * 140)
+    print(
+        "'from open ($)' = entry_price - candle open (how far price had already moved off the\n"
+        "candle's own starting point before this entry fired). '% of range' = that distance as a\n"
+        "share of the candle's own high-low span — near 0% means the entry caught it right near the\n"
+        "candle's open (genuinely early); near 100% means most of the candle's move had already\n"
+        "happened by the time it entered (a late catch, despite still being 'inside' the candle)."
+    )
+    print()
+    print(f"{'open_time (UTC)':<22}{'dir':<6}{'open':>10}{'entry_price':>13}"
+          f"{'from open ($)':>15}{'% of range':>12}")
+    print("-" * 90)
+
+    def _dist_from_open(t, candle):
+        rng = candle["high"] - candle["low"]
+        dist = t["entry_price"] - candle["open"]
+        pct = (abs(dist) / rng * 100) if rng > 0 else 0.0
+        return dist, pct
 
     for t in early_trades:
         candle_time = pd.Timestamp(t["open_time"])
         candle = df.loc[candle_time]
-        spread_price = float(candle["spread"]) * point
-        raw_inside = candle["low"] <= t["entry_price"] <= candle["high"]
-        adj_high = candle["high"] + spread_price if t["direction"] == "BUY" else candle["high"]
-        adj_inside = candle["low"] <= t["entry_price"] <= adj_high
-        not_close = abs(t["entry_price"] - candle["close"]) > 1e-9
+        dist, pct = _dist_from_open(t, candle)
         print(
-            f"{str(candle_time):<22}{t['direction']:<6}{candle['low']:>10.2f}{candle['high']:>10.2f}"
-            f"{candle['close']:>10.2f}{spread_price:>10.2f}{t['entry_price']:>13.2f}"
-            f"{'YES' if raw_inside else 'NO':>13}{'YES' if adj_inside else 'NO':>21}"
-            f"{'YES' if not_close else 'NO':>11}"
+            f"{str(candle_time):<22}{t['direction']:<6}{candle['open']:>10.2f}{t['entry_price']:>13.2f}"
+            f"{dist:>+15.2f}{pct:>11.1f}%"
         )
 
     if not early_trades:
         print("(no early_entry trades in this range at this threshold — try a larger --threshold or wider date range)")
         return
 
-    def _adj_inside(t):
-        candle_time = pd.Timestamp(t["open_time"])
-        candle = df.loc[candle_time]
-        spread_price = float(candle["spread"]) * point
-        adj_high = candle["high"] + spread_price if t["direction"] == "BUY" else candle["high"]
-        return candle["low"] <= t["entry_price"] <= adj_high
-
-    all_inside_adj = all(_adj_inside(t) for t in early_trades)
+    all_early = [t for t in trades if t["entry_type"] == "early_entry"]
+    all_pcts = []
+    for t in all_early:
+        candle = df.loc[pd.Timestamp(t["open_time"])]
+        _, pct = _dist_from_open(t, candle)
+        all_pcts.append(pct)
+    avg_pct = sum(all_pcts) / len(all_pcts) if all_pcts else 0.0
     print()
-    print(f"All {len(early_trades)} shown entries landed inside their own candle's real fillable (spread-adjusted) range: {all_inside_adj}")
+    print(f"Across all {len(all_early)} early_entry trades in this range: average distance from candle "
+          f"open = {avg_pct:.1f}% of that candle's own high-low range.")
 
 
 if __name__ == "__main__":
