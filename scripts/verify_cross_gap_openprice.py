@@ -123,8 +123,25 @@ def main() -> None:
             print(f"  {e.direction.value} at {e.candle_time.astimezone(COLOMBO).isoformat()} (Colombo)")
         print()
 
+    if cross_pos - 1 < 0:
+        raise SystemExit(f"Cross at {nearest.candle_time} is the first candle fetched — widen the range to see the candle before it.")
+    prev_candle = df.iloc[cross_pos - 1]
+    prev_ema13 = float(df["ema13"].iloc[cross_pos - 1])
+    prev_ema21 = float(df["ema21"].iloc[cross_pos - 1])
+    prev_state = "ABOVE (bullish)" if prev_ema13 > prev_ema21 else ("BELOW (bearish)" if prev_ema13 < prev_ema21 else "EQUAL")
+    curr_state = "ABOVE (bullish)" if nearest.ema13 > nearest.ema21 else ("BELOW (bearish)" if nearest.ema13 < nearest.ema21 else "EQUAL")
+
+    print("Previous candle (right before the cross candle — this is where EMA13/21 still showed the OLD relationship):")
+    print(f"  time (UTC):     {prev_candle.name.isoformat()}")
+    print(f"  time (Colombo): {prev_candle.name.astimezone(COLOMBO).isoformat()}")
+    print(f"  close:  {prev_candle['close']:.2f}")
+    print(f"  ema13:  {prev_ema13:.2f}")
+    print(f"  ema21:  {prev_ema21:.2f}")
+    print(f"  state:  {prev_state}")
+    print("  (the 'equal point' sits visually between THIS candle and the next one below)\n")
+
     cross_candle = df.iloc[cross_pos]
-    print("Cross candle (the candle that confirmed the cross):")
+    print("Cross candle (the very next candle after the equal point — this is where the NEW relationship first appears, and where entry happens):")
     print(f"  time (UTC):     {nearest.candle_time.isoformat()}")
     print(f"  time (Colombo): {cross_local.isoformat()}")
     print(f"  open:   {cross_candle['open']:.2f}")
@@ -133,6 +150,7 @@ def main() -> None:
     print(f"  close:  {nearest.close:.2f}")
     print(f"  ema13:  {nearest.ema13:.2f}")
     print(f"  ema21:  {nearest.ema21:.2f}")
+    print(f"  state:  {curr_state}  <-- flipped from '{prev_state}' the candle before, confirming the cross HERE")
 
     print("\nNext candle (starts forming the instant the cross is confirmed):")
     print(f"  time (UTC):     {next_candle.name.isoformat()}")
