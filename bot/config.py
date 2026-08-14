@@ -114,6 +114,19 @@ class AppConfig:
     # exits. None (default) = off, matching historical behavior. Checked
     # every tick, bot-managed, not broker-side — see docs/STRATEGY.md #10.
     breakeven_trigger_usd: float | None = None
+    # Optional early-entry threshold: while idle (no open position, no
+    # pending setup) and the previous candle's real EMA13/21 are known, a
+    # provisional EMA13/21 is recomputed on every tick using the CURRENT
+    # tick price (never a stale or future value) blended with those real
+    # previous values. If the provisional pair comes within this many
+    # dollars of each other AND the resulting gap still qualifies as an
+    # immediate entry, the trade enters right then — before that candle
+    # has even closed, before the cross is formally confirmed. None
+    # (default) = off. Only ever applies to the immediate-entry case; the
+    # wait-for-EMA5-touch path is completely unaffected. See
+    # docs/STRATEGY_PROPOSED_OPEN_GAP.md for the full design and the
+    # honest (non-lookahead) verification this was built from.
+    early_entry_threshold_usd: float | None = None
 
 
 def load_config(account: str, settings_path: str | Path | None = None) -> AppConfig:
@@ -195,6 +208,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         kill_switch=KillSwitchConfig(**raw["kill_switch"]),
         stop_loss_usd=raw.get("stop_loss_usd"),
         breakeven_trigger_usd=raw.get("breakeven_trigger_usd"),
+        early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
     )
 
 

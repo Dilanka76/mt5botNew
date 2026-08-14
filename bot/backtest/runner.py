@@ -193,15 +193,55 @@ def run_backtest(
             simulated_now["value"] = candle_time.to_pydatetime()
             spread_price = _spread_price(candle)
 
-            window = df_with_emas.iloc[:i + 2]
+            # PHASE 1: simulate this candle's own tick range WHILE IT'S
+            # STILL FORMING — matches live's real order exactly (ticks
+            # happen continuously as a candle forms; on_new_candle only
+            # ever fires once a candle has actually closed, at which point
+            # ticks are already flowing for the NEXT candle, never the one
+            # that just closed). This is what lets EMA5-touch, exit checks
+            # for whatever was already open, and the new early-entry check
+            # all see real "not yet closed" price movement, same as live —
+            # not information from this candle's own eventual close, which
+            # doesn't exist yet at this point in time.
+            if candle["close"] >= candle["open"]:
+                tick_sequence = (float(candle["low"]), float(candle["high"]))
+            else:
+                tick_sequence = (float(candle["high"]), float(candle["low"]))
 
-            # An immediate entry (gap < threshold) fires synchronously
-            # inside on_new_candle, via open_market_order()'s own
-            # connector.get_tick() call — without this, it would use
-            # whatever bid/ask the PREVIOUS candle's tick loop last left
-            # behind. Use this candle's own close as the reference,
-            # matching how live's main loop calls on_new_candle immediately
-            # followed by on_tick with a near-simultaneous real price.
+            for mid_price in tick_sequence:
+                connector.bid = mid_price
+                connector.ask = mid_price + spread_price
+
+                prev_position = engine.open_position
+                # Captured before on_tick() so an entry can be correctly
+                # labeled: _check_early_entry() (early_entry_threshold_usd)
+                # only ever fires when pending is None, while
+                # _check_ema5_touch() always clears a real pending setup —
+                # the only way to tell these two tick-triggered entry paths
+                # apart from outside the engine, since both open a position
+                # from inside this same on_tick() call.
+                prev_pending = engine.pending
+                engine.on_tick(connector.get_tick(backtest_config.symbol))
+                new_position = engine.open_position
+
+                if prev_position is not None and new_position is not prev_position:
+                    category = engine.last_close_reason
+                    exit_price = _exit_price_for_reason(category, prev_position, mid_price, spread_price)
+                    _record_exit(exit_price, candle_time, reason=category)
+                if new_position is not None and new_position is not prev_position:
+                    lots = calculate_lots(connector.balance, backtest_config.position_sizing)
+                    entry_type = "ema5_touch" if prev_pending is not None else "early_entry"
+                    _record_entry(new_position, lots, candle_time, entry_type=entry_type)
+
+            # PHASE 2: the candle actually "closes" now — evaluate a fresh
+            # cross using its own final, real close-based EMA13/21. An
+            # immediate entry (gap < threshold) fires synchronously inside
+            # on_new_candle, via open_market_order()'s own
+            # connector.get_tick() call — use this candle's own close as
+            # the reference, matching how live's main loop calls
+            # on_new_candle immediately followed by on_tick with a
+            # near-simultaneous real price.
+            window = df_with_emas.iloc[:i + 2]
             connector.bid = float(candle["close"])
             connector.ask = connector.bid + spread_price
 
@@ -217,29 +257,11 @@ def run_backtest(
                 lots = calculate_lots(connector.balance, backtest_config.position_sizing)
                 # Always the gap < threshold path — on_new_candle only ever
                 # opens a position synchronously for an immediate entry;
-                # the EMA5-touch-wait path opens later, via on_tick below.
+                # the EMA5-touch-wait path opens later, via on_tick, on a
+                # LATER candle's own tick range (see PHASE 1 above — never
+                # within the same candle that set the pending setup, since
+                # that candle has already closed by the time pending exists).
                 _record_entry(new_position, lots, candle_time, entry_type="immediate")
-
-            if candle["close"] >= candle["open"]:
-                tick_sequence = (float(candle["low"]), float(candle["high"]))
-            else:
-                tick_sequence = (float(candle["high"]), float(candle["low"]))
-
-            for mid_price in tick_sequence:
-                connector.bid = mid_price
-                connector.ask = mid_price + spread_price
-
-                prev_position = engine.open_position
-                engine.on_tick(connector.get_tick(backtest_config.symbol))
-                new_position = engine.open_position
-
-                if prev_position is not None and new_position is not prev_position:
-                    category = engine.last_close_reason
-                    exit_price = _exit_price_for_reason(category, prev_position, mid_price, spread_price)
-                    _record_exit(exit_price, candle_time, reason=category)
-                if new_position is not None and new_position is not prev_position:
-                    lots = calculate_lots(connector.balance, backtest_config.position_sizing)
-                    _record_entry(new_position, lots, candle_time, entry_type="ema5_touch")
     finally:
         state_machine_module.is_within_session = original_is_within_session
         state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period

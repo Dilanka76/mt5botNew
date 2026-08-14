@@ -26,3 +26,10 @@ class EMA5OnlyEngine(EMAScalpEngine):
             "setup_pending",
             f"{event.direction.value} cross, gap={gap:.2f} (gap check disabled in this variant), waiting for EMA5 touch",
         )
+
+    def _check_early_entry(self, tick) -> None:
+        # This variant always waits for an EMA5 touch, gap check disabled
+        # entirely (see _decide_entry above) — the early-entry idea only
+        # ever makes sense for the gap-threshold immediate-entry path, so
+        # it's a deliberate no-op here regardless of early_entry_threshold_usd.
+        return

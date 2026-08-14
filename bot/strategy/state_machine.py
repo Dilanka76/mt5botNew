@@ -114,6 +114,12 @@ class EMAScalpEngine:
         # scripts/verify_cross_gap_openprice.py's fixed bug). Not used by
         # live trading itself, only by the backtest driver.
         self.last_close_reason: str | None = None
+        # The previous CLOSED candle's real EMA13/21 — the only legitimate
+        # base for the early-entry check below (see _check_early_entry).
+        # Updated at the end of every on_new_candle() call. None until the
+        # first candle has been processed.
+        self.prev_ema13: float | None = None
+        self.prev_ema21: float | None = None
 
     def reconcile_on_startup(self) -> None:
         """If a position from a previous run is still open, adopt it instead
@@ -208,6 +214,12 @@ class EMAScalpEngine:
         """Call once per newly closed candle (df's iloc[-2])."""
         last_closed = df_with_emas.iloc[-2]
         self.current_ema5 = float(last_closed["ema5"])
+
+        # Recorded unconditionally, before any branching below, so it's
+        # always this candle's real, final EMA13/21 — the only legitimate
+        # base for the next candle's early-entry check (_check_early_entry).
+        self.prev_ema13 = float(last_closed["ema13"])
+        self.prev_ema21 = float(last_closed["ema21"])
 
         # Re-validate any open position against THIS candle's EMA13/21
         # state, independent of whether a fresh cross fires below — this
@@ -335,7 +347,59 @@ class EMAScalpEngine:
             self._check_ema5_touch(tick)
         if self.open_position is not None:
             self._check_position_closed(tick)
+        if self.open_position is None and self.pending is None:
+            self._check_early_entry(tick)
         self._update_state()
+
+    def _check_early_entry(self, tick) -> None:
+        """Optional (early_entry_threshold_usd, default off): while idle,
+        recomputes a provisional EMA13/21 on every tick using ONLY the
+        current tick's real price blended with the previous CLOSED
+        candle's real EMA13/21 — never the current, still-forming
+        candle's eventual close, which would not genuinely be known yet
+        (see docs/STRATEGY_PROPOSED_OPEN_GAP.md for why that distinction
+        matters). If the provisional pair is within threshold, evaluates
+        the same immediate-entry gap check any confirmed cross would —
+        entering right away only if the gap still qualifies as small; a
+        wide gap here does nothing early and leaves the normal
+        end-of-candle confirmation to handle it as always."""
+        if self.config.early_entry_threshold_usd is None:
+            return
+        if self.prev_ema13 is None or self.prev_ema21 is None:
+            return
+
+        k_mid = 2 / (self.config.ema_periods.mid + 1)
+        k_slow = 2 / (self.config.ema_periods.slow + 1)
+        prov_ema13 = tick.bid * k_mid + self.prev_ema13 * (1 - k_mid)
+        prov_ema21 = tick.bid * k_slow + self.prev_ema21 * (1 - k_slow)
+
+        if abs(prov_ema13 - prov_ema21) > self.config.early_entry_threshold_usd:
+            return
+
+        # Direction: approaching from whichever side the last REAL,
+        # already-closed candle was on — the only side a genuine new
+        # cross could be forming from.
+        if self.prev_ema13 < self.prev_ema21:
+            direction = Direction.BUY
+            gap = tick.bid - prov_ema13
+        else:
+            direction = Direction.SELL
+            gap = prov_ema13 - tick.bid
+
+        if gap >= self.config.gap_threshold_usd:
+            return  # wide gap — do nothing early, let normal confirmation handle it
+
+        if not is_within_session(self._active_sessions()):
+            return  # same session gating every other entry path respects
+
+        self._enter(
+            direction,
+            reason=(
+                f"EARLY entry: provisional EMA13/21 within "
+                f"${self.config.early_entry_threshold_usd:.2f} (actual ${abs(prov_ema13 - prov_ema21):.2f}), "
+                f"gap={gap:.2f} < threshold, before candle close"
+            ),
+        )
 
     def _check_ema5_touch(self, tick) -> None:
         pending = self.pending
