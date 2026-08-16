@@ -1,6 +1,6 @@
 """Replays historical price data through the exact same, unmodified live
 strategy engine to produce a much larger sample of hypothetical trades
-than the live/demo accounts have accumulated so far. Two engines share
+than the live/demo accounts have accumulated so far. Three engines share
 this one driver, with genuinely different recording mechanics:
 
 - gap_threshold (EMAScalpEngine, docs/STRATEGY_CURRENT.md): single
@@ -15,6 +15,11 @@ this one driver, with genuinely different recording mechanics:
   simultaneous positions, keyed by direction — no diffing at all, since
   on_tick()/on_new_candle() return explicit OpenedTrade/ClosedTrade event
   lists directly (see state_machine_dual_cross.py's module docstring).
+- cross_confirmed (CrossConfirmedEngine, state_machine_cross_confirmed.py):
+  a dual_cross variant built to isolate one question — entries ONLY on an
+  already-confirmed close-based cross, no tick-based tolerance entry at
+  all. At most one position at a time. Reuses dual_cross's event types and
+  the same event-consuming recording path (EVENT_BASED_VARIANTS below).
 
 This is an approximation, not ground truth:
 - No real historical tick data — each 1-minute candle's own high/low are
@@ -48,12 +53,24 @@ from bot.execution.trade_executor import TradeExecutor
 from bot.risk.position_sizing import calculate_lots
 from bot.strategy.cross_detector import Direction
 from bot.strategy.state_machine import EMAScalpEngine
+from bot.strategy.state_machine_cross_confirmed import CrossConfirmedEngine
 from bot.strategy.state_machine_dual_cross import ClosedTrade, DualCrossEngine, OpenedTrade
 import bot.strategy.state_machine as state_machine_module
+import bot.strategy.state_machine_cross_confirmed as state_machine_cross_confirmed_module
 import bot.strategy.state_machine_dual_cross as state_machine_dual_cross_module
 from bot.sessions import is_within_session as _real_is_within_session
 
-STRATEGY_ENGINES = {"gap_threshold": EMAScalpEngine, "dual_cross": DualCrossEngine}
+STRATEGY_ENGINES = {
+    "gap_threshold": EMAScalpEngine,
+    "dual_cross": DualCrossEngine,
+    "cross_confirmed": CrossConfirmedEngine,
+}
+
+# Both dual_cross and cross_confirmed return explicit OpenedTrade/ClosedTrade
+# event lists from on_tick()/on_new_candle() instead of requiring
+# before/after diffing (see their module docstrings) — anything in this set
+# uses the shared event-consuming recording path below.
+EVENT_BASED_VARIANTS = {"dual_cross", "cross_confirmed"}
 
 
 def run_backtest(
@@ -104,16 +121,17 @@ def run_backtest(
     def _historical_is_within_session(session_windows):
         return _real_is_within_session(session_windows, now_utc=simulated_now["value"])
 
-    # Both engine modules import is_within_session/POSITION_CLOSE_GRACE_PERIOD_SECONDS
-    # independently (bot/strategy/state_machine.py and bot/strategy/
-    # state_machine_dual_cross.py each bind their own copy of the name at
-    # import time) — patching one module's copy does NOT affect the
-    # other's, so both need patching regardless of which engine this
-    # particular run actually uses.
+    # Every engine module imports is_within_session/POSITION_CLOSE_GRACE_PERIOD_SECONDS
+    # independently (each bot/strategy/state_machine*.py file binds its own
+    # copy of the name at import time) — patching one module's copy does
+    # NOT affect another's, so all three need patching regardless of which
+    # engine this particular run actually uses.
     original_is_within_session = state_machine_module.is_within_session
     original_is_within_session_dc = state_machine_dual_cross_module.is_within_session
+    original_is_within_session_cc = state_machine_cross_confirmed_module.is_within_session
     state_machine_module.is_within_session = _historical_is_within_session
     state_machine_dual_cross_module.is_within_session = _historical_is_within_session
+    state_machine_cross_confirmed_module.is_within_session = _historical_is_within_session
 
     # POSITION_CLOSE_GRACE_PERIOD_SECONDS (see state_machine.py) exists to
     # absorb a LIVE broker's settlement lag between order_send() confirming
@@ -126,14 +144,23 @@ def run_backtest(
     # not a workaround.
     original_grace_period = state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_dc = state_machine_dual_cross_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
+    original_grace_period_cc = state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_dual_cross_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
+    state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
 
-    is_dual_cross = backtest_config.strategy_variant == "dual_cross"
+    is_event_based = backtest_config.strategy_variant in EVENT_BASED_VARIANTS
+    # cross_confirmed's entries have no "concurrent" concept at all (single
+    # position, always False) — label them distinctly rather than reusing
+    # dual_cross's tick_cross/concurrent_tick_cross vocabulary, which would
+    # be misleading (cross_confirmed's entries aren't tick-triggered).
+    event_entry_type = (
+        "cross_confirmed" if backtest_config.strategy_variant == "cross_confirmed" else None
+    )
 
     trades: list[dict] = []
     current_entry: dict | None = None  # gap_threshold only: tracks the open position ourselves; OpenPosition has no lots field
-    open_entries_dc: dict[Direction, dict] = {}  # dual_cross only: up to 2 concurrent, keyed by direction (structurally unique per DualCrossEngine.positions)
+    open_entries_dc: dict[Direction, dict] = {}  # event-based engines: dual_cross up to 2 concurrent, cross_confirmed always at most 1 — both keyed by direction
 
     def _spread_price(row) -> float:
         return float(row["spread"]) * point
@@ -171,7 +198,7 @@ def run_backtest(
         current_entry = None
 
     def _record_entry_dc(event: OpenedTrade, lots: float, open_time) -> None:
-        entry_type = "concurrent_tick_cross" if event.is_concurrent_entry else "tick_cross"
+        entry_type = event_entry_type or ("concurrent_tick_cross" if event.is_concurrent_entry else "tick_cross")
         open_entries_dc[event.direction] = {
             "entry_price": event.entry_price,
             "lots": lots,
@@ -257,11 +284,14 @@ def run_backtest(
                 connector.bid = mid_price
                 connector.ask = mid_price + spread_price
 
-                if is_dual_cross:
-                    # DualCrossEngine returns its own list of events —
-                    # no before/after diffing needed (see
-                    # bot/strategy/state_machine_dual_cross.py's module
-                    # docstring and OpenedTrade/ClosedTrade).
+                if is_event_based:
+                    # dual_cross / cross_confirmed return their own list of
+                    # events — no before/after diffing needed (see each
+                    # engine module's own docstring and OpenedTrade/ClosedTrade).
+                    # cross_confirmed's on_tick() only ever produces
+                    # ClosedTrade (SL/TP) — its entries fire from
+                    # on_new_candle() in PHASE 2 below — but this loop stays
+                    # generic over both event types for either engine.
                     for ev in engine.on_tick(connector.get_tick(backtest_config.symbol)):
                         if isinstance(ev, ClosedTrade):
                             _record_exit_dc(ev, candle_time)
@@ -302,12 +332,18 @@ def run_backtest(
             connector.bid = float(candle["close"])
             connector.ask = connector.bid + spread_price
 
-            if is_dual_cross:
+            if is_event_based:
+                # dual_cross's on_new_candle() only ever returns ClosedTrade
+                # events (Β§4 validation) — entries are purely tick-driven,
+                # see PHASE 1 above. cross_confirmed is the opposite: this
+                # is its ONLY entry trigger, so it can return either type —
+                # stay generic over both.
                 for ev in engine.on_new_candle(window):
-                    # on_new_candle only ever returns ClosedTrade events
-                    # (Β§4 validation) — entries are purely tick-driven, see
-                    # PHASE 1 above.
-                    _record_exit_dc(ev, candle_time)
+                    if isinstance(ev, ClosedTrade):
+                        _record_exit_dc(ev, candle_time)
+                    elif isinstance(ev, OpenedTrade):
+                        lots = calculate_lots(connector.balance, backtest_config.position_sizing)
+                        _record_entry_dc(ev, lots, candle_time)
                 continue
 
             prev_position = engine.open_position
@@ -332,7 +368,9 @@ def run_backtest(
     finally:
         state_machine_module.is_within_session = original_is_within_session
         state_machine_dual_cross_module.is_within_session = original_is_within_session_dc
+        state_machine_cross_confirmed_module.is_within_session = original_is_within_session_cc
         state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period
         state_machine_dual_cross_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_dc
+        state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_cc
 
     return trades
