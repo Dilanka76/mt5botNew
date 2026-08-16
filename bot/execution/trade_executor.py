@@ -42,7 +42,11 @@ class TradeExecutor:
         self.symbol = symbol
 
     def get_open_position(self):
-        """Returns this bot's open position (matched by symbol + magic number), or None."""
+        """Returns this bot's open position (matched by symbol + magic number), or None.
+        Returns only the FIRST match — fine for every single-position engine
+        (gap_threshold), but silently discards a second magic-matched
+        position if one ever exists. dual_cross (up to 2 simultaneous
+        positions) must use get_open_positions() below instead."""
         positions = mt5.positions_get(symbol=self.symbol)
         if not positions:
             return None
@@ -50,6 +54,14 @@ class TradeExecutor:
             if position.magic == self.config.magic_number:
                 return position
         return None
+
+    def get_open_positions(self) -> list:
+        """Every one of THIS bot's open positions (matched by symbol + magic
+        number) — unlike get_open_position(), does not stop at the first
+        match. Used by strategy_variant=dual_cross, which can legitimately
+        hold up to 2 simultaneous opposite-direction positions."""
+        positions = mt5.positions_get(symbol=self.symbol)
+        return [p for p in (positions or []) if p.magic == self.config.magic_number]
 
     def get_all_positions(self):
         """Every open position for this symbol, unfiltered by magic number —

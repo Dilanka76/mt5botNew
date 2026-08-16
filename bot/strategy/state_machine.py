@@ -395,9 +395,7 @@ class EMAScalpEngine:
         dependent on early_entry_threshold_usd being configured — with it
         unset (the field's default), a small-gap cross now produces no
         trade at all, ever. Large gap still waits for an EMA5 touch,
-        unaffected. Overridden by EMA5OnlyEngine
-        (state_machine_ema5_only.py) to always wait for the touch,
-        ignoring the gap entirely."""
+        unaffected."""
         symbol = self.config.symbol
         if gap < self.config.gap_threshold_usd:
             log_decision(

@@ -87,6 +87,36 @@ class KillSwitchConfig:
 
 
 @dataclass
+class DualCrossConfig:
+    """Config specific to strategy_variant=dual_cross (bot/strategy/
+    state_machine_dual_cross.py) — see docs/STRATEGY_DUAL_CROSS_SPEC.md.
+    Mandatory (not optional/dormant) for that variant: the engine's own
+    constructor refuses to run without it."""
+    # The entire entry condition (§3 of the spec): a live tick's
+    # provisional EMA13/21 must land within this many dollars of each
+    # other, AND the relationship must have just flipped versus the
+    # previous closed candle. Deliberately a separate field from
+    # early_entry_threshold_usd — that one is optional/off-by-default and
+    # paired with the old gap-threshold immediate-entry logic; this one is
+    # mandatory and has different semantics (the whole entry condition,
+    # not a supplement to a gap check).
+    cross_tolerance_usd: float
+    # Hard cap (§5a): at most this many opposite-direction positions open
+    # at once, per account. A blocked signal does not consume that
+    # candle's one-shot-entry slot — it can still fire later in the same
+    # still-forming candle if a slot frees up.
+    max_concurrent_positions: int = 2
+    # Gates real (non-shadow) placement of the SECOND simultaneous
+    # position: refuses if the connected account isn't confirmed
+    # hedging-mode (a netting-mode account would just net the second
+    # order against the first at the broker, not open two real tickets).
+    # Checked at main.py startup (hard abort) and again, redundantly,
+    # right before DualCrossEngine._enter() would place that second real
+    # order.
+    require_hedging_account: bool = True
+
+
+@dataclass
 class AppConfig:
     account: str
     mt5: MT5Config
@@ -97,7 +127,7 @@ class AppConfig:
     ema_periods: EMAPeriodsConfig
     gap_threshold_usd: float
     take_profit_usd: float
-    strategy_variant: str  # "gap_threshold" | "ema5_only"
+    strategy_variant: str  # "gap_threshold" | "dual_cross"
     sessions: dict[str, list[SessionWindow]]  # keyed by strategy_variant — each variant has its own schedule
     position_sizing: list[PositionSizingTier]
     execution: ExecutionConfig
@@ -127,6 +157,9 @@ class AppConfig:
     # docs/STRATEGY_PROPOSED_OPEN_GAP.md for the full design and the
     # honest (non-lookahead) verification this was built from.
     early_entry_threshold_usd: float | None = None
+    # Mandatory for strategy_variant=dual_cross (None otherwise). See
+    # DualCrossConfig's own docstring and docs/STRATEGY_DUAL_CROSS_SPEC.md.
+    dual_cross: DualCrossConfig | None = None
 
 
 def load_config(account: str, settings_path: str | Path | None = None) -> AppConfig:
@@ -181,6 +214,24 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
             f"every manual trade would be indistinguishable from the bot's own."
         )
 
+    dual_cross_raw = raw.get("dual_cross")
+    dual_cross = DualCrossConfig(**dual_cross_raw) if dual_cross_raw is not None else None
+    if strategy_variant == "dual_cross":
+        # Fail fast at config-load time — the engine constructor also
+        # re-checks this defensively for anyone building AppConfig
+        # programmatically (e.g. tests), but a clear error here is much
+        # more useful than main.py crashing three frames deeper.
+        if dual_cross is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross' but no 'dual_cross:' "
+                f"section is present — see docs/STRATEGY_DUAL_CROSS_SPEC.md."
+            )
+        if raw.get("stop_loss_usd") is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross' but stop_loss_usd is "
+                f"unset — the $15 stop-loss is mandatory for this variant (spec §4a), not optional."
+            )
+
     return AppConfig(
         account=account,
         mt5=MT5Config(
@@ -209,6 +260,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         stop_loss_usd=raw.get("stop_loss_usd"),
         breakeven_trigger_usd=raw.get("breakeven_trigger_usd"),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
+        dual_cross=dual_cross,
     )
 
 

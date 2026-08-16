@@ -55,7 +55,7 @@ from bot.process_utils import find_account_process
 from bot.sessions import is_within_session
 from bot.status_writer import build_status_payload, status_file_path, write_status_atomic
 from bot.strategy.state_machine import EMAScalpEngine
-from bot.strategy.state_machine_ema5_only import EMA5OnlyEngine
+from bot.strategy.state_machine_dual_cross import DualCrossEngine
 from bot.trade_ledger import append_new_trades, trade_ledger_path
 
 logger = logging.getLogger("bot.main")
@@ -65,7 +65,7 @@ THIS_SCRIPT_MATCH = "main.py"
 
 STRATEGY_ENGINES = {
     "gap_threshold": EMAScalpEngine,
-    "ema5_only": EMA5OnlyEngine,
+    "dual_cross": DualCrossEngine,
 }
 
 
@@ -118,6 +118,27 @@ def run() -> None:
         connector.disconnect()
         raise RuntimeError(
             "require_demo_account is true but the connected MT5 account is not a demo account. Aborting."
+        )
+
+    # dual_cross can hold 2 simultaneous opposite positions — real (non-
+    # shadow) order placement requires the account to actually be in
+    # hedging margin mode, or the second order would just net against the
+    # first at the broker instead of opening a genuinely separate ticket.
+    # Hard-abort here rather than discover this via a silently-wrong order;
+    # see bot/strategy/state_machine_dual_cross.py's _enter() for the
+    # redundant defense-in-depth check right before that second order.
+    if (
+        config.strategy_variant == "dual_cross"
+        and config.execution.mode != "shadow"
+        and config.dual_cross.require_hedging_account
+        and not connector.is_hedging_account()
+    ):
+        connector.disconnect()
+        raise RuntimeError(
+            "strategy_variant is 'dual_cross' and execution.mode is not 'shadow', but the "
+            "connected MT5 account is not confirmed hedging-mode — refusing to start, since a "
+            "second simultaneous position would just net against the first at the broker "
+            "instead of opening a real, separate ticket. See docs/STRATEGY_DUAL_CROSS_SPEC.md."
         )
 
     engine_cls = STRATEGY_ENGINES.get(config.strategy_variant)

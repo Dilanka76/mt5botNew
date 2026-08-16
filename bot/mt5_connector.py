@@ -90,6 +90,19 @@ class MT5Connector:
             raise MT5ConnectionError("Not connected to MT5")
         return account_info.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO
 
+    def is_hedging_account(self) -> bool:
+        """True only if this account's margin mode is retail hedging — i.e.
+        the broker will actually hold two opposite positions on the same
+        symbol as two separate tickets, rather than netting a new order
+        against an existing opposite one. Required for
+        strategy_variant=dual_cross (up to 2 simultaneous opposite
+        positions) to behave as designed against a real broker; irrelevant
+        to shadow mode and backtesting, which never place real orders."""
+        account_info = mt5.account_info()
+        if account_info is None:
+            raise MT5ConnectionError("Not connected to MT5")
+        return account_info.margin_mode == mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING
+
     def account_info(self):
         info = mt5.account_info()
         if info is None:
