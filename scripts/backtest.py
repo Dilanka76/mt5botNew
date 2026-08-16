@@ -52,12 +52,20 @@ def parse_args() -> argparse.Namespace:
         "--balance", type=float, default=None,
         help="Starting simulated balance. Defaults to the account's current real balance.",
     )
+    parser.add_argument(
+        "--settings-path", type=str, default=None,
+        help="Override which settings YAML to read (still uses --account's real .env for "
+             "the MT5 connection/credentials). For testing a config variant WITHOUT touching "
+             "the account's real, live-deployed config/settings.<account>.yaml — e.g. a copy "
+             "with one field changed. Output report filenames get a suffix derived from this "
+             "file's name so they never overwrite a report from the real config.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    config = load_config(args.account)
+    config = load_config(args.account, settings_path=args.settings_path)
     # Deliberately a distinct log identity from the live account, not
     # args.account — main.py --account <this account> is very likely
     # running concurrently and already holds logs/<account>/app.log and
@@ -100,6 +108,11 @@ def main() -> None:
     out_dir = PROJECT_ROOT / "reports" / "backtest" / args.account
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{args.date_from}_{args.date_to}"
+    if args.settings_path:
+        # Distinct filename so a variant-config run (e.g. testing a
+        # different cross_tolerance_usd) never overwrites the report from
+        # the account's real, live-deployed config.
+        stem += f"_{Path(args.settings_path).stem}"
 
     (out_dir / f"{stem}.trades.jsonl").write_text("\n".join(json.dumps(t) for t in trades) + ("\n" if trades else ""))
 
