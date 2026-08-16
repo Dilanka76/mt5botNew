@@ -12,6 +12,7 @@ logger = logging.getLogger("bot.mt5")
 
 TIMEFRAME_MAP = {
     "M1": mt5.TIMEFRAME_M1,
+    "M3": mt5.TIMEFRAME_M3,
     "M5": mt5.TIMEFRAME_M5,
     "M15": mt5.TIMEFRAME_M15,
     "M30": mt5.TIMEFRAME_M30,

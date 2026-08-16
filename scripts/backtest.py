@@ -40,7 +40,7 @@ from bot.trade_stats import (
     compute_session_breakdown,
 )
 
-TIMEFRAME_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
+TIMEFRAME_MINUTES = {"M1": 1, "M3": 3, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
 
 
 def parse_args() -> argparse.Namespace:
