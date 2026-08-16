@@ -156,7 +156,7 @@ class DualCrossEngine:
             return
         shadow = self.config.execution.mode == "shadow"
         for position in self.executor.get_all_positions():
-            if position.magic == self.config.execution.magic_number:
+            if position.magic == self.config.execution.magic_number or position.magic in self.config.execution.sibling_magic_numbers:
                 continue
             try:
                 self.executor.close_position(position.ticket)

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -73,6 +73,14 @@ class ExecutionConfig:
     # terminal GUI (manual orders always carry magic=0, confirmed from
     # live account deal history; MT5's order dialog has no magic field).
     reject_manual_trades: bool = False
+    # Other magic numbers this process should also treat as "ours", not
+    # foreign — for running two of our own processes against the same real
+    # MT5 account simultaneously (e.g. an M1 leg and an M3 leg both trading
+    # demo1), each with its own magic_number, each listing the other's
+    # here so reject_manual_trades doesn't fight between them. Still
+    # rejects any magic number NOT in this set (genuine manual/foreign
+    # trades, magic=0 included).
+    sibling_magic_numbers: list[int] = field(default_factory=list)
 
 
 @dataclass
