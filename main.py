@@ -56,6 +56,7 @@ from bot.sessions import is_within_session
 from bot.status_writer import build_status_payload, status_file_path, write_status_atomic
 from bot.strategy.state_machine import EMAScalpEngine
 from bot.strategy.state_machine_cross_confirmed import CrossConfirmedEngine
+from bot.strategy.state_machine_cross_confirmed_adaptive_tp import CrossConfirmedAdaptiveTPEngine
 from bot.strategy.state_machine_dual_cross import DualCrossEngine
 from bot.trade_ledger import append_new_trades, trade_ledger_path
 
@@ -68,6 +69,7 @@ STRATEGY_ENGINES = {
     "gap_threshold": EMAScalpEngine,
     "dual_cross": DualCrossEngine,
     "cross_confirmed": CrossConfirmedEngine,
+    "cross_confirmed_adaptive_tp": CrossConfirmedAdaptiveTPEngine,
 }
 
 

@@ -20,6 +20,11 @@ this one driver, with genuinely different recording mechanics:
   already-confirmed close-based cross, no tick-based tolerance entry at
   all. At most one position at a time. Reuses dual_cross's event types and
   the same event-consuming recording path (EVENT_BASED_VARIANTS below).
+- cross_confirmed_adaptive_tp (CrossConfirmedAdaptiveTPEngine,
+  state_machine_cross_confirmed_adaptive_tp.py): identical entry mechanism
+  to cross_confirmed; only the take-profit distance differs, computed per
+  trade from the confirming candle's own close-open range instead of a
+  fixed take_profit_usd. Also event-based, same recording path.
 
 This is an approximation, not ground truth:
 - No real historical tick data — each 1-minute candle's own high/low are
@@ -54,9 +59,11 @@ from bot.risk.position_sizing import calculate_lots
 from bot.strategy.cross_detector import Direction
 from bot.strategy.state_machine import EMAScalpEngine
 from bot.strategy.state_machine_cross_confirmed import CrossConfirmedEngine
+from bot.strategy.state_machine_cross_confirmed_adaptive_tp import CrossConfirmedAdaptiveTPEngine
 from bot.strategy.state_machine_dual_cross import ClosedTrade, DualCrossEngine, OpenedTrade
 import bot.strategy.state_machine as state_machine_module
 import bot.strategy.state_machine_cross_confirmed as state_machine_cross_confirmed_module
+import bot.strategy.state_machine_cross_confirmed_adaptive_tp as state_machine_cross_confirmed_adaptive_tp_module
 import bot.strategy.state_machine_dual_cross as state_machine_dual_cross_module
 from bot.sessions import is_within_session as _real_is_within_session
 
@@ -64,13 +71,14 @@ STRATEGY_ENGINES = {
     "gap_threshold": EMAScalpEngine,
     "dual_cross": DualCrossEngine,
     "cross_confirmed": CrossConfirmedEngine,
+    "cross_confirmed_adaptive_tp": CrossConfirmedAdaptiveTPEngine,
 }
 
-# Both dual_cross and cross_confirmed return explicit OpenedTrade/ClosedTrade
-# event lists from on_tick()/on_new_candle() instead of requiring
-# before/after diffing (see their module docstrings) — anything in this set
-# uses the shared event-consuming recording path below.
-EVENT_BASED_VARIANTS = {"dual_cross", "cross_confirmed"}
+# dual_cross, cross_confirmed, and cross_confirmed_adaptive_tp all return
+# explicit OpenedTrade/ClosedTrade event lists from on_tick()/on_new_candle()
+# instead of requiring before/after diffing (see their module docstrings) —
+# anything in this set uses the shared event-consuming recording path below.
+EVENT_BASED_VARIANTS = {"dual_cross", "cross_confirmed", "cross_confirmed_adaptive_tp"}
 
 
 def run_backtest(
@@ -124,14 +132,16 @@ def run_backtest(
     # Every engine module imports is_within_session/POSITION_CLOSE_GRACE_PERIOD_SECONDS
     # independently (each bot/strategy/state_machine*.py file binds its own
     # copy of the name at import time) — patching one module's copy does
-    # NOT affect another's, so all three need patching regardless of which
+    # NOT affect another's, so all four need patching regardless of which
     # engine this particular run actually uses.
     original_is_within_session = state_machine_module.is_within_session
     original_is_within_session_dc = state_machine_dual_cross_module.is_within_session
     original_is_within_session_cc = state_machine_cross_confirmed_module.is_within_session
+    original_is_within_session_cc_atp = state_machine_cross_confirmed_adaptive_tp_module.is_within_session
     state_machine_module.is_within_session = _historical_is_within_session
     state_machine_dual_cross_module.is_within_session = _historical_is_within_session
     state_machine_cross_confirmed_module.is_within_session = _historical_is_within_session
+    state_machine_cross_confirmed_adaptive_tp_module.is_within_session = _historical_is_within_session
 
     # POSITION_CLOSE_GRACE_PERIOD_SECONDS (see state_machine.py) exists to
     # absorb a LIVE broker's settlement lag between order_send() confirming
@@ -145,17 +155,22 @@ def run_backtest(
     original_grace_period = state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_dc = state_machine_dual_cross_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_cc = state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
+    original_grace_period_cc_atp = state_machine_cross_confirmed_adaptive_tp_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_dual_cross_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
+    state_machine_cross_confirmed_adaptive_tp_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
 
     is_event_based = backtest_config.strategy_variant in EVENT_BASED_VARIANTS
-    # cross_confirmed's entries have no "concurrent" concept at all (single
-    # position, always False) — label them distinctly rather than reusing
-    # dual_cross's tick_cross/concurrent_tick_cross vocabulary, which would
-    # be misleading (cross_confirmed's entries aren't tick-triggered).
+    # cross_confirmed/cross_confirmed_adaptive_tp entries have no
+    # "concurrent" concept at all (single position, always False) — label
+    # them distinctly rather than reusing dual_cross's
+    # tick_cross/concurrent_tick_cross vocabulary, which would be
+    # misleading (their entries aren't tick-triggered).
     event_entry_type = (
-        "cross_confirmed" if backtest_config.strategy_variant == "cross_confirmed" else None
+        backtest_config.strategy_variant
+        if backtest_config.strategy_variant in ("cross_confirmed", "cross_confirmed_adaptive_tp")
+        else None
     )
 
     trades: list[dict] = []
@@ -369,8 +384,10 @@ def run_backtest(
         state_machine_module.is_within_session = original_is_within_session
         state_machine_dual_cross_module.is_within_session = original_is_within_session_dc
         state_machine_cross_confirmed_module.is_within_session = original_is_within_session_cc
+        state_machine_cross_confirmed_adaptive_tp_module.is_within_session = original_is_within_session_cc_atp
         state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period
         state_machine_dual_cross_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_dc
         state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_cc
+        state_machine_cross_confirmed_adaptive_tp_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_cc_atp
 
     return trades
