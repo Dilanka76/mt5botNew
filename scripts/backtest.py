@@ -27,6 +27,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import MetaTrader5 as mt5
+import numpy as np
+import pandas as pd
+
 from bot.backtest.runner import run_backtest
 from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
@@ -60,7 +64,58 @@ def parse_args() -> argparse.Namespace:
              "with one field changed. Output report filenames get a suffix derived from this "
              "file's name so they never overwrite a report from the real config.",
     )
+    parser.add_argument(
+        "--real-ticks", action="store_true",
+        help="Replay real historical tick-by-tick data (fetched from MT5, chunked by day) "
+             "instead of the default 2-point (low, high) synthetic approximation per candle. "
+             "More accurate — catches genuine entries the approximation can miss (see "
+             "bot/backtest/runner.py's module docstring) — but slower to fetch and run, and "
+             "depends on the broker retaining tick history that far back.",
+    )
     return parser.parse_args()
+
+
+def _fetch_real_ticks(connector: MT5Connector, symbol: str, date_from: datetime, date_to: datetime) -> pd.DataFrame:
+    """Fetches real tick history chunked by day (safer than one huge range
+    call against broker-side limits), returns a DataFrame indexed by
+    tick time with bid/ask columns, sorted ascending."""
+    chunks = []
+    day = date_from
+    while day < date_to:
+        day_end = min(day + timedelta(days=1), date_to)
+        print(f"  Fetching ticks {day.date()} ...", end=" ", flush=True)
+        ticks = mt5.copy_ticks_range(symbol, day, day_end, mt5.COPY_TICKS_ALL)
+        count = 0 if ticks is None else len(ticks)
+        print(f"{count} ticks")
+        if count:
+            chunks.append(ticks)
+        day = day_end
+
+    if not chunks:
+        return pd.DataFrame(columns=["bid", "ask"], index=pd.DatetimeIndex([], tz=timezone.utc))
+
+    all_ticks = np.concatenate(chunks)
+    times = pd.to_datetime(all_ticks["time_msc"], unit="ms", utc=True)
+    df = pd.DataFrame({"bid": all_ticks["bid"], "ask": all_ticks["ask"]}, index=times)
+    df = df[df["bid"] > 0.0]  # a handful of broker feeds emit zero-price keepalive ticks
+    df = df.sort_index()
+    return df
+
+
+def _make_tick_provider(ticks_df: pd.DataFrame):
+    """Returns a tick_provider callable for run_backtest(): given a
+    candle's [start, end) window, does a binary-search slice (fast even
+    across millions of rows) and returns (bid, ask) tuples in order."""
+    index = ticks_df.index
+    bids = ticks_df["bid"].to_numpy()
+    asks = ticks_df["ask"].to_numpy()
+
+    def provider(candle_start, candle_end):
+        lo = index.searchsorted(candle_start, side="left")
+        hi = index.searchsorted(candle_end, side="left")
+        return list(zip(bids[lo:hi], asks[lo:hi]))
+
+    return provider
 
 
 def main() -> None:
@@ -99,11 +154,22 @@ def main() -> None:
         contract_size = symbol_info.trade_contract_size
         point = symbol_info.point
         starting_balance = args.balance if args.balance is not None else connector.account_info().balance
+
+        tick_provider = None
+        if args.real_ticks:
+            # Only the requested [date_from, date_to] range needs real
+            # ticks — the warmup period before date_from only feeds EMA
+            # calculation (from candle closes), never on_tick(), so
+            # fetching ticks for it would be wasted work.
+            print(f"Fetching real tick history for {args.date_from} to {args.date_to} ...")
+            ticks_df = _fetch_real_ticks(connector, config.symbol, date_from, date_to)
+            print(f"Total: {len(ticks_df)} real ticks loaded.")
+            tick_provider = _make_tick_provider(ticks_df)
     finally:
         connector.disconnect()  # replay itself is fully offline from here
 
     df = compute_emas(df, config.ema_periods)
-    trades = run_backtest(config, df, date_from, contract_size, point, starting_balance)
+    trades = run_backtest(config, df, date_from, contract_size, point, starting_balance, tick_provider=tick_provider)
 
     out_dir = PROJECT_ROOT / "reports" / "backtest" / args.account
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -129,7 +195,7 @@ def main() -> None:
 
     report = f"""# Backtest report — {args.account}
 
-**Range:** {args.date_from} to {args.date_to} (UTC) · **Strategy variant:** {config.strategy_variant} · **Symbol:** {config.symbol}
+**Range:** {args.date_from} to {args.date_to} (UTC) · **Strategy variant:** {config.strategy_variant} · **Symbol:** {config.symbol} · **Tick mode:** {"real tick history" if args.real_ticks else "2-point synthetic approximation"}
 
 ## Summary
 
@@ -179,20 +245,37 @@ edge (see the note at the bottom).
 
 This is an approximation, not ground truth — read results with that in mind:
 
-- **No real historical tick data.** Each 1-minute candle's own high/low
-  are used as two synthetic ticks (in candle-direction order) rather than
-  a true tick-by-tick replay. If a single bar's range spans both a profit
-  target and a stop-loss, the synthetic ordering determines the outcome —
-  """ + (
-        f"and this run's config had `stop_loss_usd: {config.stop_loss_usd}` "
-        "set, so that risk is live here: a trade whose candle touched both "
-        "levels could show up as either exit depending on the synthetic "
-        "ordering heuristic, not a true replay of which one the market hit "
-        "first."
-        if config.stop_loss_usd is not None else
-        "this run's config has no `stop_loss_usd` set, so the only "
-        "tick-checked exit is the take-profit — this risk doesn't apply "
-        "here."
+""" + (
+        "- **Real historical tick-by-tick data was used** (`--real-ticks`), not the "
+        "2-point synthetic approximation — every real tick the broker recorded during "
+        "each candle was replayed through the engine in chronological order. This "
+        "closes the specific gap described below for the default mode: a genuine "
+        "tick-based entry can no longer be missed just because its qualifying moment "
+        "fell strictly between a candle's low and high. Two smaller approximations "
+        "still apply: candle timestamps are still assumed to be true UTC (unverified "
+        "independently), and a handful of broker feeds emit zero-price keepalive "
+        "ticks, which are filtered out."
+        if args.real_ticks else
+        "- **No real historical tick data.** Each 1-minute candle's own high/low "
+        "are used as two synthetic ticks (in candle-direction order) rather than "
+        "a true tick-by-tick replay. If a single bar's range spans both a profit "
+        "target and a stop-loss, the synthetic ordering determines the outcome — "
+        + (
+            f"and this run's config had `stop_loss_usd: {config.stop_loss_usd}` "
+            "set, so that risk is live here: a trade whose candle touched both "
+            "levels could show up as either exit depending on the synthetic "
+            "ordering heuristic, not a true replay of which one the market hit "
+            "first. **Confirmed in practice**: a genuine tick-based entry can be "
+            "missed entirely if its qualifying crossing zone falls strictly "
+            "between a candle's low and high rather than at either extreme — "
+            "verified against real tick history for a specific real trade "
+            "(2026-08-10 08:33 UTC). Re-run with `--real-ticks` for an accurate "
+            "replay that doesn't have this gap."
+            if config.stop_loss_usd is not None else
+            "this run's config has no `stop_loss_usd` set, so the only "
+            "tick-checked exit is the take-profit — this risk doesn't apply "
+            "here."
+        )
     ) + """
 - **Spread is synthesized** from each candle's own MT5-reported spread
   and the symbol's point size, not the real historical spread at that
