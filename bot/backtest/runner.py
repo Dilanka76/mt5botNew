@@ -26,12 +26,19 @@ this one driver, with genuinely different recording mechanics:
   trade from the confirming candle's own close-open range instead of a
   fixed take_profit_usd. Also event-based, same recording path.
 
-This is an approximation, not ground truth:
+This is an approximation, not ground truth, UNLESS a `tick_provider` is
+passed in (see run_backtest()'s docstring) — then PHASE 1 below replays
+real historical ticks instead of the 2-point approximation described
+next. Without one (the default):
 - No real historical tick data — each 1-minute candle's own high/low are
   used as two synthetic ticks, in candle-direction order (close>=open ->
   low then high, else high then low). If a single bar's range spans both
   a profit target AND a stop-loss/EMA5-9-confirmation, that ordering
-  determines the outcome.
+  determines the outcome. Verified via scripts/inspect_ticks.py against
+  real tick history that this can genuinely miss a real, qualifying
+  tick-based entry whose crossing zone falls strictly between a candle's
+  low and high rather than at either extreme — not just a theoretical
+  gap, a confirmed real-world case (2026-08-10 08:33 UTC, XAUUSDp).
 - Spread is synthesized from each candle's own MT5-reported spread
   (points) and the symbol's point size, not the real historical spread
   at that instant.
@@ -49,6 +56,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from typing import Callable
 
 import pandas as pd
 
@@ -88,13 +96,28 @@ def run_backtest(
     contract_size: float,
     point: float,
     starting_balance: float,
+    tick_provider: Callable[[pd.Timestamp, pd.Timestamp], list[tuple[float, float]]] | None = None,
 ) -> list[dict]:
     """Returns closed trades as plain dicts shaped like the real trade
     ledger (bot/trade_ledger.py) — {"profit", "close_time", ...} — so the
     report can reuse bot/trade_stats.py's aggregation functions completely
     unmodified. `df_with_emas` must already have ema5/ema13/ema21 columns
     (bot.indicators.ema.compute_emas) and enough pre-date_from history for
-    EMA warm-up (see scripts/backtest.py, which pads the fetch)."""
+    EMA warm-up (see scripts/backtest.py, which pads the fetch).
+
+    `tick_provider`, if given, is called once per candle as
+    `tick_provider(candle_start, candle_end)` and must return a
+    chronologically-ordered list of `(bid, ask)` tuples — every real tick
+    that occurred while that candle was forming. PHASE 1 below then
+    replays those real ticks through the engine instead of the default
+    2-point (low, high) synthetic approximation (see module docstring for
+    why that approximation can miss a real, genuine entry). An empty list
+    for a candle with no recorded ticks falls back to that candle's own
+    close as a single synthetic tick, so a gap in tick history never
+    silently skips a candle's stop-loss/take-profit checks entirely.
+    Leave as `None` (default) to keep the original synthetic-tick
+    behavior unchanged — this parameter changes nothing for any existing
+    caller."""
     if config.strategy_variant not in STRATEGY_ENGINES:
         raise ValueError(f"Unknown strategy_variant '{config.strategy_variant}'")
 
@@ -290,14 +313,18 @@ def run_backtest(
             # all see real "not yet closed" price movement, same as live —
             # not information from this candle's own eventual close, which
             # doesn't exist yet at this point in time.
-            if candle["close"] >= candle["open"]:
-                tick_sequence = (float(candle["low"]), float(candle["high"]))
+            if tick_provider is not None:
+                candle_end_time = df_with_emas.index[i + 1]
+                real_ticks = tick_provider(candle_time, candle_end_time)
+                tick_pairs = real_ticks if real_ticks else [(float(candle["close"]), float(candle["close"]) + spread_price)]
+            elif candle["close"] >= candle["open"]:
+                tick_pairs = [(float(candle["low"]), float(candle["low"]) + spread_price), (float(candle["high"]), float(candle["high"]) + spread_price)]
             else:
-                tick_sequence = (float(candle["high"]), float(candle["low"]))
+                tick_pairs = [(float(candle["high"]), float(candle["high"]) + spread_price), (float(candle["low"]), float(candle["low"]) + spread_price)]
 
-            for mid_price in tick_sequence:
+            for mid_price, ask_price in tick_pairs:
                 connector.bid = mid_price
-                connector.ask = mid_price + spread_price
+                connector.ask = ask_price
 
                 if is_event_based:
                     # dual_cross / cross_confirmed return their own list of
