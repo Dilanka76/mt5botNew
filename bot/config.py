@@ -198,7 +198,14 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
             f"{settings_path.name} and adjust as needed (see SETUP.md)."
         )
 
-    with open(settings_path, "r") as f:
+    # Explicit encoding, not the platform default: on Windows, Python's
+    # open() falls back to the locale codepage (cp1252 on this server),
+    # which silently misreads any non-ASCII character (an em-dash in a
+    # comment, a curly quote, etc.) and can corrupt or fail to parse an
+    # otherwise-valid UTF-8 YAML file. utf-8-sig also transparently
+    # strips a leading BOM if one is ever present (e.g. from a PowerShell
+    # Set-Content -Encoding UTF8, which adds one by default).
+    with open(settings_path, "r", encoding="utf-8-sig") as f:
         raw = yaml.safe_load(f)
 
     mt5_raw = raw.get("mt5", {})
