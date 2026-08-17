@@ -35,6 +35,7 @@ from bot.backtest.runner import run_backtest
 from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
+from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -71,6 +72,11 @@ def _fetch_live_entries(connector: MT5Connector, config, dt_from: datetime, dt_t
 def main() -> None:
     args = parse_args()
     config = load_config(args.account)
+    # Distinct log identity, same reasoning as scripts/backtest.py: never
+    # share logs/<account>/... with a concurrently-running live main.py
+    # (or a concurrently-running backtest.py) — two RotatingFileHandlers on
+    # the same file can silently drop records from either process.
+    setup_logging(config.logging, f"{args.account}-compare")
 
     date_from = datetime.strptime(args.date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     date_to = datetime.strptime(args.date_to, "%Y-%m-%d").replace(tzinfo=timezone.utc)
