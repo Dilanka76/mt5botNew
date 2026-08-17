@@ -112,6 +112,11 @@ class OpenedTrade:
     stop_loss: float
     cross_candle_time: pd.Timestamp
     is_concurrent_entry: bool
+    # True for a Β§4b close-confirmed fallback entry (see module docstring)
+    # — False for the normal, tick-based path. Lets callers (reports,
+    # backtest recording) distinguish the two instead of both looking
+    # like an ordinary tick_cross entry.
+    is_fallback_entry: bool = False
 
 
 @dataclass
@@ -358,6 +363,7 @@ class DualCrossEngine:
                         ),
                         cross_candle_time_override=last_closed_time,
                         pre_validated=True,
+                        is_fallback_entry=True,
                     )
                     if opened is not None:
                         events.append(opened)
@@ -494,11 +500,13 @@ class DualCrossEngine:
         reason: str,
         cross_candle_time_override: pd.Timestamp | None = None,
         pre_validated: bool = False,
+        is_fallback_entry: bool = False,
     ) -> OpenedTrade | None:
-        """cross_candle_time_override/pre_validated exist only for the
-        Β§4b close-confirmed fallback (see on_new_candle) — a normal
-        tick-based entry leaves both at their defaults (uses
-        self.current_candle_time, starts unvalidated, per Β§4)."""
+        """cross_candle_time_override/pre_validated/is_fallback_entry exist
+        only for the Β§4b close-confirmed fallback (see on_new_candle) — a
+        normal tick-based entry leaves all three at their defaults (uses
+        self.current_candle_time, starts unvalidated, tagged as a normal
+        tick entry, per Β§4)."""
         is_concurrent = len(self.positions) == 1  # captured before insertion below
         if (
             is_concurrent
@@ -545,13 +553,14 @@ class DualCrossEngine:
             self.config.symbol, "trade_entered", reason,
             direction=direction.value, lots=lots, entry=result.price, tp=result.take_profit,
             stop_loss=position.stop_loss, balance=balance, is_concurrent_entry=is_concurrent,
-            pre_validated=pre_validated,
+            pre_validated=pre_validated, is_fallback_entry=is_fallback_entry,
         )
 
         return OpenedTrade(
             direction=direction, ticket=result.ticket, entry_price=result.price,
             take_profit=result.take_profit, stop_loss=position.stop_loss,
             cross_candle_time=cross_candle_time, is_concurrent_entry=is_concurrent,
+            is_fallback_entry=is_fallback_entry,
         )
 
     def _close_position(self, direction: Direction, category: str, reason: str, exit_price: float) -> ClosedTrade:

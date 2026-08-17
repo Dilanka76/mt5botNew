@@ -236,7 +236,15 @@ def run_backtest(
         current_entry = None
 
     def _record_entry_dc(event: OpenedTrade, lots: float, open_time) -> None:
-        entry_type = event_entry_type or ("concurrent_tick_cross" if event.is_concurrent_entry else "tick_cross")
+        if event_entry_type:
+            entry_type = event_entry_type
+        elif event.is_fallback_entry:
+            # Β§4b close-confirmed fallback (see state_machine_dual_cross.py's
+            # module docstring) — the candle closed showing a genuine cross
+            # that no tick-based entry caught during its own formation.
+            entry_type = "concurrent_close_confirmed_fallback" if event.is_concurrent_entry else "close_confirmed_fallback"
+        else:
+            entry_type = "concurrent_tick_cross" if event.is_concurrent_entry else "tick_cross"
         open_entries_dc[event.direction] = {
             "entry_price": event.entry_price,
             "lots": lots,
