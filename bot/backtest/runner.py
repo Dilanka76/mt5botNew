@@ -375,11 +375,13 @@ def run_backtest(
             connector.ask = connector.bid + spread_price
 
             if is_event_based:
-                # dual_cross's on_new_candle() only ever returns ClosedTrade
-                # events (Β§4 validation) — entries are purely tick-driven,
-                # see PHASE 1 above. cross_confirmed is the opposite: this
-                # is its ONLY entry trigger, so it can return either type —
-                # stay generic over both.
+                # dual_cross's on_new_candle() returns ClosedTrade events
+                # (Β§4 validation) and, since 2026-08-17, can also return an
+                # OpenedTrade for its close-confirmed fallback entry (Β§4b —
+                # see state_machine_dual_cross.py's module docstring).
+                # cross_confirmed's on_new_candle() is its ONLY entry
+                # trigger, so it always returns either type — stay generic
+                # over both regardless of which engine is running.
                 for ev in engine.on_new_candle(window):
                     if isinstance(ev, ClosedTrade):
                         _record_exit_dc(ev, candle_time)

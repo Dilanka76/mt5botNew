@@ -38,6 +38,22 @@ second position closes and the first is untouched. A signal blocked by the
 2-position cap or by a closed session does NOT consume that candle's
 one-shot-entry slot — a later qualifying tick in the same still-forming
 candle can still enter if a slot frees up or the session opens.
+
+Close-confirmed fallback entry (added 2026-08-17, not in the original
+spec — see [[project-dual-cross-and-cross-confirmed]] for the real-world
+case that motivated this): the tick-based path above can genuinely miss a
+real cross — e.g. price moves through the tolerance zone faster than the
+live tick-poll interval can sample it. If a candle closes showing a
+genuine, confirmed EMA13/21 flip and NO tick-based entry fired during that
+candle's own formation, this engine now enters at that close price as a
+backup, subject to the exact same cap/same-direction/session guards as the
+tick-based path. A fallback entry is validated=True immediately (it's
+already confirmed by construction — there's no provisional guess left to
+check later) — if it's concurrent, the opposite position is force-closed
+right then, at the same moment, exactly as Β§5 already does for a
+tick-based entry whose later validation succeeds. This does not change
+anything about entries the tick-based path already catches; it only adds
+a second chance for the ones it doesn't.
 """
 from __future__ import annotations
 
@@ -244,11 +260,11 @@ class DualCrossEngine:
     def _update_state(self) -> None:
         self.state = TradeState.IN_POSITION if self.positions else TradeState.IDLE
 
-    def on_new_candle(self, df_with_emas: pd.DataFrame) -> list[ClosedTrade]:
+    def on_new_candle(self, df_with_emas: pd.DataFrame) -> list[OpenedTrade | ClosedTrade]:
         """Call once per newly closed candle. df's iloc[-2] is the real,
         final candle just closed; iloc[-1] is the live/forming one (see
         cross_detector.py's module docstring for why -2, not -1)."""
-        events: list[ClosedTrade] = []
+        events: list[OpenedTrade | ClosedTrade] = []
         last_closed = df_with_emas.iloc[-2]
         last_closed_time = last_closed.name
         ema13 = float(last_closed["ema13"])
@@ -299,6 +315,65 @@ class DualCrossEngine:
                     ),
                     exit_price=exit_price,
                 ))
+
+        # Β§4b (close-confirmed fallback, see module docstring): this
+        # candle's close shows a genuine cross that the tick-based path
+        # never caught during the candle's own formation — enter now, at
+        # the close, as a backup. Same guards as the tick-based path;
+        # skipped entirely if anything already entered this candle
+        # (either direction — one entry per candle is the existing rule,
+        # unchanged here).
+        if not self._entry_fired_this_candle and self.prev_ema13 is not None and self.prev_ema21 is not None:
+            prev_state = _classify(self.prev_ema13, self.prev_ema21)
+            new_state = _classify(ema13, ema21)
+            if prev_state is not None and new_state is not None and prev_state != new_state:
+                direction = Direction.BUY if new_state == CrossState.ABOVE else Direction.SELL
+                cap = self.config.dual_cross.max_concurrent_positions
+                if len(self.positions) >= cap:
+                    log_decision(
+                        self.config.symbol, "entry_blocked_cap",
+                        f"{direction.value} close-confirmed fallback blocked: already at "
+                        f"{len(self.positions)}/{cap} positions",
+                    )
+                elif direction in self.positions:
+                    # Structurally shouldn't happen — same reasoning as the
+                    # tick-based path's identical guard.
+                    log_decision(
+                        self.config.symbol, "entry_blocked_same_direction",
+                        f"{direction.value} close-confirmed fallback ignored: already holding a "
+                        f"{direction.value} position (unexpected)",
+                    )
+                elif not is_within_session(self._active_sessions()):
+                    log_decision(
+                        self.config.symbol, "cross_ignored_outside_session",
+                        f"{direction.value} close-confirmed fallback at candle close, no session open",
+                    )
+                else:
+                    opened = self._enter(
+                        direction,
+                        reason=(
+                            f"close-confirmed fallback: candle closed with a genuine "
+                            f"{prev_state.value}->{new_state.value} cross (ema13={ema13:.2f}, "
+                            f"ema21={ema21:.2f}) and no tick-based entry caught it this candle"
+                        ),
+                        cross_candle_time_override=last_closed_time,
+                        pre_validated=True,
+                    )
+                    if opened is not None:
+                        events.append(opened)
+                        if opened.is_concurrent_entry:
+                            opposite = _opposite(direction)
+                            if opposite in self.positions:
+                                events.append(self._close_position(
+                                    opposite,
+                                    category="closed_by_concurrent_validation",
+                                    reason=(
+                                        f"{direction.value}'s close-confirmed fallback entry is validated "
+                                        f"immediately -> closing the original {opposite.value} now, at its "
+                                        f"current price"
+                                    ),
+                                    exit_price=exit_price,
+                                ))
 
         self.prev_ema13 = ema13
         self.prev_ema21 = ema21
@@ -413,7 +488,17 @@ class DualCrossEngine:
         self._update_state()
         return events
 
-    def _enter(self, direction: Direction, reason: str) -> OpenedTrade | None:
+    def _enter(
+        self,
+        direction: Direction,
+        reason: str,
+        cross_candle_time_override: pd.Timestamp | None = None,
+        pre_validated: bool = False,
+    ) -> OpenedTrade | None:
+        """cross_candle_time_override/pre_validated exist only for the
+        Β§4b close-confirmed fallback (see on_new_candle) — a normal
+        tick-based entry leaves both at their defaults (uses
+        self.current_candle_time, starts unvalidated, per Β§4)."""
         is_concurrent = len(self.positions) == 1  # captured before insertion below
         if (
             is_concurrent
@@ -441,15 +526,18 @@ class DualCrossEngine:
         lots = calculate_lots(balance, self.config.position_sizing)
         result = self.executor.open_market_order(direction, lots, self.config.take_profit_usd)
 
+        cross_candle_time = (
+            cross_candle_time_override if cross_candle_time_override is not None else self.current_candle_time
+        )
         position = DualPosition(
             direction=direction,
             ticket=result.ticket,
             entry_price=result.price,
             take_profit=result.take_profit,
             stop_loss=self._compute_stop_loss(direction, result.price),
-            cross_candle_time=self.current_candle_time,
+            cross_candle_time=cross_candle_time,
             is_concurrent_entry=is_concurrent,
-            validated=False,
+            validated=pre_validated,
         )
         self.positions[direction] = position
 
@@ -457,12 +545,13 @@ class DualCrossEngine:
             self.config.symbol, "trade_entered", reason,
             direction=direction.value, lots=lots, entry=result.price, tp=result.take_profit,
             stop_loss=position.stop_loss, balance=balance, is_concurrent_entry=is_concurrent,
+            pre_validated=pre_validated,
         )
 
         return OpenedTrade(
             direction=direction, ticket=result.ticket, entry_price=result.price,
             take_profit=result.take_profit, stop_loss=position.stop_loss,
-            cross_candle_time=self.current_candle_time, is_concurrent_entry=is_concurrent,
+            cross_candle_time=cross_candle_time, is_concurrent_entry=is_concurrent,
         )
 
     def _close_position(self, direction: Direction, category: str, reason: str, exit_price: float) -> ClosedTrade:
