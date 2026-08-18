@@ -125,6 +125,34 @@ class DualCrossConfig:
 
 
 @dataclass
+class DualCrossConfirmedEntryConfig:
+    """Config specific to strategy_variant=dual_cross_confirmed_entry
+    (bot/strategy/state_machine_dual_cross_confirmed_entry.py). A dual_cross
+    variant built on user request (2026-08-18): entries only ever happen on
+    an already-confirmed candle-close cross — no tick-based tolerance entry
+    at all, so a genuine cross can never be missed the way dual_cross's
+    early-entry path sometimes misses one. The trade-off moves to the
+    OTHER side instead: closing the current position (whenever a confirmed
+    opposite cross occurs) now prioritizes reacting fast (tick-based) over
+    waiting for full confirmation, with confirmation only as a fallback.
+    Same $stop_loss_usd/take_profit_usd/session-gating as dual_cross
+    otherwise. Unlike dual_cross, this variant holds AT MOST ONE position
+    at a time (see the engine module's docstring for why that's an
+    inherent consequence of always closing the opposite on a confirmed
+    cross, not a separate design choice) — so there's no position cap and
+    no hedging-account requirement to configure here. Mandatory (not
+    optional/dormant) for this variant — the engine's own constructor
+    refuses to run without it."""
+    # Tolerance used ONLY for the tick-based closing check (NOT for entry —
+    # entries have no tolerance at all in this variant, see above): while a
+    # position is open, watch every tick for the OPPOSITE direction's
+    # provisional EMA13/21 to flip within this many dollars — the moment it
+    # does, close that position right then, before waiting for the candle
+    # to actually close and confirm the reversal.
+    closing_tolerance_usd: float
+
+
+@dataclass
 class AppConfig:
     account: str
     mt5: MT5Config
@@ -168,6 +196,9 @@ class AppConfig:
     # Mandatory for strategy_variant=dual_cross (None otherwise). See
     # DualCrossConfig's own docstring and docs/STRATEGY_DUAL_CROSS_SPEC.md.
     dual_cross: DualCrossConfig | None = None
+    # Mandatory for strategy_variant=dual_cross_confirmed_entry (None
+    # otherwise). See DualCrossConfirmedEntryConfig's own docstring.
+    dual_cross_confirmed_entry: DualCrossConfirmedEntryConfig | None = None
 
 
 def load_config(account: str, settings_path: str | Path | None = None) -> AppConfig:
@@ -247,6 +278,23 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
                 f"unset — the $15 stop-loss is mandatory for this variant (spec §4a), not optional."
             )
 
+    dual_cross_confirmed_entry_raw = raw.get("dual_cross_confirmed_entry")
+    dual_cross_confirmed_entry = (
+        DualCrossConfirmedEntryConfig(**dual_cross_confirmed_entry_raw)
+        if dual_cross_confirmed_entry_raw is not None else None
+    )
+    if strategy_variant == "dual_cross_confirmed_entry":
+        if dual_cross_confirmed_entry is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_confirmed_entry' but no "
+                f"'dual_cross_confirmed_entry:' section is present."
+            )
+        if raw.get("stop_loss_usd") is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_confirmed_entry' but "
+                f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
+            )
+
     return AppConfig(
         account=account,
         mt5=MT5Config(
@@ -276,6 +324,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         breakeven_trigger_usd=raw.get("breakeven_trigger_usd"),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
         dual_cross=dual_cross,
+        dual_cross_confirmed_entry=dual_cross_confirmed_entry,
     )
 
 

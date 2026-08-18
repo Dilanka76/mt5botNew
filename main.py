@@ -58,6 +58,7 @@ from bot.strategy.state_machine import EMAScalpEngine
 from bot.strategy.state_machine_cross_confirmed import CrossConfirmedEngine
 from bot.strategy.state_machine_cross_confirmed_adaptive_tp import CrossConfirmedAdaptiveTPEngine
 from bot.strategy.state_machine_dual_cross import DualCrossEngine
+from bot.strategy.state_machine_dual_cross_confirmed_entry import DualCrossConfirmedEntryEngine
 from bot.trade_ledger import append_new_trades, trade_ledger_path
 
 logger = logging.getLogger("bot.main")
@@ -68,9 +69,20 @@ THIS_SCRIPT_MATCH = "main.py"
 STRATEGY_ENGINES = {
     "gap_threshold": EMAScalpEngine,
     "dual_cross": DualCrossEngine,
+    "dual_cross_confirmed_entry": DualCrossConfirmedEntryEngine,
     "cross_confirmed": CrossConfirmedEngine,
     "cross_confirmed_adaptive_tp": CrossConfirmedAdaptiveTPEngine,
 }
+
+# Variants that can hold 2 simultaneous opposite-direction positions — real
+# (non-shadow) order placement for the second one requires the account to
+# actually be in hedging margin mode, or it would just net against the
+# first at the broker instead of opening a genuinely separate ticket.
+# dual_cross_confirmed_entry deliberately does NOT belong here — it always
+# closes the opposite position before/as the new one opens (see that
+# engine's module docstring), so it never actually holds two at once and
+# has no hedging-account requirement of its own.
+CONCURRENT_POSITION_VARIANTS = {"dual_cross"}
 
 
 def _format_open_position(position) -> dict | None:
@@ -124,25 +136,25 @@ def run() -> None:
             "require_demo_account is true but the connected MT5 account is not a demo account. Aborting."
         )
 
-    # dual_cross can hold 2 simultaneous opposite positions — real (non-
-    # shadow) order placement requires the account to actually be in
+    # dual_cross can hold 2 simultaneous opposite positions — real
+    # (non-shadow) order placement requires the account to actually be in
     # hedging margin mode, or the second order would just net against the
     # first at the broker instead of opening a genuinely separate ticket.
     # Hard-abort here rather than discover this via a silently-wrong order;
-    # see bot/strategy/state_machine_dual_cross.py's _enter() for the
-    # redundant defense-in-depth check right before that second order.
+    # DualCrossEngine._enter() also has a redundant defense-in-depth check
+    # right before that second order.
     if (
-        config.strategy_variant == "dual_cross"
+        config.strategy_variant in CONCURRENT_POSITION_VARIANTS
         and config.execution.mode != "shadow"
         and config.dual_cross.require_hedging_account
         and not connector.is_hedging_account()
     ):
         connector.disconnect()
         raise RuntimeError(
-            "strategy_variant is 'dual_cross' and execution.mode is not 'shadow', but the "
-            "connected MT5 account is not confirmed hedging-mode — refusing to start, since a "
-            "second simultaneous position would just net against the first at the broker "
-            "instead of opening a real, separate ticket. See docs/STRATEGY_DUAL_CROSS_SPEC.md."
+            f"strategy_variant is '{config.strategy_variant}' and execution.mode is not "
+            f"'shadow', but the connected MT5 account is not confirmed hedging-mode — "
+            f"refusing to start, since a second simultaneous position would just net "
+            f"against the first at the broker instead of opening a real, separate ticket."
         )
 
     engine_cls = STRATEGY_ENGINES.get(config.strategy_variant)

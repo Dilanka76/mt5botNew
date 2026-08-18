@@ -55,6 +55,30 @@ sessions:
     - {start: "12:00", end: "23:00"}
   ema5_only:
     - {start: "04:00", end: "23:00"}
+  dual_cross:
+    - {start: "04:00", end: "08:00"}
+    - {start: "12:00", end: "16:00"}
+    - {start: "19:00", end: "22:00"}
+  dual_cross_confirmed_entry:
+    - {start: "04:00", end: "08:00"}
+    - {start: "12:00", end: "16:00"}
+    - {start: "19:00", end: "22:00"}
+
+# Only read if strategy_variant is dual_cross. See
+# docs/STRATEGY_DUAL_CROSS_SPEC.md and state_machine_dual_cross.py.
+# dual_cross:
+#   cross_tolerance_usd: 0.02
+#   max_concurrent_positions: 2
+#   require_hedging_account: true
+
+# Only read if strategy_variant is dual_cross_confirmed_entry — a
+# dual_cross variant that enters ONLY on an already-confirmed candle-close
+# cross (no tick-based tolerance entry), and closes the current position
+# tick-first (within closing_tolerance_usd) with candle-close confirmation
+# as a fallback. See state_machine_dual_cross_confirmed_entry.py's module
+# docstring — holds at most one position at a time, unlike dual_cross.
+# dual_cross_confirmed_entry:
+#   closing_tolerance_usd: 0.02
 
 # Fixed lot size by current account balance (not risk-% based). Ordered by
 # ascending max_balance; the first tier whose max_balance >= balance applies.
