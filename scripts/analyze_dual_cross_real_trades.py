@@ -205,6 +205,19 @@ def print_report(result: dict) -> None:
             f"({abs(vf_loss) / abs(loss_amt) * 100 if loss_amt else 0:.1f}% of all loss $ in this window)"
         )
 
+    print("\nTrade-by-trade (chronological):")
+    print(f"  {'open_time':<20} {'close_time':<20} {'dir':<5} {'entry':>9} {'exit':>9} {'profit':>9}  category")
+    running = 0.0
+    for r in rows:
+        running += r["profit"]
+        outcome = "WIN " if r["profit"] > 0 else ("LOSS" if r["profit"] < 0 else "BE  ")
+        print(
+            f"  {r['open_time'].strftime('%Y-%m-%d %H:%M:%S'):<20} "
+            f"{r['close_time'].strftime('%Y-%m-%d %H:%M:%S'):<20} "
+            f"{r['direction']:<5} {r['entry_price']:>9.2f} {r['exit_price']:>9.2f} "
+            f"{outcome} {r['profit']:>+8.2f}  {r['category']:<32} running={running:+.2f}"
+        )
+
 
 def main() -> None:
     args = parse_args()
