@@ -12,20 +12,19 @@ $pythonExe = "C:\Users\Administrator\AppData\Local\Programs\Python\Python314\pyt
 $workDir = "C:\MT5BOTSCRIPT\mt5bot"
 
 $cred = Get-Credential -UserName "trader" -Message "Password to register demo1_ce scheduled tasks"
-$principal = New-ScheduledTaskPrincipal -UserId "trader" -LogonType Password -RunLevel Highest
 
 # --- Main bot task: 30-minute repetition from the start ---
 $botAction = New-ScheduledTaskAction -Execute $pythonExe -Argument "main.py --account demo1_ce" -WorkingDirectory $workDir
 $botBootTrigger = New-ScheduledTaskTrigger -AtStartup
 $botTimeTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650)
-Register-ScheduledTask -TaskName "MT5-Bot-demo1_ce" -Action $botAction -Trigger @($botBootTrigger, $botTimeTrigger) -Principal $principal -User $cred.UserName -Password $cred.GetNetworkCredential().Password -Force | Out-Null
+Register-ScheduledTask -TaskName "MT5-Bot-demo1_ce" -Action $botAction -Trigger @($botBootTrigger, $botTimeTrigger) -User $cred.UserName -Password $cred.GetNetworkCredential().Password -RunLevel Highest -Force | Out-Null
 Write-Output "Registered MT5-Bot-demo1_ce"
 
 # --- Watchdog task: 5-minute repetition, matching the other watchdogs ---
 $wdAction = New-ScheduledTaskAction -Execute $pythonExe -Argument "scripts\watchdog.py --account demo1_ce" -WorkingDirectory $workDir
 $wdBootTrigger = New-ScheduledTaskTrigger -AtStartup
 $wdTimeTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
-Register-ScheduledTask -TaskName "MT5-Bot-Watchdog-demo1_ce" -Action $wdAction -Trigger @($wdBootTrigger, $wdTimeTrigger) -Principal $principal -User $cred.UserName -Password $cred.GetNetworkCredential().Password -Force | Out-Null
+Register-ScheduledTask -TaskName "MT5-Bot-Watchdog-demo1_ce" -Action $wdAction -Trigger @($wdBootTrigger, $wdTimeTrigger) -User $cred.UserName -Password $cred.GetNetworkCredential().Password -RunLevel Highest -Force | Out-Null
 Write-Output "Registered MT5-Bot-Watchdog-demo1_ce"
 
 Write-Output ""
