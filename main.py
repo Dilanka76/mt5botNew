@@ -59,6 +59,7 @@ from bot.strategy.state_machine_cross_confirmed import CrossConfirmedEngine
 from bot.strategy.state_machine_cross_confirmed_adaptive_tp import CrossConfirmedAdaptiveTPEngine
 from bot.strategy.state_machine_dual_cross import DualCrossEngine
 from bot.strategy.state_machine_dual_cross_confirmed_entry import DualCrossConfirmedEntryEngine
+from bot.strategy.state_machine_dual_cross_tight_exit import DualCrossTightExitEngine
 from bot.trade_ledger import append_new_trades, trade_ledger_path
 
 logger = logging.getLogger("bot.main")
@@ -70,6 +71,7 @@ STRATEGY_ENGINES = {
     "gap_threshold": EMAScalpEngine,
     "dual_cross": DualCrossEngine,
     "dual_cross_confirmed_entry": DualCrossConfirmedEntryEngine,
+    "dual_cross_tight_exit": DualCrossTightExitEngine,
     "cross_confirmed": CrossConfirmedEngine,
     "cross_confirmed_adaptive_tp": CrossConfirmedAdaptiveTPEngine,
 }
@@ -78,10 +80,10 @@ STRATEGY_ENGINES = {
 # (non-shadow) order placement for the second one requires the account to
 # actually be in hedging margin mode, or it would just net against the
 # first at the broker instead of opening a genuinely separate ticket.
-# dual_cross_confirmed_entry deliberately does NOT belong here — it always
-# closes the opposite position before/as the new one opens (see that
-# engine's module docstring), so it never actually holds two at once and
-# has no hedging-account requirement of its own.
+# dual_cross_confirmed_entry and dual_cross_tight_exit deliberately do NOT
+# belong here — both always close the opposite position before/as the new
+# one opens (see each engine's module docstring), so neither ever actually
+# holds two at once and neither has a hedging-account requirement of its own.
 CONCURRENT_POSITION_VARIANTS = {"dual_cross"}
 
 

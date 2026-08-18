@@ -63,6 +63,10 @@ sessions:
     - {start: "04:00", end: "08:00"}
     - {start: "12:00", end: "16:00"}
     - {start: "19:00", end: "22:00"}
+  dual_cross_tight_exit:
+    - {start: "04:00", end: "08:00"}
+    - {start: "12:00", end: "16:00"}
+    - {start: "19:00", end: "22:00"}
 
 # Only read if strategy_variant is dual_cross. See
 # docs/STRATEGY_DUAL_CROSS_SPEC.md and state_machine_dual_cross.py.
@@ -79,6 +83,19 @@ sessions:
 # docstring — holds at most one position at a time, unlike dual_cross.
 # dual_cross_confirmed_entry:
 #   closing_tolerance_usd: 0.02
+
+# Only read if strategy_variant is dual_cross_tight_exit — built 2026-08-19
+# directly from real-trade analysis of dual_cross's losses. Keeps
+# dual_cross's tick-based entry (same cross_tolerance_usd), adds an
+# early_exit_usd net that closes a not-yet-validated position early if
+# price moves that far against it (instead of riding to the candle's
+# close), and a "reversal swap" that closes ANY open position (validated
+# or not) the instant a later candle confirms a genuine opposite cross.
+# Holds at most one position at a time, like dual_cross_confirmed_entry.
+# See state_machine_dual_cross_tight_exit.py's module docstring.
+# dual_cross_tight_exit:
+#   cross_tolerance_usd: 0.02
+#   early_exit_usd: 3.0
 
 # Fixed lot size by current account balance (not risk-% based). Ordered by
 # ascending max_balance; the first tier whose max_balance >= balance applies.

@@ -70,27 +70,34 @@ from bot.strategy.state_machine_cross_confirmed import CrossConfirmedEngine
 from bot.strategy.state_machine_cross_confirmed_adaptive_tp import CrossConfirmedAdaptiveTPEngine
 from bot.strategy.state_machine_dual_cross import ClosedTrade, DualCrossEngine, OpenedTrade
 from bot.strategy.state_machine_dual_cross_confirmed_entry import DualCrossConfirmedEntryEngine
+from bot.strategy.state_machine_dual_cross_tight_exit import DualCrossTightExitEngine
 import bot.strategy.state_machine as state_machine_module
 import bot.strategy.state_machine_cross_confirmed as state_machine_cross_confirmed_module
 import bot.strategy.state_machine_cross_confirmed_adaptive_tp as state_machine_cross_confirmed_adaptive_tp_module
 import bot.strategy.state_machine_dual_cross as state_machine_dual_cross_module
 import bot.strategy.state_machine_dual_cross_confirmed_entry as state_machine_dual_cross_confirmed_entry_module
+import bot.strategy.state_machine_dual_cross_tight_exit as state_machine_dual_cross_tight_exit_module
 from bot.sessions import is_within_session as _real_is_within_session
 
 STRATEGY_ENGINES = {
     "gap_threshold": EMAScalpEngine,
     "dual_cross": DualCrossEngine,
     "dual_cross_confirmed_entry": DualCrossConfirmedEntryEngine,
+    "dual_cross_tight_exit": DualCrossTightExitEngine,
     "cross_confirmed": CrossConfirmedEngine,
     "cross_confirmed_adaptive_tp": CrossConfirmedAdaptiveTPEngine,
 }
 
-# dual_cross, dual_cross_confirmed_entry, cross_confirmed, and
-# cross_confirmed_adaptive_tp all return explicit OpenedTrade/ClosedTrade
-# event lists from on_tick()/on_new_candle() instead of requiring
-# before/after diffing (see their module docstrings) — anything in this
-# set uses the shared event-consuming recording path below.
-EVENT_BASED_VARIANTS = {"dual_cross", "dual_cross_confirmed_entry", "cross_confirmed", "cross_confirmed_adaptive_tp"}
+# dual_cross, dual_cross_confirmed_entry, dual_cross_tight_exit,
+# cross_confirmed, and cross_confirmed_adaptive_tp all return explicit
+# OpenedTrade/ClosedTrade event lists from on_tick()/on_new_candle()
+# instead of requiring before/after diffing (see their module docstrings)
+# — anything in this set uses the shared event-consuming recording path
+# below.
+EVENT_BASED_VARIANTS = {
+    "dual_cross", "dual_cross_confirmed_entry", "dual_cross_tight_exit",
+    "cross_confirmed", "cross_confirmed_adaptive_tp",
+}
 
 
 def run_backtest(
@@ -164,11 +171,13 @@ def run_backtest(
     original_is_within_session = state_machine_module.is_within_session
     original_is_within_session_dc = state_machine_dual_cross_module.is_within_session
     original_is_within_session_dcce = state_machine_dual_cross_confirmed_entry_module.is_within_session
+    original_is_within_session_dcte = state_machine_dual_cross_tight_exit_module.is_within_session
     original_is_within_session_cc = state_machine_cross_confirmed_module.is_within_session
     original_is_within_session_cc_atp = state_machine_cross_confirmed_adaptive_tp_module.is_within_session
     state_machine_module.is_within_session = _historical_is_within_session
     state_machine_dual_cross_module.is_within_session = _historical_is_within_session
     state_machine_dual_cross_confirmed_entry_module.is_within_session = _historical_is_within_session
+    state_machine_dual_cross_tight_exit_module.is_within_session = _historical_is_within_session
     state_machine_cross_confirmed_module.is_within_session = _historical_is_within_session
     state_machine_cross_confirmed_adaptive_tp_module.is_within_session = _historical_is_within_session
 
@@ -184,11 +193,13 @@ def run_backtest(
     original_grace_period = state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_dc = state_machine_dual_cross_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_dcce = state_machine_dual_cross_confirmed_entry_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
+    original_grace_period_dcte = state_machine_dual_cross_tight_exit_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_cc = state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_cc_atp = state_machine_cross_confirmed_adaptive_tp_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_dual_cross_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_dual_cross_confirmed_entry_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
+    state_machine_dual_cross_tight_exit_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_cross_confirmed_adaptive_tp_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
 
@@ -436,11 +447,13 @@ def run_backtest(
         state_machine_module.is_within_session = original_is_within_session
         state_machine_dual_cross_module.is_within_session = original_is_within_session_dc
         state_machine_dual_cross_confirmed_entry_module.is_within_session = original_is_within_session_dcce
+        state_machine_dual_cross_tight_exit_module.is_within_session = original_is_within_session_dcte
         state_machine_cross_confirmed_module.is_within_session = original_is_within_session_cc
         state_machine_cross_confirmed_adaptive_tp_module.is_within_session = original_is_within_session_cc_atp
         state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period
         state_machine_dual_cross_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_dc
         state_machine_dual_cross_confirmed_entry_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_dcce
+        state_machine_dual_cross_tight_exit_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_dcte
         state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_cc
         state_machine_cross_confirmed_adaptive_tp_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_cc_atp
 

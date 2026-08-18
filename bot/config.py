@@ -153,6 +153,37 @@ class DualCrossConfirmedEntryConfig:
 
 
 @dataclass
+class DualCrossTightExitConfig:
+    """Config specific to strategy_variant=dual_cross_tight_exit
+    (bot/strategy/state_machine_dual_cross_tight_exit.py). Built
+    2026-08-19 directly from a real-trade-history finding: 96.9% of
+    dual_cross's real losses on demo1_m1/demo1_m3 traced back to either a
+    tick-based entry whose own candle failed to confirm it
+    (validation_failed) or a second concurrent position getting displaced
+    (closed_by_concurrent_validation). Keeps dual_cross's tick-based entry
+    (same cross_tolerance_usd semantics), but adds a tight early_exit_usd
+    net for the not-yet-validated window and a single-position "reversal
+    swap" in place of dual_cross's concurrent-position mechanism — see the
+    engine module's docstring for the full design. Like
+    dual_cross_confirmed_entry, this variant never holds two positions at
+    once, so there's no position cap and no hedging-account requirement to
+    configure here. Mandatory (not optional/dormant) for this variant —
+    the engine's own constructor refuses to run without it."""
+    # Same semantics as dual_cross.cross_tolerance_usd (Β§3): the
+    # tick-based entry condition — a live tick's provisional EMA13/21 must
+    # land within this many dollars of each other, AND have just flipped
+    # versus the previous closed candle.
+    cross_tolerance_usd: float
+    # NEW mechanism, not present in dual_cross or dual_cross_confirmed_entry:
+    # while a position is still unvalidated (its own entry candle hasn't
+    # closed yet), watched every tick — if price moves this many dollars
+    # against the position, close it immediately at that small, capped
+    # loss instead of waiting for the candle to close and taking whatever
+    # loss that produces.
+    early_exit_usd: float
+
+
+@dataclass
 class AppConfig:
     account: str
     mt5: MT5Config
@@ -199,6 +230,9 @@ class AppConfig:
     # Mandatory for strategy_variant=dual_cross_confirmed_entry (None
     # otherwise). See DualCrossConfirmedEntryConfig's own docstring.
     dual_cross_confirmed_entry: DualCrossConfirmedEntryConfig | None = None
+    # Mandatory for strategy_variant=dual_cross_tight_exit (None
+    # otherwise). See DualCrossTightExitConfig's own docstring.
+    dual_cross_tight_exit: DualCrossTightExitConfig | None = None
 
 
 def load_config(account: str, settings_path: str | Path | None = None) -> AppConfig:
@@ -295,6 +329,23 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
                 f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
             )
 
+    dual_cross_tight_exit_raw = raw.get("dual_cross_tight_exit")
+    dual_cross_tight_exit = (
+        DualCrossTightExitConfig(**dual_cross_tight_exit_raw)
+        if dual_cross_tight_exit_raw is not None else None
+    )
+    if strategy_variant == "dual_cross_tight_exit":
+        if dual_cross_tight_exit is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_tight_exit' but no "
+                f"'dual_cross_tight_exit:' section is present."
+            )
+        if raw.get("stop_loss_usd") is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_tight_exit' but "
+                f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
+            )
+
     return AppConfig(
         account=account,
         mt5=MT5Config(
@@ -325,6 +376,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
         dual_cross=dual_cross,
         dual_cross_confirmed_entry=dual_cross_confirmed_entry,
+        dual_cross_tight_exit=dual_cross_tight_exit,
     )
 
 
