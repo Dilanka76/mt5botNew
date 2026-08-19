@@ -19,6 +19,26 @@ COLOMBO = ZoneInfo("Asia/Colombo")
 LOOKBACK_DAYS = 5  # how far before a report date to search for a trade's ENTRY deal, in case it opened earlier
 
 
+def mt5_utc_offset(connector, symbol: str) -> timedelta:
+    """Measures, RIGHT NOW, how far MT5's own reported time is from true
+    UTC — confirmed 2026-08-19 to be a real, exact offset (MT5 tick.time
+    read as 21:24:14 while true UTC and the server's own OS clock both
+    agreed on 18:24:14 — a clean +3h gap, not machine clock drift).
+    Broker "server time" conventions like this commonly follow a DST
+    schedule, so this is measured fresh each call rather than hardcoded —
+    a stale hardcoded constant would silently go wrong the next time the
+    broker's DST rule flips. Apply the returned offset by SUBTRACTING it
+    from any deal/position .time field (already read via
+    datetime.fromtimestamp(x, tz=timezone.utc)) to get true UTC, or by
+    ADDING it to a true-UTC query boundary before passing to
+    mt5.history_deals_get()/history_orders_get() (which expect MT5's own
+    time convention, not true UTC)."""
+    tick = connector.get_tick(symbol)
+    mt5_now = datetime.fromtimestamp(tick.time, tz=timezone.utc)
+    true_now = datetime.now(timezone.utc)
+    return mt5_now - true_now
+
+
 def trade_profit(exit_deal, entry_deal) -> float:
     """A trade's true realized profit: the exit deal's profit plus BOTH
     legs' swap/commission (MT5 attributes these separately per deal, and

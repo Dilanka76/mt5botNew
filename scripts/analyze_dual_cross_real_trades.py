@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import MetaTrader5 as mt5
 
-from bot.analytics import trade_profit
+from bot.analytics import mt5_utc_offset, trade_profit
 from bot.config import load_config, validate_account_name
 from bot.mt5_connector import MT5Connector
 
@@ -121,7 +121,15 @@ def analyze(account: str, dt_from: datetime, dt_to: datetime) -> dict:
     connector = MT5Connector(config.mt5)
     connector.connect()
     try:
-        deals = mt5.history_deals_get(dt_from, dt_to)
+        # MT5's own .time fields (and history_deals_get's query args) use
+        # the broker's own time convention, NOT true UTC — confirmed
+        # 2026-08-19 to differ from true UTC by a real, exact offset (see
+        # bot.analytics.mt5_utc_offset's docstring). Measure it fresh here
+        # rather than assume a fixed value, convert our true-UTC query
+        # window INTO MT5's convention before querying, then convert every
+        # returned deal's time back to true UTC for display/filtering.
+        offset = mt5_utc_offset(connector, config.symbol)
+        deals = mt5.history_deals_get(dt_from + offset, dt_to + offset)
     finally:
         connector.disconnect()
 
@@ -140,14 +148,18 @@ def analyze(account: str, dt_from: datetime, dt_to: datetime) -> dict:
         exit_deal = next((d for d in deal_list if d.entry == mt5.DEAL_ENTRY_OUT), None)
         if entry_deal is None or exit_deal is None:
             continue
+        open_time = datetime.fromtimestamp(entry_deal.time, tz=timezone.utc) - offset
+        close_time = datetime.fromtimestamp(exit_deal.time, tz=timezone.utc) - offset
+        if not (dt_from <= open_time <= dt_to):
+            continue  # the widened MT5-time query can return deals just outside our true-UTC window
         profit = trade_profit(exit_deal, entry_deal)
         rows.append({
             "ticket": position_id,
             "direction": "BUY" if entry_deal.type == mt5.DEAL_TYPE_BUY else "SELL",
             "entry_price": entry_deal.price,
             "exit_price": exit_deal.price,
-            "open_time": datetime.fromtimestamp(entry_deal.time, tz=timezone.utc),
-            "close_time": datetime.fromtimestamp(exit_deal.time, tz=timezone.utc),
+            "open_time": open_time,
+            "close_time": close_time,
             "profit": profit,
             "category": categories.get(position_id, "unknown"),
         })
