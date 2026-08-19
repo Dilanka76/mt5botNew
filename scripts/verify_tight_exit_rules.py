@@ -81,7 +81,33 @@ def main() -> None:
     print(f"account={args.account} timeframe={config.timeframe} ({candle_seconds}s/candle) since={args.since}")
     print(f"{len(entries)} relevant decision-log entries found.\n")
 
-    violations = []
+    violations, counts, state = check_rule_compliance(entries, candle_seconds)
+
+    print("Event counts:")
+    for k, v in counts.items():
+        print(f"  {k:<28} {v}")
+
+    print(f"\nFinal state at end of log window: {state}")
+    print()
+    if violations:
+        print(f"{len(violations)} RULE VIOLATION(S) FOUND:\n")
+        for ts, msg in violations:
+            print(f"  [{ts.isoformat()}] {msg}")
+        sys.exit(1)
+    else:
+        print("No rule violations found — every trade in this window followed the designed rules exactly.")
+
+
+def check_rule_compliance(
+    entries: list[tuple[datetime, dict]], candle_seconds: int,
+) -> tuple[list[tuple[datetime, str]], dict[str, int], str]:
+    """Walks a chronological list of (timestamp, decision-log-entry) pairs
+    through the exact dual_cross_tight_exit state machine
+    (NONE/UNVALIDATED/VALIDATED), flagging any transition that shouldn't be
+    possible per the designed rules. Returns (violations, event_counts,
+    final_state). Importable — used by both this script's CLI and
+    scripts/tight_exit_real_trades_report.py."""
+    violations: list[tuple[datetime, str]] = []
     state = "NONE"  # NONE | UNVALIDATED | VALIDATED
     last_early_exit_time: datetime | None = None
     counts = {"trade_entered_tick": 0, "trade_entered_fallback": 0, "position_validated": 0,
@@ -151,19 +177,7 @@ def main() -> None:
             counts["take_profit"] += 1
             state = "NONE"
 
-    print("Event counts:")
-    for k, v in counts.items():
-        print(f"  {k:<28} {v}")
-
-    print(f"\nFinal state at end of log window: {state}")
-    print()
-    if violations:
-        print(f"{len(violations)} RULE VIOLATION(S) FOUND:\n")
-        for ts, msg in violations:
-            print(f"  [{ts.isoformat()}] {msg}")
-        sys.exit(1)
-    else:
-        print("No rule violations found — every trade in this window followed the designed rules exactly.")
+    return violations, counts, state
 
 
 if __name__ == "__main__":
