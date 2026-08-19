@@ -1,12 +1,16 @@
-"""BACKTEST-ONLY variant: dual_cross_tight_exit_swap_confirm ("the swap
-flip fix").
+"""dual_cross_tight_exit_swap_confirm ("the swap flip fix") —
+strategy_variant=dual_cross_tight_exit_swap_confirm.
 
-Built 2026-08-20 at the user's explicit request to compare — never to
-deploy live until confirmed by backtest. Identical to dual_cross_tight_exit
-(see that engine's module docstring for the full $3-net / one-attempt-
-per-candle / SL-net-mutual-exclusivity design, all unchanged here) except
-for ONE thing: the reversal swap now requires TWO consecutive candles to
-agree before it actually executes, instead of firing on the very first
+Built 2026-08-20, initially backtest-only for comparison, then deployed
+live to demo1_m1/demo1_m3 the same day after the user reviewed backtest
+results (see project memory for the numbers and the important caveat:
+the backtest did not reproduce the current strategy's own real result for
+the same period, so this was deployed to be judged on live results, not
+backtest). Identical to dual_cross_tight_exit (see that engine's module
+docstring for the full $3-net / one-attempt-per-candle /
+SL-net-mutual-exclusivity design, all unchanged here) except for ONE
+thing: the reversal swap now requires TWO consecutive candles to agree
+before it actually executes, instead of firing on the very first
 confirmed opposite cross.
 
 Root cause this targets, found from real-trade analysis 2026-08-19/20:
@@ -42,13 +46,12 @@ Explicitly confirmed with the user before building, all three:
      its confirming candle happens to wobble; suppressing a swap doesn't
      remove the position's risk, it just shifts exposure toward the real
      $15 stop-loss instead of a cheaper swap exit if the market really
-     was turning. This is exactly why it's backtest-only until proven.
+     was turning. This is exactly why it was proven on backtest AND real
+     data before being trusted, not backtest alone.
 
-NOT wired into main.py's STRATEGY_ENGINES — this variant must never be
-launched live. Only registered in bot/backtest/runner.py's
-STRATEGY_ENGINES, always run via scripts/backtest.py --settings-path
-pointing at a backtest-only config copy, never the real live
-config/settings.<account>.yaml.
+Wired into main.py's STRATEGY_ENGINES (deployable live) as of 2026-08-20,
+and still registered in bot/backtest/runner.py's STRATEGY_ENGINES too for
+ongoing backtest comparisons via scripts/backtest.py --settings-path.
 """
 from __future__ import annotations
 
