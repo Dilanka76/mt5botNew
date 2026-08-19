@@ -109,6 +109,27 @@ def build_summary(name: str, df: pd.DataFrame) -> dict:
     }
 
 
+def build_category_breakdown(name: str, df: pd.DataFrame) -> list[dict]:
+    """One row per close-reason category for this account — count, wins,
+    losses, and total P/L. Same shape as
+    scripts/analyze_dual_cross_real_trades.py's real-trade breakdown, so
+    a backtest run and a real-trade run can be compared side by side."""
+    rows = []
+    total_trades = len(df)
+    for category, group in df.groupby("Hit Type / Close Reason"):
+        rows.append({
+            "Account": name,
+            "Category": category,
+            "Trades": len(group),
+            "% of Trades": round(100 * len(group) / total_trades, 1) if total_trades else 0,
+            "Wins": (group["Outcome"] == "WIN").sum(),
+            "Losses": (group["Outcome"] == "LOSS").sum(),
+            "Total P/L ($)": round(group["P/L ($)"].sum(), 2),
+        })
+    rows.sort(key=lambda r: -r["Trades"])
+    return rows
+
+
 def _cell_width(value) -> int:
     if value is None:
         return 0
@@ -135,6 +156,8 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     summaries = []
+    category_rows: list[dict] = []
+    all_dfs: list[pd.DataFrame] = []
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         for account in accounts:
             config = load_config(account)
@@ -149,11 +172,22 @@ def main() -> None:
             sheet_name = account[:31]  # Excel sheet name length limit
             df.to_excel(writer, sheet_name=sheet_name, index=False)
             summaries.append(build_summary(account, df))
+            category_rows.extend(build_category_breakdown(account, df))
+            all_dfs.append(df)
             autofit(writer.sheets[sheet_name], df, 40)
+
+        if len(accounts) > 1:
+            combined_df = pd.concat(all_dfs, ignore_index=True)
+            summaries.append(build_summary("COMBINED (all accounts)", combined_df))
+            category_rows.extend(build_category_breakdown("COMBINED (all accounts)", combined_df))
 
         summary_df = pd.DataFrame(summaries)
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
         autofit(writer.sheets["Summary"], summary_df, 30)
+
+        category_df = pd.DataFrame(category_rows)
+        category_df.to_excel(writer, sheet_name="By Category", index=False)
+        autofit(writer.sheets["By Category"], category_df, 40)
 
     print(f"Written: {out_path}")
 
