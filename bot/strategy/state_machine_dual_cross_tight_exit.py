@@ -33,16 +33,26 @@ of (2), this engine can never hold two positions at once (single-position,
 auto-replacing design, like dual_cross_confirmed_entry) — no position cap,
 no hedging-account requirement.
 
-Entry priority, unchanged from dual_cross and confirmed with the user:
-tick-based entry (checked continuously, whenever no position is open) is
-tried first; the close-confirmed fallback (Β§4b-style: catches a genuine
-cross that no tick-based entry caught during that candle's own formation)
-only fires if tick-based entry did not ALREADY succeed at least once
-during that candle — tracked by _tick_entry_used_this_candle, reset only
-when a new candle starts (deliberately NOT reset by an early-exit closure
-mid-candle, so a fresh tick-based re-entry attempt after an early exit is
-always allowed within the same still-forming candle — the fallback is a
-backup for a genuine miss, not a substitute for an early-exit retry).
+Entry priority: AT MOST ONE tick-based attempt per candle (checked
+continuously, whenever no position is open AND no tick-based entry has
+already been attempted this candle) — tracked by
+_tick_entry_used_this_candle, reset only when a new candle starts. If
+that one attempt hits the early-exit net and closes, no further
+tick-based entries are tried for the rest of that candle; the ONLY way a
+new position can open for the remainder of that candle is the
+close-confirmed fallback (Β§4b-style, at the candle's real close). This
+was explicitly confirmed with the user 2026-08-19 after an earlier draft
+of this engine allowed unlimited same-candle tick-based retries — every
+tick-based check within one candle compares against the SAME fixed
+pre-candle EMA13/21 baseline, so repeated retries could only ever flip
+toward the same direction as the original attempt anyway; capping it at
+one attempt avoids repeatedly gambling on that single direction and
+instead waits for the real candle close to decide.
+
+The $15 stop-loss and the $3 early-exit net are mutually exclusive on a
+single position, never both checked: a position watches ONLY early_exit_usd
+while unvalidated, and ONLY the real stop_loss_usd once validated — not
+"whichever is smaller," structurally one or the other depending on state.
 
 Reuses DualPosition/OpenedTrade/ClosedTrade from state_machine_dual_cross.py
 (needs the validated/cross_candle_time fields DualPosition adds over the
@@ -282,10 +292,21 @@ class DualCrossTightExitEngine:
         if self.position is not None:
             position = self.position
             if time.monotonic() - position.opened_monotonic >= POSITION_CLOSE_GRACE_PERIOD_SECONDS:
-                stop_hit = (
-                    (position.direction == Direction.BUY and tick.bid <= position.stop_loss)
-                    or (position.direction == Direction.SELL and tick.bid >= position.stop_loss)
-                )
+                # The $15 stop-loss and the $3 early-exit net are mutually
+                # exclusive, never both checked on the same position: a
+                # validated (confirmed) position is watched ONLY by the
+                # real $15 stop-loss; an unvalidated one is watched ONLY
+                # by early_exit_usd. Confirmed with the user 2026-08-19 —
+                # not just "the $3 net always fires first in practice" but
+                # structurally impossible for the $15 stop to ever apply
+                # before confirmation.
+                if position.validated:
+                    stop_hit = (
+                        (position.direction == Direction.BUY and tick.bid <= position.stop_loss)
+                        or (position.direction == Direction.SELL and tick.bid >= position.stop_loss)
+                    )
+                else:
+                    stop_hit = False
                 if stop_hit:
                     events.append(self._close_position(
                         category="stop_loss",
@@ -320,11 +341,20 @@ class DualCrossTightExitEngine:
                             ))
 
         # Tick-based entry — only when no position is currently open
-        # (single-position design). Deliberately NOT gated on
-        # _tick_entry_used_this_candle — a fresh attempt is always allowed
-        # in the same still-forming candle right after an early-exit close
-        # (see module docstring).
-        if self.position is None and self.prev_ema13 is not None and self.prev_ema21 is not None:
+        # (single-position design) AND no tick-based entry has already
+        # been attempted this candle. Confirmed with the user 2026-08-19:
+        # ONE tick-based attempt per candle only — if it hits the
+        # early-exit net and closes, the rest of that candle's entries can
+        # ONLY come from the close-confirmed fallback below (waiting for
+        # the real candle close), never another tick-based guess. This is
+        # a deliberate change from an earlier draft of this engine, which
+        # allowed unlimited same-candle tick-based retries.
+        if (
+            self.position is None
+            and not self._tick_entry_used_this_candle
+            and self.prev_ema13 is not None
+            and self.prev_ema21 is not None
+        ):
             k_mid = 2 / (self.config.ema_periods.mid + 1)
             k_slow = 2 / (self.config.ema_periods.slow + 1)
             prov13 = tick.bid * k_mid + self.prev_ema13 * (1 - k_mid)
