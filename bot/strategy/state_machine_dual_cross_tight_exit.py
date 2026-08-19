@@ -349,9 +349,13 @@ class DualCrossTightExitEngine:
         # the real candle close), never another tick-based guess. This is
         # a deliberate change from an earlier draft of this engine, which
         # allowed unlimited same-candle tick-based retries.
+        allow_retry = (
+            not self._tick_entry_used_this_candle
+            or self.config.dual_cross_tight_exit.allow_multiple_tick_attempts_per_candle
+        )
         if (
             self.position is None
-            and not self._tick_entry_used_this_candle
+            and allow_retry
             and self.prev_ema13 is not None
             and self.prev_ema21 is not None
         ):

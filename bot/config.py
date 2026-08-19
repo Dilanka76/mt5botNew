@@ -181,6 +181,17 @@ class DualCrossTightExitConfig:
     # loss instead of waiting for the candle to close and taking whatever
     # loss that produces.
     early_exit_usd: float
+    # Live default (False): after ONE tick-based entry attempt this
+    # candle hits the early-exit net, no further tick-based retries are
+    # tried for the rest of that candle — the only way a new position can
+    # open for the remainder of that candle is the close-confirmed
+    # fallback. Set True ONLY for a backtest-only comparison config (via
+    # scripts/backtest.py --settings-path) reproducing an earlier draft of
+    # this engine that allowed unlimited same-candle tick-based retries —
+    # requested by the user 2026-08-19 specifically to compare against the
+    # corrected one-attempt behavior without touching the live config.
+    # Never set True in a live-deployed config/settings.<account>.yaml.
+    allow_multiple_tick_attempts_per_candle: bool = False
 
 
 @dataclass
