@@ -29,10 +29,26 @@ from bot.config import PROJECT_ROOT, load_config, validate_account_name
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--accounts", required=True, help="Comma-separated account names, e.g. demo1_m1,demo1_m3")
-    parser.add_argument("--from", dest="date_from", required=True, help="YYYY-MM-DD, must match the backtest run")
-    parser.add_argument("--to", dest="date_to", required=True, help="YYYY-MM-DD, must match the backtest run")
+    parser.add_argument(
+        "--from", dest="date_from", required=True,
+        help='Exactly the --from value passed to scripts/backtest.py for this run (e.g. "2026-08-20" or "2026-08-20 03:00")',
+    )
+    parser.add_argument(
+        "--to", dest="date_to", required=True,
+        help='Exactly the --to value passed to scripts/backtest.py for this run',
+    )
     parser.add_argument("--out", default=None, help="Output .xlsx path; defaults to reports/backtest/trades_detailed_<from>_<to>.xlsx")
+    parser.add_argument(
+        "--variant-suffix", default=None,
+        help='If the backtest was run with --settings-path config/settings.<account>.<suffix>.yaml, '
+             'pass just <suffix> here (e.g. "tight_exit_swap_confirm") so this script finds the right '
+             'trades.jsonl for each account instead of the real-config (no-suffix) one.',
+    )
     return parser.parse_args()
+
+
+def _filename_safe(value: str) -> str:
+    return value.replace(" ", "_").replace(":", "")
 
 
 def load_trades(path: Path) -> list[dict]:
@@ -130,6 +146,29 @@ def build_category_breakdown(name: str, df: pd.DataFrame) -> list[dict]:
     return rows
 
 
+def build_entry_type_breakdown(name: str, df: pd.DataFrame) -> list[dict]:
+    """One row per entry type (tick_cross / close_confirmed / etc.) for
+    this account — count, win rate, wins, losses, total P/L. Same shape
+    as scripts/tight_exit_real_trades_report.py's real-trade entry-type
+    breakdown, so a backtest run and a real-trade run can be compared
+    side by side."""
+    rows = []
+    for etype, group in df.groupby("Entry Type"):
+        wins = (group["Outcome"] == "WIN").sum()
+        total = len(group)
+        rows.append({
+            "Account": name,
+            "Entry Type": etype,
+            "Trades": total,
+            "Win Rate (%)": round(100 * wins / total, 1) if total else 0,
+            "Wins": wins,
+            "Losses": (group["Outcome"] == "LOSS").sum(),
+            "Total P/L ($)": round(group["P/L ($)"].sum(), 2),
+        })
+    rows.sort(key=lambda r: -r["Trades"])
+    return rows
+
+
 def _cell_width(value) -> int:
     if value is None:
         return 0
@@ -151,21 +190,29 @@ def autofit(worksheet, df: pd.DataFrame, max_width: int) -> None:
 def main() -> None:
     args = parse_args()
     accounts = [validate_account_name(a.strip()) for a in args.accounts.split(",")]
-    stem = f"{args.date_from}_{args.date_to}"
-    out_path = Path(args.out) if args.out else PROJECT_ROOT / "reports" / "backtest" / f"trades_detailed_{stem}.xlsx"
+    stem = f"{_filename_safe(args.date_from)}_{_filename_safe(args.date_to)}"
+    out_stem = stem + (f"_{args.variant_suffix}" if args.variant_suffix else "")
+    out_path = Path(args.out) if args.out else PROJECT_ROOT / "reports" / "backtest" / f"trades_detailed_{out_stem}.xlsx"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     summaries = []
     category_rows: list[dict] = []
+    entry_type_rows: list[dict] = []
     all_dfs: list[pd.DataFrame] = []
     with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
         for account in accounts:
-            config = load_config(account)
-            trades_path = PROJECT_ROOT / "reports" / "backtest" / account / f"{stem}.trades.jsonl"
+            settings_path = None
+            file_stem = stem
+            if args.variant_suffix:
+                settings_path = f"config/settings.{account}.{args.variant_suffix}.yaml"
+                file_stem = f"{stem}_settings.{account}.{args.variant_suffix}"
+            config = load_config(account, settings_path=settings_path)
+            trades_path = PROJECT_ROOT / "reports" / "backtest" / account / f"{file_stem}.trades.jsonl"
             if not trades_path.exists():
+                suffix_hint = f' --settings-path {settings_path}' if settings_path else ""
                 raise FileNotFoundError(
                     f"{trades_path} not found — run scripts/backtest.py --account {account} "
-                    f"--from {args.date_from} --to {args.date_to} first."
+                    f"--from {args.date_from} --to {args.date_to}{suffix_hint} first."
                 )
             trades = load_trades(trades_path)
             df = build_rows(trades, config.stop_loss_usd or 0.0)
@@ -173,6 +220,7 @@ def main() -> None:
             df.to_excel(writer, sheet_name=sheet_name, index=False)
             summaries.append(build_summary(account, df))
             category_rows.extend(build_category_breakdown(account, df))
+            entry_type_rows.extend(build_entry_type_breakdown(account, df))
             all_dfs.append(df)
             autofit(writer.sheets[sheet_name], df, 40)
 
@@ -180,6 +228,7 @@ def main() -> None:
             combined_df = pd.concat(all_dfs, ignore_index=True)
             summaries.append(build_summary("COMBINED (all accounts)", combined_df))
             category_rows.extend(build_category_breakdown("COMBINED (all accounts)", combined_df))
+            entry_type_rows.extend(build_entry_type_breakdown("COMBINED (all accounts)", combined_df))
 
         summary_df = pd.DataFrame(summaries)
         summary_df.to_excel(writer, sheet_name="Summary", index=False)
@@ -188,6 +237,10 @@ def main() -> None:
         category_df = pd.DataFrame(category_rows)
         category_df.to_excel(writer, sheet_name="By Category", index=False)
         autofit(writer.sheets["By Category"], category_df, 40)
+
+        entry_type_df = pd.DataFrame(entry_type_rows)
+        entry_type_df.to_excel(writer, sheet_name="By Entry Type", index=False)
+        autofit(writer.sheets["By Entry Type"], entry_type_df, 40)
 
     print(f"Written: {out_path}")
 

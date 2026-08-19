@@ -47,11 +47,33 @@ from bot.trade_stats import (
 TIMEFRAME_MINUTES = {"M1": 1, "M3": 3, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
 
 
+def _parse_datetime_arg(value: str) -> datetime:
+    """Accepts either "YYYY-MM-DD" (midnight UTC) or "YYYY-MM-DD HH:MM"
+    (hour-precise, UTC) — the latter added 2026-08-20 for windows shorter
+    than a full day (e.g. "the last 14 hours")."""
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    raise ValueError(f"Could not parse {value!r} as either 'YYYY-MM-DD' or 'YYYY-MM-DD HH:MM'")
+
+
+def _filename_safe(value: str) -> str:
+    return value.replace(" ", "_").replace(":", "")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--account", required=True, type=validate_account_name)
-    parser.add_argument("--from", dest="date_from", required=True, help="YYYY-MM-DD, UTC")
-    parser.add_argument("--to", dest="date_to", required=True, help="YYYY-MM-DD, UTC")
+    parser.add_argument(
+        "--from", dest="date_from", required=True,
+        help='"YYYY-MM-DD" (midnight UTC) or "YYYY-MM-DD HH:MM" for an hour-precise window, UTC',
+    )
+    parser.add_argument(
+        "--to", dest="date_to", required=True,
+        help='"YYYY-MM-DD" (midnight UTC) or "YYYY-MM-DD HH:MM" for an hour-precise window, UTC',
+    )
     parser.add_argument(
         "--balance", type=float, default=None,
         help="Starting simulated balance. Defaults to the account's current real balance.",
@@ -138,8 +160,8 @@ def main() -> None:
     # share in the first place.
     setup_logging(config.logging, f"{args.account}-backtest")
 
-    date_from = datetime.strptime(args.date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-    date_to = datetime.strptime(args.date_to, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    date_from = _parse_datetime_arg(args.date_from)
+    date_to = _parse_datetime_arg(args.date_to)
     if date_to <= date_from:
         raise ValueError("--to must be after --from")
 
@@ -173,7 +195,7 @@ def main() -> None:
 
     out_dir = PROJECT_ROOT / "reports" / "backtest" / args.account
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{args.date_from}_{args.date_to}"
+    stem = f"{_filename_safe(args.date_from)}_{_filename_safe(args.date_to)}"
     if args.settings_path:
         # Distinct filename so a variant-config run (e.g. testing a
         # different cross_tolerance_usd) never overwrites the report from
