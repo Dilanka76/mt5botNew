@@ -61,6 +61,7 @@ from bot.strategy.state_machine_dual_cross import DualCrossEngine
 from bot.strategy.state_machine_dual_cross_confirmed_entry import DualCrossConfirmedEntryEngine
 from bot.strategy.state_machine_dual_cross_tight_exit import DualCrossTightExitEngine
 from bot.strategy.state_machine_dual_cross_tight_exit_swap_confirm import DualCrossTightExitSwapConfirmEngine
+from bot.strategy.state_machine_dual_cross_confirmed_swap_adx import DualCrossConfirmedSwapAdxEngine
 from bot.trade_ledger import append_new_trades, trade_ledger_path
 
 logger = logging.getLogger("bot.main")
@@ -74,6 +75,7 @@ STRATEGY_ENGINES = {
     "dual_cross_confirmed_entry": DualCrossConfirmedEntryEngine,
     "dual_cross_tight_exit": DualCrossTightExitEngine,
     "dual_cross_tight_exit_swap_confirm": DualCrossTightExitSwapConfirmEngine,
+    "dual_cross_confirmed_swap_adx": DualCrossConfirmedSwapAdxEngine,
     "cross_confirmed": CrossConfirmedEngine,
     "cross_confirmed_adaptive_tp": CrossConfirmedAdaptiveTPEngine,
 }
@@ -82,11 +84,12 @@ STRATEGY_ENGINES = {
 # (non-shadow) order placement for the second one requires the account to
 # actually be in hedging margin mode, or it would just net against the
 # first at the broker instead of opening a genuinely separate ticket.
-# dual_cross_confirmed_entry, dual_cross_tight_exit, and
-# dual_cross_tight_exit_swap_confirm deliberately do NOT belong here — all
-# three always close the opposite position before/as the new one opens
-# (see each engine's module docstring), so none of them ever actually
-# holds two at once and none has a hedging-account requirement of its own.
+# dual_cross_confirmed_entry, dual_cross_tight_exit,
+# dual_cross_tight_exit_swap_confirm, and dual_cross_confirmed_swap_adx
+# deliberately do NOT belong here — all four always close the opposite
+# position before/as the new one opens (see each engine's module
+# docstring), so none of them ever actually holds two at once and none has
+# a hedging-account requirement of its own.
 CONCURRENT_POSITION_VARIANTS = {"dual_cross"}
 
 

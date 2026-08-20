@@ -1,10 +1,11 @@
 """dual_cross_confirmed_swap_adx ("confirmed-entry-only + ADX swap gate") —
 strategy_variant=dual_cross_confirmed_swap_adx.
 
-BACKTEST-ONLY as of 2026-08-20 — NEVER register in main.py's
-STRATEGY_ENGINES until the user reviews backtest results and explicitly
-approves a live deploy, same rule as every other variant born in this
-project.
+Deployed LIVE to demo1_m1/demo1_m3 2026-08-20, WITHOUT a prior backtest —
+explicit user decision, made the same way several earlier variants in
+this project were: judge it on real results, not backtest P/L (see
+[[feedback-live-trading-discipline]]). No real-trade data exists for this
+variant yet at deploy time.
 
 Built on user's explicit instruction 2026-08-20, after reviewing real
 entry-type data: drop tick-based tolerance entry entirely, every entry is
