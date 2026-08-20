@@ -195,6 +195,32 @@ class DualCrossTightExitConfig:
 
 
 @dataclass
+class SwapAdxFilterConfig:
+    """Config specific to strategy_variant=dual_cross_tight_exit_swap_confirm_adx
+    (bot/strategy/state_machine_dual_cross_tight_exit_swap_confirm_adx.py),
+    backtest-only as of 2026-08-20. Built from real-trade evidence:
+    swapped_confirmed_reversal was 73-75% of all real loss $ on
+    dual_cross_tight_exit_swap_confirm, and every real swap-firing moment
+    checked against real ADX(14) data landed well below a 25 threshold
+    (11-23 range across two independently chart-verified choppy windows).
+    Gates ONLY the swap decision (an existing position being reversed) —
+    fresh entries from flat are completely unaffected, since the one
+    real example with a strong entry-time ADX reading (28) still lost
+    once the trend faded, so gating entries wasn't supported by the data
+    the way gating swaps was. Mandatory for this variant — the engine's
+    own constructor refuses to run without it."""
+    # Wilder's ADX period. 14 is the standard default and what the real
+    # loss-window analysis above used — change only with a reason.
+    adx_period: int = 14
+    # Minimum ADX reading (at the candle where a 2-candle-confirmed swap
+    # would otherwise fire) required to actually let the swap execute.
+    # Below this, the swap is blocked (category swap_blocked_low_adx —
+    # pending reversal cancelled, held position keeps running) instead of
+    # firing regardless of P/L like the un-gated swap_confirm variant.
+    adx_threshold: float = 25.0
+
+
+@dataclass
 class AppConfig:
     account: str
     mt5: MT5Config
@@ -244,6 +270,9 @@ class AppConfig:
     # Mandatory for strategy_variant=dual_cross_tight_exit (None
     # otherwise). See DualCrossTightExitConfig's own docstring.
     dual_cross_tight_exit: DualCrossTightExitConfig | None = None
+    # Mandatory for strategy_variant=dual_cross_tight_exit_swap_confirm_adx
+    # (None otherwise). See SwapAdxFilterConfig's own docstring.
+    swap_adx_filter: SwapAdxFilterConfig | None = None
 
 
 def load_config(account: str, settings_path: str | Path | None = None) -> AppConfig:
@@ -357,6 +386,29 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
                 f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
             )
 
+    swap_adx_filter_raw = raw.get("swap_adx_filter")
+    swap_adx_filter = (
+        SwapAdxFilterConfig(**swap_adx_filter_raw) if swap_adx_filter_raw is not None else None
+    )
+    if strategy_variant == "dual_cross_tight_exit_swap_confirm_adx":
+        # Reuses dual_cross_tight_exit's section unchanged (same as plain
+        # swap_confirm) plus its own swap_adx_filter section.
+        if dual_cross_tight_exit is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_tight_exit_swap_confirm_adx' "
+                f"but no 'dual_cross_tight_exit:' section is present (reused unchanged)."
+            )
+        if swap_adx_filter is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_tight_exit_swap_confirm_adx' "
+                f"but no 'swap_adx_filter:' section is present."
+            )
+        if raw.get("stop_loss_usd") is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_tight_exit_swap_confirm_adx' but "
+                f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
+            )
+
     return AppConfig(
         account=account,
         mt5=MT5Config(
@@ -388,6 +440,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         dual_cross=dual_cross,
         dual_cross_confirmed_entry=dual_cross_confirmed_entry,
         dual_cross_tight_exit=dual_cross_tight_exit,
+        swap_adx_filter=swap_adx_filter,
     )
 
 

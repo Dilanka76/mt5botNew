@@ -35,6 +35,7 @@ from bot.analytics import mt5_utc_offset
 from bot.backtest.runner import run_backtest
 from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
+from bot.indicators.adx import compute_adx
 from bot.indicators.ema import compute_emas
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
@@ -204,6 +205,11 @@ def main() -> None:
         connector.disconnect()  # replay itself is fully offline from here
 
     df = compute_emas(df, config.ema_periods)
+    if config.swap_adx_filter is not None:
+        # Only strategy_variant=dual_cross_tight_exit_swap_confirm_adx
+        # needs this — other variants' engines never read an "adx"
+        # column, so skip the extra computation for them.
+        df = compute_adx(df, period=config.swap_adx_filter.adx_period)
     trades = run_backtest(config, df, date_from, contract_size, point, starting_balance, tick_provider=tick_provider)
 
     out_dir = PROJECT_ROOT / "reports" / "backtest" / args.account

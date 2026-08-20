@@ -29,11 +29,11 @@ import pandas as pd
 
 from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
+from bot.indicators.adx import DEFAULT_PERIOD as ADX_PERIOD, compute_adx
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
 
 TIMEFRAME_MINUTES = {"M1": 1, "M3": 3, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
-ADX_PERIOD = 14
 # Wilder smoothing needs a long lead-in to stabilize; use well more than
 # ADX_PERIOD candles of pre-window warmup regardless of the strategy's own
 # (shorter) EMA warmup setting.
@@ -46,54 +46,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--from", dest="dt_from", required=True, help='"YYYY-MM-DD HH:MM", UTC')
     parser.add_argument("--to", dest="dt_to", required=True, help='"YYYY-MM-DD HH:MM", UTC')
     return parser.parse_args()
-
-
-def compute_adx(df: pd.DataFrame, period: int = ADX_PERIOD) -> pd.DataFrame:
-    high, low, close = df["high"], df["low"], df["close"]
-    prev_high, prev_low, prev_close = high.shift(1), low.shift(1), close.shift(1)
-
-    up_move = high - prev_high
-    down_move = prev_low - low
-    plus_dm = pd.Series(0.0, index=df.index)
-    minus_dm = pd.Series(0.0, index=df.index)
-    plus_dm[(up_move > down_move) & (up_move > 0)] = up_move[(up_move > down_move) & (up_move > 0)]
-    minus_dm[(down_move > up_move) & (down_move > 0)] = down_move[(down_move > up_move) & (down_move > 0)]
-
-    tr = pd.concat([
-        high - low,
-        (high - prev_close).abs(),
-        (low - prev_close).abs(),
-    ], axis=1).max(axis=1)
-
-    def wilder_smooth(series: pd.Series, period: int) -> pd.Series:
-        result = series.copy()
-        result.iloc[:period] = float("nan")
-        first_val = series.iloc[:period].sum()
-        result.iloc[period - 1] = first_val
-        for i in range(period, len(series)):
-            result.iloc[i] = result.iloc[i - 1] - (result.iloc[i - 1] / period) + series.iloc[i]
-        return result
-
-    tr_smooth = wilder_smooth(tr, period)
-    plus_dm_smooth = wilder_smooth(plus_dm, period)
-    minus_dm_smooth = wilder_smooth(minus_dm, period)
-
-    plus_di = 100 * (plus_dm_smooth / tr_smooth)
-    minus_di = 100 * (minus_dm_smooth / tr_smooth)
-    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
-
-    adx = dx.copy()
-    adx.iloc[:2 * period - 1] = float("nan")
-    first_adx = dx.iloc[period - 1:2 * period - 1].mean()
-    adx.iloc[2 * period - 2] = first_adx
-    for i in range(2 * period - 1, len(dx)):
-        adx.iloc[i] = (adx.iloc[i - 1] * (period - 1) + dx.iloc[i]) / period
-
-    out = df.copy()
-    out["plus_di"] = plus_di
-    out["minus_di"] = minus_di
-    out["adx"] = adx
-    return out
 
 
 def main() -> None:
