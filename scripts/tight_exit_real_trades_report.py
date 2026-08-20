@@ -96,6 +96,13 @@ def build_ticket_maps(entries: list[tuple[datetime, dict]]) -> tuple[dict[int, s
             reason = e.get("reason", "")
             if reason.startswith("tick-cross:"):
                 pending_entry_type = "tick_cross"
+            elif reason.startswith("close-confirmed (2-candle reversal):"):
+                # dual_cross_tight_exit_swap_confirm's actual swap firing
+                # (2nd candle reconfirmed) — distinct label from plain
+                # close_confirmed so the two are comparable separately,
+                # since a swap-triggered entry and a flat fallback entry
+                # are genuinely different situations.
+                pending_entry_type = "close_confirmed_swap"
             elif reason.startswith("close-confirmed:"):
                 pending_entry_type = "close_confirmed"
             else:
