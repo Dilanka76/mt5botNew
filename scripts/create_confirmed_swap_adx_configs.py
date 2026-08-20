@@ -1,12 +1,15 @@
 """One-off: creates BACKTEST-ONLY config copies of demo1_m1/demo1_m3's
 real, live-deployed settings for strategy_variant=dual_cross_confirmed_swap_adx
-("confirmed-entry-only + ADX swap gate" — see
+("confirmed-entry-only + ADX swap gate + $5 gap/EMA5 pullback" — see
 bot/strategy/state_machine_dual_cross_confirmed_swap_adx.py's module
 docstring). No tick-based entry, no $3 early-exit net, no
 dual_cross_tight_exit section at all — only stop_loss_usd/take_profit_usd
-(reused unchanged from each account's real config) and a new
-swap_adx_filter section (adx_period=14, adx_threshold=25.0). Session
-windows reused unchanged from swap_confirm.
+and gap_threshold_usd (all reused unchanged from each account's real
+config — gap_threshold_usd is a pre-existing top-level field, $5 in the
+real configs) plus a new swap_adx_filter section (adx_period=14,
+adx_threshold=25.0). Session windows reused unchanged from swap_confirm.
+The $5 gap + EMA5-pullback rule applies ONLY to the flat entry path —
+the swap's own re-entry stays immediate, unaffected by the gap.
 
 These files are NEVER read by main.py or the gateway — only by
 scripts/backtest.py via --settings-path, e.g.:
@@ -49,6 +52,7 @@ for account in ["demo1_m1", "demo1_m3"]:
     print(
         f"load_config('{account}', backtest-only path) OK: strategy_variant={config.strategy_variant}, "
         f"stop_loss_usd={config.stop_loss_usd}, take_profit_usd={config.take_profit_usd}, "
+        f"gap_threshold_usd={config.gap_threshold_usd}, "
         f"adx_period={config.swap_adx_filter.adx_period}, adx_threshold={config.swap_adx_filter.adx_threshold}"
     )
 

@@ -47,12 +47,42 @@ bot.indicators.adx.compute_adx) — scripts/backtest.py wires this in
 whenever config.swap_adx_filter is set. Does NOT require a
 dual_cross_tight_exit config section at all (no tick tolerance, no early
 net) — only stop_loss_usd, take_profit_usd, and swap_adx_filter.
+
+**$5 gap + EMA5-pullback rule added 2026-08-20** (the original "day one"
+rule, merged in from dual_cross_tight_exit_gap_ema5's design), applying
+ONLY to the flat entry path — explicitly NOT to the swap's re-entry,
+confirmed with the user via a concrete before-building example:
+
+  - When a confirmed close-based cross would normally trigger a fresh
+    entry from flat, first check the gap between that candle's close
+    price and EMA13: gap = |close - ema13|.
+  - gap < gap_threshold_usd (reuses the existing top-level
+    gap_threshold_usd config field, $5 in the real configs): enter
+    immediately, exactly as before this addition.
+  - gap >= gap_threshold_usd: do NOT enter yet. Remember the setup
+    (direction only) as pending, and wait for a later tick where price
+    pulls back and touches EMA5. Only then does the trade actually open
+    (still opens fully validated, same as every entry in this engine).
+  - If a genuine confirmed cross happens in the OPPOSITE direction while
+    a setup is still pending (EMA5 never touched), the pending setup is
+    thrown away outright — no trade from it, ever.
+
+The swap's own re-entry (when the 2-candle+ADX-confirmed reversal fires)
+is completely UNCHANGED by this — it still opens immediately, at
+whatever price, the instant the swap executes. Reasoning discussed with
+the user: the swap already carries its own "is this real" confirmation
+(2 candles + ADX); adding a pullback-wait on top of that could leave the
+bot flat with no position right after closing the old one, missing the
+very reversal the swap exists to catch, if price never pulls back to
+EMA5. The user confirmed keeping the swap immediate rather than gating it
+too, after seeing that trade-off explained with numbers.
 """
 from __future__ import annotations
 
 import logging
 import math
 import time
+from dataclasses import dataclass
 
 import MetaTrader5 as mt5
 import pandas as pd
@@ -78,6 +108,17 @@ def _classify(ema13: float, ema21: float) -> CrossState | None:
     return None  # exactly equal — indeterminate, treated as no signal
 
 
+@dataclass
+class PendingSetup:
+    """A flat-entry setup whose gap was too wide to enter immediately —
+    waiting for a pullback to EMA5. Only ever exists while self.position
+    is None (see module docstring — never interacts with the swap path)."""
+    direction: Direction
+    reason: str
+    cross_candle_time: pd.Timestamp | None
+    gap: float
+
+
 class DualCrossConfirmedSwapAdxEngine:
     def __init__(self, config: AppConfig, connector: MT5Connector, executor: TradeExecutor):
         if config.stop_loss_usd is None:
@@ -89,14 +130,21 @@ class DualCrossConfirmedSwapAdxEngine:
                 "strategy_variant=dual_cross_confirmed_swap_adx requires a "
                 "'swap_adx_filter:' config section."
             )
+        if config.gap_threshold_usd is None:
+            raise ValueError(
+                "strategy_variant=dual_cross_confirmed_swap_adx requires gap_threshold_usd to be set "
+                "(the $5 gap + EMA5-pullback rule on flat entries)."
+            )
         self.config = config
         self.connector = connector
         self.executor = executor
 
         self.state = TradeState.IDLE
         self.position: DualPosition | None = None
+        self.pending: PendingSetup | None = None
         self.prev_ema13: float | None = None
         self.prev_ema21: float | None = None
+        self.current_ema5: float | None = None
         self.current_candle_time: pd.Timestamp | None = None
         # Armed by a confirmed opposite cross while a position is held;
         # only survives exactly one more candle — see module docstring.
@@ -158,10 +206,38 @@ class DualCrossConfirmedSwapAdxEngine:
     def _update_state(self) -> None:
         self.state = TradeState.IN_POSITION if self.position is not None else TradeState.IDLE
 
+    def _maybe_enter_or_pend(
+        self, direction: Direction, price_now: float, ema13_now: float, base_reason: str,
+        cross_candle_time_override: pd.Timestamp | None,
+    ) -> OpenedTrade | None:
+        """Flat-entry-only gap check (see module docstring) — NEVER called
+        from the swap path, which always enters immediately via _enter()
+        directly."""
+        gap = abs(price_now - ema13_now)
+        if gap < self.config.gap_threshold_usd:
+            return self._enter(
+                direction,
+                reason=f"{base_reason}, gap={gap:.2f} < ${self.config.gap_threshold_usd:.2f} threshold -> immediate entry",
+                cross_candle_time_override=cross_candle_time_override,
+            )
+        else:
+            self.pending = PendingSetup(
+                direction=direction,
+                reason=f"{base_reason}, gap={gap:.2f} >= ${self.config.gap_threshold_usd:.2f} threshold",
+                cross_candle_time=cross_candle_time_override,
+                gap=gap,
+            )
+            log_decision(
+                self.config.symbol, "setup_pending",
+                f"{direction.value} {self.pending.reason} -> waiting for EMA5 touch",
+            )
+            return None
+
     def on_new_candle(self, df_with_emas: pd.DataFrame) -> list[OpenedTrade | ClosedTrade]:
         events: list[OpenedTrade | ClosedTrade] = []
         last_closed = df_with_emas.iloc[-2]
         last_closed_time = last_closed.name
+        ema5 = float(last_closed["ema5"])
         ema13 = float(last_closed["ema13"])
         ema21 = float(last_closed["ema21"])
         exit_price = float(last_closed["close"])
@@ -243,20 +319,32 @@ class DualCrossConfirmedSwapAdxEngine:
                     self.pending_reversal_direction = None
             else:
                 # Flat -> the ONLY entry path this engine has: a genuine,
-                # already-closed-candle EMA13/21 cross. No tick-based
-                # tolerance path exists at all in this engine.
+                # already-closed-candle EMA13/21 cross, now gated by the
+                # $5 gap + EMA5-pullback rule (see module docstring). No
+                # tick-based tolerance path exists at all in this engine.
                 self.pending_reversal_direction = None
                 direction = (Direction.BUY if new_state == CrossState.ABOVE else Direction.SELL) if is_confirmed_cross else None
                 if is_confirmed_cross:
+                    # Rule 1: a genuine opposite confirmed cross cancels
+                    # any still-pending setup outright, before considering
+                    # this new cross at all.
+                    if self.pending is not None and self.pending.direction != direction:
+                        log_decision(
+                            self.config.symbol, "pending_cancelled",
+                            f"{direction.value} cross confirmed at candle close -> cancelling pending "
+                            f"{self.pending.direction.value} setup (EMA5 never touched, gap was {self.pending.gap:.2f})",
+                        )
+                        self.pending = None
+
                     if not is_within_session(self._active_sessions()):
                         log_decision(
                             self.config.symbol, "cross_ignored_outside_session",
                             f"{direction.value} confirmed cross at {last_closed_time}, no session open",
                         )
                     else:
-                        opened = self._enter(
-                            direction,
-                            reason=(
+                        opened = self._maybe_enter_or_pend(
+                            direction, exit_price, ema13,
+                            base_reason=(
                                 f"close-confirmed: candle closed with a genuine "
                                 f"{prev_state.value}->{new_state.value} cross (ema13={ema13:.2f}, "
                                 f"ema21={ema21:.2f})"
@@ -268,14 +356,46 @@ class DualCrossConfirmedSwapAdxEngine:
 
         self.prev_ema13 = ema13
         self.prev_ema21 = ema21
+        self.current_ema5 = ema5
         self.current_candle_time = df_with_emas.index[-1]
         self._update_state()
         return events
 
+    def _check_ema5_touch(self, tick) -> OpenedTrade | None:
+        """The only entry-related check on_tick() does: has price pulled
+        back to touch EMA5 for a still-pending flat-entry setup? Never
+        interacts with the swap path (self.pending only ever exists while
+        self.position is None — see PendingSetup's docstring)."""
+        if self.pending is None or self.position is not None or self.current_ema5 is None:
+            return None
+        pending = self.pending
+        touched = (
+            (pending.direction == Direction.BUY and tick.bid <= self.current_ema5)
+            or (pending.direction == Direction.SELL and tick.bid >= self.current_ema5)
+        )
+        if not touched:
+            return None
+        if not is_within_session(self._active_sessions()):
+            log_decision(
+                self.config.symbol, "pending_touch_outside_session",
+                f"EMA5 touch reached for pending {pending.direction.value} setup, but no session open",
+            )
+            self.pending = None
+            return None
+        opened = self._enter(
+            pending.direction,
+            reason=f"EMA5 touch at {tick.bid:.2f} for pending {pending.direction.value} setup ({pending.reason})",
+            cross_candle_time_override=pending.cross_candle_time,
+        )
+        self.pending = None
+        return opened
+
     def on_tick(self, tick) -> list[OpenedTrade | ClosedTrade]:
-        # No entry logic at all here — every entry happens in
-        # on_new_candle(). This only ever checks an EXISTING position for
-        # the $15 stop-loss or a broker-side TP/close, every tick.
+        # The only entry logic here is the EMA5-touch check for a pending
+        # flat-entry setup below — everything else (fresh close-confirmed
+        # entries, swap re-entries) happens in on_new_candle(). Otherwise
+        # this just checks an EXISTING position for the $15 stop-loss or a
+        # broker-side TP/close, every tick.
         events: list[OpenedTrade | ClosedTrade] = []
         self._reject_manual_positions()
 
@@ -313,6 +433,10 @@ class DualCrossConfirmedSwapAdxEngine:
                                 reason="position no longer open on broker (TP fill or external close)",
                                 exit_price=position.take_profit,
                             ))
+
+        pending_opened = self._check_ema5_touch(tick)
+        if pending_opened is not None:
+            events.append(pending_opened)
 
         self._update_state()
         return events
