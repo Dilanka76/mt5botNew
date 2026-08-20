@@ -27,7 +27,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pandas as pd
 
-from bot.analytics import mt5_utc_offset
 from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
@@ -110,18 +109,13 @@ def main() -> None:
     connector = MT5Connector(config.mt5)
     connector.connect()
     try:
-        # mt5.copy_rates_range() (inside get_ohlc_range) expects bounds in
-        # MT5's own broker-time convention, NOT true UTC, and its returned
-        # candle .time values are in that same convention too — same +3h
-        # offset bug as mt5.history_deals_get(), just never patched here
-        # before. Measure fresh and correct both ends, same pattern as
-        # scripts/tight_exit_real_trades_report.py.
-        offset = mt5_utc_offset(connector, config.symbol)
-        df = get_ohlc_range(connector, config.symbol, config.timeframe, warmup_start + offset, dt_to + offset)
+        # get_ohlc_range() itself now applies the MT5-vs-true-UTC offset
+        # correction internally (bot/data/market_data.py) — always deal in
+        # true UTC here, nothing extra to do at this call site.
+        df = get_ohlc_range(connector, config.symbol, config.timeframe, warmup_start, dt_to)
     finally:
         connector.disconnect()
 
-    df.index = df.index - offset
     df = compute_emas(df, config.ema_periods)
     df = compute_adx(df)
     window = df.loc[(df.index >= dt_from) & (df.index <= dt_to)]

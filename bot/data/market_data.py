@@ -7,6 +7,7 @@ from datetime import datetime
 import pandas as pd
 import MetaTrader5 as mt5
 
+from bot.analytics import mt5_utc_offset
 from bot.mt5_connector import MT5Connector
 
 logger = logging.getLogger("bot.data.market_data")
@@ -53,19 +54,29 @@ def get_ohlc_range(
     Returns the same shape as get_ohlc: time-indexed (UTC-aware, unlike
     get_ohlc's naive index — session-window gating needs a real timezone
     to convert from), open/high/low/close/tick_volume/spread/real_volume.
+
+    mt5.copy_rates_range() expects/returns times in MT5's own broker-time
+    convention, not true UTC (same underlying issue as
+    mt5.history_deals_get() — see bot.analytics.mt5_utc_offset's
+    docstring). date_from/date_to here are true UTC; the query window is
+    shifted into MT5's convention before fetching, and the returned
+    timestamps are shifted back to true UTC before being returned, so
+    every caller of this function always deals in true UTC only.
     """
     connector.ensure_symbol(symbol)
     timeframe = connector.resolve_timeframe(timeframe_str)
+    offset = mt5_utc_offset(connector, symbol)
 
     chunks: list[pd.DataFrame] = []
-    chunk_start = date_from
-    while chunk_start < date_to:
+    chunk_start = date_from + offset
+    query_to = date_to + offset
+    while chunk_start < query_to:
         # first day of the next month, capped at date_to
         if chunk_start.month == 12:
             next_month_start = chunk_start.replace(year=chunk_start.year + 1, month=1, day=1)
         else:
             next_month_start = chunk_start.replace(month=chunk_start.month + 1, day=1)
-        chunk_end = min(next_month_start, date_to)
+        chunk_end = min(next_month_start, query_to)
 
         rates = mt5.copy_rates_range(symbol, timeframe, chunk_start, chunk_end)
         row_count = len(rates) if rates is not None else 0
@@ -88,7 +99,7 @@ def get_ohlc_range(
         raise RuntimeError(f"No candle data returned for {symbol} {timeframe_str} {date_from}..{date_to}: {mt5.last_error()}")
 
     df = pd.concat(chunks, ignore_index=True)
-    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+    df["time"] = pd.to_datetime(df["time"], unit="s", utc=True) - offset
     df = df.drop_duplicates(subset="time").sort_values("time")
     df.set_index("time", inplace=True)
     return df

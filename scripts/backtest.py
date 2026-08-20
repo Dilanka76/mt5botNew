@@ -31,6 +31,7 @@ import MetaTrader5 as mt5
 import numpy as np
 import pandas as pd
 
+from bot.analytics import mt5_utc_offset
 from bot.backtest.runner import run_backtest
 from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
@@ -100,11 +101,23 @@ def parse_args() -> argparse.Namespace:
 def _fetch_real_ticks(connector: MT5Connector, symbol: str, date_from: datetime, date_to: datetime) -> pd.DataFrame:
     """Fetches real tick history chunked by day (safer than one huge range
     call against broker-side limits), returns a DataFrame indexed by
-    tick time with bid/ask columns, sorted ascending."""
+    tick time with bid/ask columns, sorted ascending.
+
+    mt5.copy_ticks_range() expects/returns times in MT5's own broker-time
+    convention, not true UTC (same issue as mt5.history_deals_get() and
+    mt5.copy_rates_range() — see bot.analytics.mt5_utc_offset's
+    docstring, and bot/data/market_data.py's get_ohlc_range for the same
+    fix already applied to candle fetches). date_from/date_to here are
+    true UTC; the query window is shifted into MT5's convention before
+    fetching, and returned tick times are shifted back to true UTC."""
+    offset = mt5_utc_offset(connector, symbol)
+    query_from = date_from + offset
+    query_to = date_to + offset
+
     chunks = []
-    day = date_from
-    while day < date_to:
-        day_end = min(day + timedelta(days=1), date_to)
+    day = query_from
+    while day < query_to:
+        day_end = min(day + timedelta(days=1), query_to)
         print(f"  Fetching ticks {day.date()} ...", end=" ", flush=True)
         ticks = mt5.copy_ticks_range(symbol, day, day_end, mt5.COPY_TICKS_ALL)
         count = 0 if ticks is None else len(ticks)
@@ -117,7 +130,7 @@ def _fetch_real_ticks(connector: MT5Connector, symbol: str, date_from: datetime,
         return pd.DataFrame(columns=["bid", "ask"], index=pd.DatetimeIndex([], tz=timezone.utc))
 
     all_ticks = np.concatenate(chunks)
-    times = pd.to_datetime(all_ticks["time_msc"], unit="ms", utc=True)
+    times = pd.to_datetime(all_ticks["time_msc"], unit="ms", utc=True) - offset
     df = pd.DataFrame({"bid": all_ticks["bid"], "ask": all_ticks["ask"]}, index=times)
     df = df[df["bid"] > 0.0]  # a handful of broker feeds emit zero-price keepalive ticks
     df = df.sort_index()
