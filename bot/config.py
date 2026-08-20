@@ -409,6 +409,21 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
                 f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
             )
 
+    if strategy_variant == "dual_cross_confirmed_swap_adx":
+        # Deliberately does NOT require dual_cross_tight_exit — this
+        # variant has no tick-based entry and no early-exit net at all
+        # (see the engine's module docstring), so that section is unused.
+        if swap_adx_filter is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_confirmed_swap_adx' but no "
+                f"'swap_adx_filter:' section is present."
+            )
+        if raw.get("stop_loss_usd") is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_confirmed_swap_adx' but "
+                f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
+            )
+
     return AppConfig(
         account=account,
         mt5=MT5Config(
