@@ -103,6 +103,14 @@ def build_ticket_maps(entries: list[tuple[datetime, dict]]) -> tuple[dict[int, s
                 # since a swap-triggered entry and a flat fallback entry
                 # are genuinely different situations.
                 pending_entry_type = "close_confirmed_swap"
+            elif reason.startswith("EMA5 touch at"):
+                # dual_cross_confirmed_swap_adx's gap/EMA5-pullback entry
+                # (2026-08-21) — the flat entry's gap was >= $5 so it
+                # waited for a pullback to EMA5 instead of entering
+                # immediately. Distinct from plain close_confirmed since
+                # it's a meaningfully different (delayed, pulled-back)
+                # entry price/timing.
+                pending_entry_type = "close_confirmed_ema5_touch"
             elif reason.startswith("close-confirmed:"):
                 pending_entry_type = "close_confirmed"
             else:

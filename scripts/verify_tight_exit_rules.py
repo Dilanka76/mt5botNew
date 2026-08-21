@@ -122,11 +122,15 @@ def check_rule_compliance(
         if action == "trade_entered":
             is_tick = reason.startswith("tick-cross:")
             # "close-confirmed:" (dual_cross_tight_exit, and flat entries on
-            # dual_cross_tight_exit_swap_confirm) or "close-confirmed (2-candle
-            # reversal):" (a swap-confirm reversal that actually fired) — both
-            # are legitimate pre_validated=True entries, just worded
-            # differently depending on which engine/path produced them.
-            is_fallback = reason.startswith("close-confirmed")
+            # dual_cross_tight_exit_swap_confirm), "close-confirmed (2-candle
+            # reversal):" (a swap-confirm reversal that actually fired), or
+            # "EMA5 touch at ... for pending ... setup (close-confirmed: ...)"
+            # (dual_cross_confirmed_swap_adx's gap/EMA5-pullback entry,
+            # 2026-08-21 — the ORIGINAL close-confirmed reason text is
+            # embedded inside this one, just wrapped) — all are legitimate
+            # pre_validated=True entries, just worded differently depending
+            # on which engine/path produced them.
+            is_fallback = reason.startswith("close-confirmed") or reason.startswith("EMA5 touch at")
             if not is_tick and not is_fallback:
                 violations.append((ts, f"UNEXPECTED entry reason format: {reason!r}"))
             if state != "NONE":
