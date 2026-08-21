@@ -427,6 +427,38 @@ the restart didn't happen.
 **True starting point for real-trade analysis of this variant: 2026-08-21
 06:12 UTC onward.**
 
+## CRITICAL INCIDENT (2026-08-21, same day): main.py never computed the 'adx' column — crashed the live loop and silently disabled the stop-loss
+
+Caught when checking open positions: a real `demo1_m1` SELL (entry
+4558.90) was sitting at broker price 4581.37 — **$7.47 past where the
+$15 stop-loss should have already closed it**, floating loss -$134.82.
+The position was not being managed at all.
+
+**Root cause**: the ADX column computation had been wired into
+`scripts/backtest.py` when building the ADX-gated variants, but was
+never added to `main.py`'s own live loop. The engine's
+`on_new_candle()` reads an `adx` column whenever a position is held
+(the swap-check branch) — this raised `KeyError: 'adx'` every time.
+
+**Why it was so damaging**: `main.py`'s loop only advances its
+candle-time tracker AFTER `on_new_candle()` succeeds. Since it never
+succeeded, the same candle kept getting retried every loop iteration,
+crashing every time — and `on_tick()` (where the stop-loss check lives,
+called right after `on_new_candle()` in the same block) never ran
+again. The bot was silently frozen from managing that position from the
+moment the first post-entry candle closed, onward.
+
+**Fix**: `main.py` now computes the `adx` column identically to how
+`scripts/backtest.py` already does, conditional on
+`config.swap_adx_filter` being set. Both accounts needed an urgent
+restart after this landed.
+
+**General lesson**: any new dataframe column an engine depends on must
+be wired into BOTH `scripts/backtest.py` and `main.py` before the
+engine is considered live-ready — the backtest path working correctly
+gives false confidence the live path is fine too; they're separate code
+paths that don't automatically stay in sync.
+
 ## Candidate fixes for swapped_confirmed_reversal — consolidated master list, status as of 2026-08-21
 
 This reconciles two separate rounds of ideas discussed across the project (an
