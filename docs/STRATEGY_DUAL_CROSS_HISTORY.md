@@ -427,34 +427,59 @@ the restart didn't happen.
 **True starting point for real-trade analysis of this variant: 2026-08-21
 06:12 UTC onward.**
 
-## Five candidate fixes for swapped_confirmed_reversal — status
+## Candidate fixes for swapped_confirmed_reversal — consolidated master list, status as of 2026-08-21
 
-Even with the 2-candle debounce live, the swap still couldn't
-distinguish a genuine trend reversal from EMA13/21 noise oscillating
-around the crossing point in a choppy market — real data showed 8/8
-losses (0% win rate) after the debounce, same as before it.
+This reconciles two separate rounds of ideas discussed across the project (an
+original 3-item list, then a later 5-item list after the first fix alone wasn't
+enough) into one deduplicated list — items 4 and 7 below were repeated across
+both rounds under slightly different numbering.
 
-1. **ADX trend-strength filter — DONE.** Gate the swap on ADX(14) >= 25
-   at the confirming candle. Built into both the sixth and (finalized)
-   seventh variants above.
-2. **Minimum EMA13/21 separation on the confirming candle — not built.**
-   Require the gap between EMA13/21 to exceed some minimum $ distance on
-   the confirming candle, not just "crossed" — filters lines merely
-   hugging the equilibrium point.
-3. **Swap-churn circuit breaker — not built.** Track swaps firing within
-   a short rolling window (e.g. last 30-60 min); if it crosses a
-   threshold (e.g. 3+), pause new entries for a cooldown period.
-4. **Higher-timeframe confirmation — not built.** Only allow the swap if
-   a higher timeframe (e.g. M15) EMA13/21 relationship agrees with the
-   new direction.
-5. **Close-and-flatten instead of close-and-reverse — not built.** When
-   the 2-candle confirmation fires, close and go flat instead of
-   immediately reversing.
+```
+1. 2-candle persistence/debounce (require reversal to persist 2 candles, not 1)
+   DONE — built FIRST, as dual_cross_tight_exit_swap_confirm (deployed
+   2026-08-19/20). Still part of the CURRENT live strategy
+   (dual_cross_confirmed_swap_adx kept this unchanged).
 
-Note: an older, separate ATR/volatility filter idea was tried for a
-different purpose and is on hold (failed one out-of-sample test). ADX is
-a different tool (measures directional persistence, not raw volatility
-magnitude) — treated as a fresh attempt, not a retry of the failed one.
+2. ADX trend-strength filter (gate the swap on ADX >= 25)
+   DONE — built AFTER the 2-candle debounce, because real data showed the
+   debounce alone wasn't enough (still 8/8 losses). Live right now as part
+   of dual_cross_confirmed_swap_adx.
+
+3. Minimum EMA13/21 separation on the confirming candle
+   NOT built. Require the gap between EMA13/21 to exceed some minimum $
+   distance on the confirming candle, not just "crossed" — filters lines
+   merely hugging the equilibrium point, standard whipsaw-avoidance
+   technique.
+
+4. Swap-churn circuit breaker (pause after 2-3 swaps in 30-60 min)
+   NOT built. Track how many swaps fire within a short rolling window; if
+   it crosses a threshold, pause new entries for a cooldown period.
+   Reactive to evidence of a bad regime rather than trying to predict
+   one — complementary to any signal filter, not a replacement.
+
+5. Higher-timeframe confirmation (M15 must agree)
+   NOT built. Only allow the swap if a higher timeframe (e.g. M15)
+   EMA13/21 relationship agrees with the new direction. More work (new
+   timeframe data feed) but a genuinely different signal than ADX or the
+   EMA-gap idea.
+
+6. Close-and-flatten instead of close-and-reverse
+   NOT built. When the 2-candle confirmation fires, close and go flat
+   instead of immediately reversing into a new position — doesn't fix
+   signal accuracy, but removes the cost of being wrong on the reversal
+   itself.
+
+7. Volatility/ATR range filter
+   NOT built — separate, older idea, on hold (failed an out-of-sample
+   test in an earlier unrelated experiment, see the volatility filter
+   experiment notes). Lower priority, proceed with caution if ever
+   revisited. ADX (#2) is a different tool from this — measures
+   directional persistence, not raw volatility magnitude — treated as a
+   fresh attempt, not a retry of this failed one.
+```
+
+**2 of 7 are done and live right now** (the 2-candle debounce, and ADX). The
+other 5 are still open ideas, not built.
 
 ## FIFTH variant (2026-08-19/20): dual_cross_tight_exit_swap_confirm ("the swap flip fix")
 
