@@ -209,8 +209,26 @@ def run() -> None:
 
                 latest_closed_time = df.iloc[-2].name
                 if latest_closed_time != last_closed_candle_time:
-                    engine.on_new_candle(df)
-                    last_closed_candle_time = latest_closed_time
+                    # Isolated on purpose: on_new_candle() failing must
+                    # NEVER prevent on_tick() below from running -- on_tick
+                    # is where the stop-loss check lives, and it's the
+                    # only thing standing between an open position and an
+                    # unbounded loss if something here breaks. Confirmed
+                    # 2026-08-21: a missing "adx" column crashed
+                    # on_new_candle() every iteration, and because this
+                    # used to be one shared try block, on_tick() never ran
+                    # again either -- a real position sat unmanaged with
+                    # its stop-loss silently disabled until caught by
+                    # chance. See docs/STRATEGY_DUAL_CROSS_HISTORY.md's
+                    # "CRITICAL INCIDENT" section.
+                    try:
+                        engine.on_new_candle(df)
+                        last_closed_candle_time = latest_closed_time
+                    except Exception:
+                        logger.exception(
+                            "Error in on_new_candle() -- on_tick()/stop-loss check below still "
+                            "runs this iteration regardless; will retry candle processing next loop"
+                        )
 
                 tick = connector.get_tick(config.symbol)
                 engine.on_tick(tick)
