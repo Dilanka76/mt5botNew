@@ -47,6 +47,7 @@ import MetaTrader5 as mt5
 from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc
 from bot.execution.trade_executor import TradeExecutor
+from bot.indicators.adx import compute_adx
 from bot.indicators.ema import compute_emas
 from bot.kill_switch import KillSwitch
 from bot.logging_setup.logger import setup_logging
@@ -198,6 +199,13 @@ def run() -> None:
             try:
                 df = get_ohlc(connector, config.symbol, config.timeframe, config.candles_to_fetch)
                 df = compute_emas(df, config.ema_periods)
+                if config.swap_adx_filter is not None:
+                    # Only the ADX-gated swap variants read an "adx"
+                    # column (see their on_new_candle()) -- every other
+                    # variant never touches it, so skip the extra
+                    # computation for them. Mirrors scripts/backtest.py's
+                    # identical conditional wiring.
+                    df = compute_adx(df, period=config.swap_adx_filter.adx_period)
 
                 latest_closed_time = df.iloc[-2].name
                 if latest_closed_time != last_closed_candle_time:
