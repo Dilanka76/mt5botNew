@@ -459,6 +459,19 @@ engine is considered live-ready — the backtest path working correctly
 gives false confidence the live path is fine too; they're separate code
 paths that don't automatically stay in sync.
 
+**Follow-up structural fix, same day**: asked directly "can this
+situation happen again?" — the answer was yes, for a more general
+reason than the missing `adx` column. `main.py`'s loop only advanced
+its candle-time tracker after `on_new_candle()` succeeded, and
+`on_new_candle()`/`on_tick()` shared one `try:` block, so ANY future
+exception in `on_new_candle()` — for any reason, on any strategy
+variant — would silently disable the stop-loss check the same way,
+indefinitely, with the process still showing as running. Fixed:
+`on_new_candle()` is now wrapped in its own try/except; a failure there
+is logged and retried next iteration, but `on_tick()` (stop-loss/TP/swap
+checks) always runs regardless. Applies to every account run via
+`main.py`, including `live1`.
+
 ## Candidate fixes for swapped_confirmed_reversal — consolidated master list, status as of 2026-08-21
 
 This reconciles two separate rounds of ideas discussed across the project (an
