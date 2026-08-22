@@ -26,6 +26,7 @@ import MetaTrader5 as mt5
 import pandas as pd
 
 from bot.config import load_config, validate_account_name
+from bot.indicators.adx import compute_adx
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
 
@@ -70,9 +71,10 @@ def main() -> None:
     df = df.drop_duplicates(subset="time").sort_values("time").set_index("time")
 
     df = compute_emas(df, config.ema_periods)
+    df = compute_adx(df)
     window = df.loc[(df.index >= dt_from) & (df.index <= dt_to)]
 
-    cols = [c for c in ("open", "high", "low", "close", "ema13", "ema21") if c in window.columns]
+    cols = [c for c in ("open", "high", "low", "close", "ema13", "ema21", "adx") if c in window.columns]
     with pd.option_context("display.max_rows", None, "display.width", 200, "display.float_format", "{:.2f}".format):
         print(f"account={args.account} symbol={config.symbol} timeframe={config.timeframe} offset={args.offset_hours}h (manually specified)")
         print(window[cols].to_string())
