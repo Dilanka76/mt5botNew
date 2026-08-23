@@ -1,5 +1,8 @@
-"""dual_cross_confirmed_adx_m15 ("ADX + M15 gated entries, close-and-flatten
+"""dual_cross_confirmed_adx_m15 ("ADX-gated entries, close-and-flatten
 reversal, no swap") — strategy_variant=dual_cross_confirmed_adx_m15.
+(Name kept as-is for continuity with the already-deployed live config/
+migration script/memory history, even though the M15 check described
+below was removed the same day — see the UPDATE note.)
 
 Built 2026-08-22/23 from an extensive real-data investigation of the
 2026-08-21 critical-incident SELL (entry 4558.90, confirming-candle
@@ -9,21 +12,29 @@ deliberate design changes from the currently-live
 `dual_cross_confirmed_swap_adx`, both explicit user decisions after
 walking through real numbers together:
 
-1. **Entries are gated by BOTH ADX(14) >= threshold AND a higher
-   timeframe (M15) agreeing with the direction** — not just close-price
+1. **Entries are gated by ADX(14) >= threshold** — not just close-price
    gap. Checked once, on the confirming candle, before either the
-   immediate-entry or gap/EMA5-pullback path runs. Either check failing
-   blocks the whole signal outright (no entry, no pending setup) — the
-   bot waits for the next independent confirmed cross and checks that
-   one fresh. Real data checked before building: every real loss traced
-   in this project's swap-chop investigation had ADX well under 25 at
-   its confirming candle; several real WINS also had ADX under 25 (e.g.
-   the 12:05 SELL, ADX 18.70, won +$29.64) — this filter is NOT assumed
-   to be a clean win, it trades some real wins away in exchange for
+   immediate-entry or gap/EMA5-pullback path runs. Failing blocks the
+   whole signal outright (no entry, no pending setup) — the bot waits
+   for the next independent confirmed cross and checks that one fresh.
+   Real data checked before building: every real loss traced in this
+   project's swap-chop investigation had ADX well under 25 at its
+   confirming candle; several real WINS also had ADX under 25 (e.g. the
+   12:05 SELL, ADX 18.70, won +$29.64) — this filter is NOT assumed to
+   be a clean win, it trades some real wins away in exchange for
    avoiding real losses. Net effect on a full real backtest is not yet
    known; this was deployed to be judged on live results, not backtest,
    per explicit user instruction (same pattern as several earlier
    variants in this project).
+
+   **UPDATE 2026-08-23 (same day, after the initial deploy)**: originally
+   this entry gate ALSO required a higher timeframe (M15) EMA13/21 check
+   to agree with the direction (both ADX and M15 had to pass). Removed
+   by explicit user request the same day the M15 version went live —
+   "15m look that one no need only adx". The M15 data-plumbing mechanism
+   (`update_m15_data()`, `main.py`'s hasattr-gated M15 fetch) was removed
+   entirely along with it, not just disabled — see git history for the
+   full M15 version if it's ever needed again.
 
 2. **The swap is REMOVED entirely, replaced by close-and-flatten.**
    Previously, a 2-candle-confirmed + ADX-gated reversal would close the
@@ -48,13 +59,13 @@ walking through real numbers together:
    on this decision at all — close the position immediately (whatever
    the P/L) and go flat. Getting back into the market, in EITHER
    direction, now requires passing the exact same entry gate (confirmed
-   cross + ADX + M15) as any other fresh entry — there is no special
-   "swap re-entry" path left in this engine at all.
+   cross + ADX) as any other fresh entry — there is no special "swap
+   re-entry" path left in this engine at all.
 
 Keeps unchanged from `dual_cross_confirmed_swap_adx`:
   - No tick-based entry at all (confirmed-close-only).
   - The $5 gap/EMA5-pullback rule on flat entries (now additionally
-    gated by ADX+M15 before this rule is even consulted).
+    gated by ADX before this rule is even consulted).
   - No $3 net, no "unvalidated" state — every position opens fully
     validated.
   - Stop-loss (the only remaining backstop besides the close-and-flatten
@@ -62,18 +73,6 @@ Keeps unchanged from `dual_cross_confirmed_swap_adx`:
     to $10 for this variant (was $15 on dual_cross_confirmed_swap_adx) —
     explicit user decision 2026-08-23, alongside the design itself; see
     scripts/switch_m1_m3_to_confirmed_adx_m15.py.
-
-M15 confirmation mechanics: this engine does NOT fetch its own M15 data
-via the connector — matching the existing architecture where engines
-receive data, they don't fetch it. `main.py`'s loop calls
-`engine.update_m15_data(m15_df_with_emas)` once per iteration (detected
-via `hasattr`, so every other engine is completely unaffected) with a
-freshly fetched+EMA-computed M15 dataframe; this engine stores the
-latest CLOSED M15 candle's EMA13/21 relationship and reads it whenever
-an entry decision needs the M15 check. Open question, not yet resolved,
-noted for future revisiting: should this use M15's last closed candle
-(current choice — safer, mildly delayed) or M15's current still-forming
-state (faster, less settled)?
 
 Requires a df_with_emas that also has an "adx" column precomputed (see
 bot.indicators.adx.compute_adx) — reuses config.swap_adx_filter for the
@@ -154,11 +153,6 @@ class DualCrossConfirmedAdxM15Engine:
         self.prev_ema21: float | None = None
         self.current_ema5: float | None = None
         self.current_candle_time: pd.Timestamp | None = None
-        # M15's latest CLOSED candle's EMA13/21 relationship — refreshed
-        # by main.py calling update_m15_data() once per loop iteration.
-        # None until the first M15 update arrives (fails safe: no M15
-        # data yet -> entries blocked, same as an ADX failure).
-        self.m15_state: CrossState | None = None
 
     def _active_sessions(self) -> list:
         return self.config.sessions["dual_cross_confirmed_adx_m15"]
@@ -168,17 +162,6 @@ class DualCrossConfirmedAdxM15Engine:
             entry_price - self.config.stop_loss_usd if direction == Direction.BUY
             else entry_price + self.config.stop_loss_usd
         )
-
-    def update_m15_data(self, m15_df_with_emas: pd.DataFrame) -> None:
-        """Called by main.py once per loop iteration (detected via
-        hasattr — every other engine is unaffected) with a freshly
-        fetched M15 dataframe (ema13/ema21 already computed). Stores
-        just the latest CLOSED M15 candle's ABOVE/BELOW state."""
-        if len(m15_df_with_emas) < 2:
-            self.m15_state = None
-            return
-        last_closed_m15 = m15_df_with_emas.iloc[-2]
-        self.m15_state = _classify(float(last_closed_m15["ema13"]), float(last_closed_m15["ema21"]))
 
     def _reject_manual_positions(self) -> None:
         if not self.config.execution.reject_manual_trades:
@@ -285,8 +268,8 @@ class DualCrossConfirmedAdxM15Engine:
                     ))
             else:
                 # Flat -> the ONLY entry path this engine has: a genuine
-                # close-confirmed cross, gated by ADX + M15 BOTH agreeing
-                # before the gap/EMA5 rule is even consulted.
+                # close-confirmed cross, gated by ADX before the gap/EMA5
+                # rule is even consulted.
                 direction = (Direction.BUY if new_state == CrossState.ABOVE else Direction.SELL) if is_confirmed_cross else None
                 if is_confirmed_cross:
                     if self.pending is not None and self.pending.direction != direction:
@@ -305,16 +288,12 @@ class DualCrossConfirmedAdxM15Engine:
                     else:
                         adx_value = last_closed["adx"]
                         adx_ok = not math.isnan(adx_value) and adx_value >= self.config.swap_adx_filter.adx_threshold
-                        expected_m15_state = CrossState.ABOVE if direction == Direction.BUY else CrossState.BELOW
-                        m15_ok = self.m15_state == expected_m15_state
-                        if not adx_ok or not m15_ok:
+                        if not adx_ok:
                             log_decision(
-                                self.config.symbol, "entry_blocked_adx_or_m15",
+                                self.config.symbol, "entry_blocked_low_adx",
                                 f"{direction.value} cross confirmed (ema13={ema13:.2f}, ema21={ema21:.2f}) but "
-                                f"adx={'nan' if math.isnan(adx_value) else f'{adx_value:.1f}'} "
-                                f"({'OK' if adx_ok else 'FAIL'} vs {self.config.swap_adx_filter.adx_threshold:.1f}), "
-                                f"m15_state={self.m15_state.value if self.m15_state else 'unknown'} "
-                                f"({'OK' if m15_ok else 'FAIL'} vs expected {expected_m15_state.value}) "
+                                f"adx={'nan' if math.isnan(adx_value) else f'{adx_value:.1f}'} < "
+                                f"{self.config.swap_adx_filter.adx_threshold:.1f} "
                                 f"-> ENTRY BLOCKED, staying flat, waiting for the next independent signal",
                             )
                         else:
@@ -324,7 +303,7 @@ class DualCrossConfirmedAdxM15Engine:
                                     f"close-confirmed: candle closed with a genuine "
                                     f"{prev_state.value}->{new_state.value} cross (ema13={ema13:.2f}, "
                                     f"ema21={ema21:.2f}, adx={adx_value:.1f} >= "
-                                    f"{self.config.swap_adx_filter.adx_threshold:.1f}, m15 agrees)"
+                                    f"{self.config.swap_adx_filter.adx_threshold:.1f})"
                                 ),
                                 cross_candle_time_override=last_closed_time,
                             )

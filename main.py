@@ -209,18 +209,6 @@ def run() -> None:
                     # identical conditional wiring.
                     df = compute_adx(df, period=config.swap_adx_filter.adx_period)
 
-                if hasattr(engine, "update_m15_data"):
-                    # Only dual_cross_confirmed_adx_m15 has this method --
-                    # detected via hasattr rather than an isinstance/variant
-                    # check so every other engine's loop iteration is
-                    # completely unaffected (no extra fetch, no risk of
-                    # this failing for them). Mirrors the primary df fetch
-                    # above: fresh data + EMAs every iteration: the engine
-                    # itself only keeps the latest CLOSED M15 candle.
-                    m15_df = get_ohlc(connector, config.symbol, "M15", 100)
-                    m15_df = compute_emas(m15_df, config.ema_periods)
-                    engine.update_m15_data(m15_df)
-
                 latest_closed_time = df.iloc[-2].name
                 if latest_closed_time != last_closed_candle_time:
                     # Isolated on purpose: on_new_candle() failing must

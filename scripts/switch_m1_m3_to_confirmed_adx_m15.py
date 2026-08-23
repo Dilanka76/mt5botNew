@@ -1,11 +1,17 @@
 """One-off migration: switches demo1_m1 and demo1_m3's REAL, LIVE
 strategy_variant from dual_cross_confirmed_swap_adx to
-dual_cross_confirmed_adx_m15 (entries gated by ADX(14)>=threshold AND
-M15's own EMA13/21 agreeing with the signal direction; the swap is
-REMOVED entirely and replaced with close-and-flatten on a single
+dual_cross_confirmed_adx_m15 (entries gated by ADX(14)>=threshold; the
+swap is REMOVED entirely and replaced with close-and-flatten on a single
 confirmed opposite candle — see
 state_machine_dual_cross_confirmed_adx_m15.py's module docstring for the
 full design and the real-data reasoning behind it).
+
+NOTE: this variant originally also required a higher timeframe (M15)
+EMA13/21 agreement check alongside ADX -- removed the same day per
+explicit user request ("15m look that one no need only adx"). The
+strategy_variant name and this migration script were kept unchanged
+(name continuity with the already-deployed live config), only the
+engine's internal entry-gate logic changed.
 
 Deployed WITHOUT a prior backtest, explicit user decision 2026-08-23 —
 judged on live/demo results, same pattern as dual_cross_confirmed_swap_adx

@@ -672,3 +672,24 @@ through the gateway's `/apiconnect/{account}/stop` + `/start` API:
 - `demo1_m3` 11:18:45 UTC: `strategy_variant=dual_cross_confirmed_adx_m15 state=IDLE stop_loss_usd=10.0`
 
 Both connected cleanly, session ACTIVE. `live1` was untouched throughout.
+
+## SAME-DAY UPDATE (2026-08-23): M15 check removed, entries now ADX-only
+
+Right after the variant above went live, the user requested it be
+simplified: drop the M15 higher-timeframe agreement requirement
+entirely, keep only the ADX gate. The same file, class, and
+`strategy_variant` string (`dual_cross_confirmed_adx_m15`) were kept —
+this is a same-day in-place simplification, not a new variant.
+
+Entries now require only `ADX(14) >= 25` on the confirming candle. The
+M15 EMA13/21 agreement check, the `update_m15_data()` method, the
+engine's `m15_state` field, and `main.py`'s M15 fetch block were all
+removed outright (not just disabled). Close-and-flatten reversal, the
+$5 gap/EMA5-pullback rule, $10 stop-loss, and $5 take-profit are all
+unchanged. Local smoke test updated and rerun: 18/18 checks passed,
+including an explicit check that `update_m15_data` no longer exists on
+the engine.
+
+No config or migration script change was needed — `strategy_variant`
+and every config field stayed the same, so this deploys via a normal
+code push + restart on each account.
