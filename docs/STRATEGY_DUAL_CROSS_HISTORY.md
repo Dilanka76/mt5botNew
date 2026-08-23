@@ -554,3 +554,104 @@ chose to deploy live anyway, to be judged on real results, not backtest.
 
 **Deployed 2026-08-20** — confirmed live and clean on the first restart
 attempt, `Bot started` at 2026-08-19 20:47:07 UTC.
+
+## EIGHTH variant (2026-08-22, backtest-only): dual_cross_confirmed_swap_adx_entrygate
+
+Same as `dual_cross_confirmed_swap_adx` except ADX also gates fresh
+entries from flat, not just the swap. Built and locally smoke-tested
+(12/12 checks), registered only in `bot/backtest/runner.py`, never in
+`main.py`. Two backtest runs were attempted (2026-08-21 04:00 to
+2026-08-22 00:00, both accounts) but were run while the market was
+closed, which corrupted the underlying data fetch (see the market-closed
+offset limitation below) — those results are unreliable and were never
+re-run. Superseded by the ninth variant below, which folds in the same
+"ADX gates entries" idea plus an M15 filter and a redesigned reversal
+mechanism.
+
+## A third MT5 time-offset limitation found (2026-08-22, not yet fixed): market-closed queries produce a nonsense offset
+
+`mt5_utc_offset()` measures the MT5-vs-true-UTC offset by comparing the
+*latest tick's time* to true "now." This breaks when the market is
+closed (weekend, or any stale-tick period) — the latest tick can be many
+hours old, producing a garbage offset (an ~11–13 hour gap was observed,
+instead of the normal +3h) that corrupts any historical query run while
+the market is closed. Confirmed via `scripts/check_mt5_time.py`.
+
+**Not fixed at the source** — the function still doesn't detect or
+refuse a stale-tick situation. Worked around with a new script,
+`scripts/inspect_candles_fixed_offset.py`, which takes `--offset-hours`
+as an explicit CLI argument instead of measuring it live, so historical
+data from a day when the market was confirmed open can still be reliably
+queried even while the market is currently closed. This became the
+primary tool for a long, detailed real-chop-window investigation
+(candle-by-candle EMA13/21/ADX tracing) that directly informed the ninth
+variant's design below.
+
+## NINTH variant built and DEPLOYED 2026-08-22/23: dual_cross_confirmed_adx_m15 — ADX+M15 entry gate, swap removed and replaced by close-and-flatten
+
+Built after an extensive, fully collaborative real-data design session
+that manually traced the critical-incident 4558.90 SELL (see above) and
+a hypothetical 7-swap whipsaw chain that would have followed it if its
+entry had been allowed through. Two deliberate design changes from
+`dual_cross_confirmed_swap_adx`, both weighed against real traced
+numbers rather than assumed as free wins:
+
+**1. Every entry (not just the swap) is now gated by BOTH ADX(14) >=
+threshold (default 25.0) AND a higher timeframe (M15)'s own EMA13/21
+relationship agreeing with the signal direction.** Checked once, on the
+confirming candle, before even the $5 gap/EMA5-pullback rule runs.
+Either check failing blocks the whole signal outright — no pending
+setup, no retry — the bot just waits for the next independent fresh
+cross. This filter also blocks some real wins (one real example: a SELL
+with ADX 18.70 that actually won +$29.64 under the current live
+strategy) in exchange for blocking real losses; the net effect on full
+real trading was not assumed going in — it's judged on live/demo
+results, same as the previous variant was.
+
+**2. The swap is removed entirely, replaced by close-and-flatten.** The
+moment a single candle confirms the opposite direction from a held
+position — no 2-candle wait, no ADX check on this specific decision —
+the position closes immediately (whatever the P/L) and the bot goes
+flat. Getting back into the market, in either direction, now requires
+passing the exact same entry gate as any fresh signal (item 1 above) —
+there is no special "swap re-entry" path left at all. Traced on the real
+4558.90 example: one small contained exit (-$45.06), then flat through
+the rest of a 64-minute chop (every remaining cross blocked by the
+ADX+M15 gate), then one clean win at the next real signal (+$29.64) —
+net -$15.42, meaningfully better than both the frozen real incident
+(-$166.14) and a traced hypothetical fully-ungated swap whipsaw
+(-$140.16) through the same window.
+
+Unchanged: no tick-based entry (confirmed-close-only), the $5
+gap/EMA5-pullback rule on flat entries (now gated by ADX+M15 first), no
+$3 net, $15 stop-loss, $5 take-profit.
+
+**M15 data plumbing**: `main.py`'s loop calls
+`engine.update_m15_data(m15_df_with_emas)` once per iteration, detected
+via `hasattr` so every other engine's loop is completely unaffected —
+no extra fetch, no added risk for them. The M15 data is fetched the same
+way the primary timeframe is (`get_ohlc` + `compute_emas`), and the
+engine stores only the latest CLOSED M15 candle's ABOVE/BELOW state; if
+no M15 update has arrived yet, entries fail-safe block (same pattern as
+a NaN ADX value). Whether this should use M15's last closed candle
+(current choice) or its still-forming current candle is an open question
+left for future revisiting.
+
+**Deliberately not registered in `bot/backtest/runner.py` yet** —
+`scripts/backtest.py` has no M15-fetch wiring at all, and registering
+without it would recreate the exact "registered without its required
+data wired in" bug class that caused the critical incident above. If a
+backtest is ever wanted, the identical M15-fetch step needs adding to
+`scripts/backtest.py` first.
+
+Locally smoke-tested (stubbed MT5, 7 scenarios, 19/19 checks passed)
+before deployment: the no-M15-data fail-safe block, ADX+M15-both-agree
+entries firing, either check alone blocking, the gap/EMA5-pullback path
+still working once the gate passes, close-and-flatten firing on a single
+opposite candle with no wait and no auto-reopen, and re-entry after
+flattening still requiring the full gate.
+
+Deployed via `scripts/switch_m1_m3_to_confirmed_adx_m15.py` to both
+`demo1_m1` and `demo1_m3`, to be judged on live/demo results over the
+following days — explicit user decision, same pattern as every
+backtest-skipped deploy in this project's history.
