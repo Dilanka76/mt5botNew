@@ -624,7 +624,14 @@ net -$15.42, meaningfully better than both the frozen real incident
 
 Unchanged: no tick-based entry (confirmed-close-only), the $5
 gap/EMA5-pullback rule on flat entries (now gated by ADX+M15 first), no
-$3 net, $15 stop-loss, $5 take-profit.
+$3 net, $5 take-profit.
+
+**Stop-loss tightened to $10** (was $15) — a further explicit user
+decision, applied via `scripts/switch_m1_m3_to_confirmed_adx_m15.py`.
+Since `stop_loss_usd` is a shared top-level config field, not
+variant-specific, a future revert to the previous variant needs to
+manually restore it to $15 — the revert script doesn't touch that
+field.
 
 **M15 data plumbing**: `main.py`'s loop calls
 `engine.update_m15_data(m15_df_with_emas)` once per iteration, detected

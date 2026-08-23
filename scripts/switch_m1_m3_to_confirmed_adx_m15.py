@@ -16,9 +16,19 @@ scripts/switch_m1_m3_to_confirmed_swap_adx.py does exactly that.
 Reuses the existing swap_adx_filter section unchanged (same
 adx_period=14/adx_threshold=25.0 — the config field name is kept for
 schema continuity even though this variant now gates entries with it
-instead of a swap). gap_threshold_usd, stop_loss_usd, and
-take_profit_usd are all existing top-level fields, left untouched. The
-old sessions key (dual_cross_confirmed_swap_adx) is left in the file
+instead of a swap). gap_threshold_usd and take_profit_usd are existing
+top-level fields, left untouched.
+
+stop_loss_usd is explicitly changed from 15.0 to 10.0 for this variant
+— explicit user decision 2026-08-23, alongside the design itself.
+NOTE: stop_loss_usd is a shared top-level field, not variant-specific,
+so reverting to dual_cross_confirmed_swap_adx via
+scripts/switch_m1_m3_to_confirmed_swap_adx.py must also explicitly
+restore it to 15.0 — that script does NOT touch stop_loss_usd itself
+(never has), so without a manual edit a revert would silently keep the
+$10 stop-loss on the old strategy too.
+
+The old sessions key (dual_cross_confirmed_swap_adx) is left in the file
 unchanged too -- simply unused by this engine, no need to remove it.
 
 All edits use explicit UTF-8 (no PowerShell Get-Content/Set-Content), per
@@ -40,10 +50,12 @@ for account in ["demo1_m1", "demo1_m3"]:
     # swap_adx_filter section already present from the previous variant --
     # left as-is (adx_period=14, adx_threshold=25.0), now read as the
     # entry gate instead of the swap gate.
+    old_stop_loss = raw.get("stop_loss_usd")
+    raw["stop_loss_usd"] = 10.0
 
     with open(p, "w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
-    print(f"Updated {p}: strategy_variant={NEW_VARIANT}")
+    print(f"Updated {p}: strategy_variant={NEW_VARIANT}, stop_loss_usd={old_stop_loss} -> 10.0")
 
 # Verify both load cleanly via the real load_config() before trusting them.
 import sys

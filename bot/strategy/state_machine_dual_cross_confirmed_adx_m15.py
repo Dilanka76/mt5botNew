@@ -57,8 +57,11 @@ Keeps unchanged from `dual_cross_confirmed_swap_adx`:
     gated by ADX+M15 before this rule is even consulted).
   - No $3 net, no "unvalidated" state — every position opens fully
     validated.
-  - $15 stop-loss (the only remaining backstop besides the
-    close-and-flatten reversal rule) and $5 take-profit, unchanged.
+  - Stop-loss (the only remaining backstop besides the close-and-flatten
+    reversal rule) and $5 take-profit. Stop-loss is explicitly tightened
+    to $10 for this variant (was $15 on dual_cross_confirmed_swap_adx) —
+    explicit user decision 2026-08-23, alongside the design itself; see
+    scripts/switch_m1_m3_to_confirmed_adx_m15.py.
 
 M15 confirmation mechanics: this engine does NOT fetch its own M15 data
 via the connector — matching the existing architecture where engines
