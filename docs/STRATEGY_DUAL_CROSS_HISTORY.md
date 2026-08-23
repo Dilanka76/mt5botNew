@@ -662,3 +662,13 @@ Deployed via `scripts/switch_m1_m3_to_confirmed_adx_m15.py` to both
 `demo1_m1` and `demo1_m3`, to be judged on live/demo results over the
 following days — explicit user decision, same pattern as every
 backtest-skipped deploy in this project's history.
+
+## Status: LIVE as of 2026-08-23 11:18 UTC — dual_cross_confirmed_adx_m15 on both demo1_m1 and demo1_m3
+
+Confirmed via fresh `Bot started` log lines on both accounts, restarted
+through the gateway's `/apiconnect/{account}/stop` + `/start` API:
+
+- `demo1_m1` 11:18:37 UTC: `strategy_variant=dual_cross_confirmed_adx_m15 state=IDLE stop_loss_usd=10.0`
+- `demo1_m3` 11:18:45 UTC: `strategy_variant=dual_cross_confirmed_adx_m15 state=IDLE stop_loss_usd=10.0`
+
+Both connected cleanly, session ACTIVE. `live1` was untouched throughout.
