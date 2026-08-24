@@ -8,10 +8,22 @@ full design). Deployed WITHOUT a prior backtest, explicit user decision
 
 Adds a new swap_adx_filter section (adx_period=14, adx_threshold=25.0)
 and a new session key reusing the existing swap_confirm windows
-unchanged. gap_threshold_usd, stop_loss_usd, and take_profit_usd are all
-existing top-level fields, left completely untouched. The old
-dual_cross_tight_exit section (if present) is left in the file
-unchanged too — simply unused by this engine, no need to remove it.
+unchanged (only if not already present — see REVERT note below).
+gap_threshold_usd and take_profit_usd are existing top-level fields,
+left completely untouched. The old dual_cross_tight_exit section (if
+present) is left in the file unchanged too — simply unused by this
+engine, no need to remove it.
+
+REVERT NOTE (2026-08-24): this script is also the documented way to
+revert BACK to this variant from dual_cross_confirmed_adx_m15 (see
+[[project_dual_cross_and_cross_confirmed]]'s "HOW TO REVERT" section).
+Re-running it is safe — the sessions[NEW_VARIANT] key is only written if
+missing (it will already exist from the original 2026-08-21 deploy, left
+untouched by every migration since). Explicitly restores
+stop_loss_usd to 15.0, since dual_cross_confirmed_adx_m15's own
+migration script (scripts/switch_m1_m3_to_confirmed_adx_m15.py)
+tightened it to 10.0 and this shared top-level field is not otherwise
+touched by any revert.
 
 All edits use explicit UTF-8 (no PowerShell Get-Content/Set-Content), per
 the lesson from the earlier encoding-corruption incident.
@@ -27,12 +39,15 @@ for account in ["demo1_m1", "demo1_m3"]:
         raw = yaml.safe_load(f)
 
     raw["strategy_variant"] = NEW_VARIANT
-    raw["sessions"][NEW_VARIANT] = raw["sessions"]["dual_cross_tight_exit_swap_confirm"]
+    if NEW_VARIANT not in raw["sessions"]:
+        raw["sessions"][NEW_VARIANT] = raw["sessions"]["dual_cross_tight_exit_swap_confirm"]
     raw["swap_adx_filter"] = {"adx_period": 14, "adx_threshold": 25.0}
+    old_stop_loss = raw.get("stop_loss_usd")
+    raw["stop_loss_usd"] = 15.0
 
     with open(p, "w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
-    print(f"Updated {p}: strategy_variant={NEW_VARIANT}")
+    print(f"Updated {p}: strategy_variant={NEW_VARIANT}, stop_loss_usd={old_stop_loss} -> 15.0")
 
 # Verify both load cleanly via the real load_config() before trusting them.
 import sys
