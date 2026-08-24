@@ -693,3 +693,62 @@ the engine.
 No config or migration script change was needed — `strategy_variant`
 and every config field stayed the same, so this deploys via a normal
 code push + restart on each account.
+
+## REVERTED to dual_cross_confirmed_swap_adx (2026-08-24 11:22 UTC)
+
+User request, after a full day of real-data ADX investigation (see
+below) confirmed the ADX-only engine was working correctly — this was
+a genuine strategy preference, not a bug fix. The user chose to go back
+to the swap mechanism (2-candle+ADX-gated reversal, no ADX filter on
+entries, $15 stop-loss) over the newer close-and-flatten design.
+
+`scripts/switch_m1_m3_to_confirmed_swap_adx.py` was updated first to
+also restore `stop_loss_usd: 15.0` (the newer variant's migration script
+had tightened it to $10, and no revert path touched it back until now).
+Re-ran it, restarted both accounts, confirmed via fresh `Bot started`
+lines at 11:21:59 UTC on both `demo1_m1` and `demo1_m3` —
+`strategy_variant=dual_cross_confirmed_swap_adx`, `stop_loss_usd=15.0`.
+
+`dual_cross_confirmed_adx_m15` is not deleted — it's left fully wired in
+both `main.py` and the backtester, redeployable at any time via
+`scripts/switch_m1_m3_to_confirmed_adx_m15.py`.
+
+## Real-data ADX investigation (2026-08-24) — confirmed the new engine's ADX calculation is correct
+
+A day of back-and-forth checking the bot's real ADX readings against
+the user's MT5 mobile app turned up two genuine, resolved findings —
+neither was a bug in the bot:
+
+1. **MT5 has two different ADX indicators.** "Average Directional
+   Movement Index" (MetaQuotes' own variant, computes +DM/-DM
+   independently each bar) and "Average Directional Movement Index
+   Wilder" (the textbook formula, mutual exclusivity between +DM/-DM).
+   The user's mobile app was reading the plain "ADX" variant; this
+   project's `bot/indicators/adx.py` implements Wilder's. Confirmed via
+   MQL5's own documentation. The two indicators can differ substantially
+   on the same candle (one real example: 13.13 vs 27.16) — not an error,
+   genuinely different math. `adx.py`'s docstring was updated to flag
+   this explicitly.
+2. **`inspect_candles_fixed_offset.py` had a real bug**, unrelated to
+   the above: its warm-up lookback was a fixed calendar-duration
+   (`candles_to_fetch * minutes_per_candle`), which crashes
+   (`IndexError: iloc cannot enlarge its target object`) if that
+   duration lands inside a weekend/holiday market-closed gap — confirmed
+   while investigating a trade shortly after a weekly market reopen.
+   Fixed by switching to a flat 10-calendar-day lookback via
+   `copy_rates_range`, mirroring why `main.py` itself never hits this
+   (it fetches by position — the last N real candles — not by a fixed
+   time duration).
+
+Throughout the investigation, the bot's own Wilder ADX was repeatedly
+cross-checked against its own live, real-time decision log
+(`decisions.jsonl`) and found to match exactly every time — confirming
+the ADX gate was never the problem; it was purely a display/comparison
+mismatch on the user's mobile app.
+
+Two new general-purpose diagnostic scripts came out of this:
+`scripts/count_adx_gate_signals.py` (counts confirmed crosses taken vs
+blocked by ADX/session since a given timestamp) and
+`scripts/inspect_live_candle.py` (shows the currently-forming candle
+plus recent closed ones, exactly as the live bot sees them). Neither is
+tied to any one strategy variant.
