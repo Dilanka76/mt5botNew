@@ -112,7 +112,7 @@ def check_rule_compliance(
     last_early_exit_time: datetime | None = None
     counts = {"trade_entered_tick": 0, "trade_entered_fallback": 0, "position_validated": 0,
               "early_exit_unconfirmed": 0, "validation_failed": 0, "stop_loss": 0,
-              "swapped_confirmed_reversal": 0, "take_profit": 0}
+              "swapped_confirmed_reversal": 0, "closed_confirmed_reversal": 0, "take_profit": 0}
 
     for ts, e in entries:
         action = e.get("action")
@@ -177,6 +177,18 @@ def check_rule_compliance(
                 if state != "VALIDATED":
                     violations.append((ts, f"swapped_confirmed_reversal while state was {state} — this should be structurally impossible on an UNVALIDATED position"))
                 counts["swapped_confirmed_reversal"] += 1
+                state = "NONE"
+            elif category == "closed_confirmed_reversal":
+                # dual_cross_confirmed_adx_m15's close-and-flatten reversal
+                # (2026-08-23) -- a single confirmed opposite candle closes
+                # a held position immediately, no ADX/2-candle wait. Every
+                # entry on this engine is pre-validated (VALIDATED
+                # immediately), so this should never fire on an
+                # UNVALIDATED position, same requirement as
+                # swapped_confirmed_reversal.
+                if state != "VALIDATED":
+                    violations.append((ts, f"closed_confirmed_reversal while state was {state} — this should be structurally impossible on an UNVALIDATED position"))
+                counts["closed_confirmed_reversal"] += 1
                 state = "NONE"
             else:
                 violations.append((ts, f"UNEXPECTED close category for this engine: {category!r}"))
