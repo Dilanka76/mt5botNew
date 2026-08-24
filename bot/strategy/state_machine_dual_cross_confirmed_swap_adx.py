@@ -77,6 +77,47 @@ bot flat with no position right after closing the old one, missing the
 very reversal the swap exists to catch, if price never pulls back to
 EMA5. The user confirmed keeping the swap immediate rather than gating it
 too, after seeing that trade-off explained with numbers.
+
+**Pending-reversal stop-loss tightening, added 2026-08-24 (NOT YET
+DEPLOYED — built, awaiting explicit user go-ahead).** User's concern: the
+2-candle+ADX debounce is good at avoiding whipsaw flips, but during the
+wait for the second candle, the HELD position keeps carrying its full
+original stop-loss risk even though the first opposing candle is already
+real evidence something may be going wrong. Solution, built after
+tracing real 2026-08-24 data (both a case where this helps — two quick
+stop-loss losses that would have been roughly halved — and a case where
+it wouldn't have hurt — a trade with two false-alarm warnings that still
+recovered and won, where price never got close to where a tightened stop
+would sit):
+
+  - The instant the FIRST opposing candle arms `pending_reversal_direction`
+    (logged as `swap_pending`), the held position's stop-loss is
+    immediately tightened to HALF the account's normal stop distance
+    (e.g. $7.50 instead of $15 on demo1_m3, $2.50 instead of $5 on
+    demo1_m1) — computed fresh from the position's own entry price via
+    `_compute_stop_loss(direction, entry_price, distance_usd)`'s new
+    optional `distance_usd` parameter (defaults to the full
+    `config.stop_loss_usd` everywhere else it's called — entries, and
+    reconcile_on_startup's self-heal path — only the swap_pending branch
+    passes the halved value).
+  - If the swap then fires (2nd candle + ADX both pass): moot — the old
+    position closes at market regardless of its stop-loss value, and the
+    NEW position opens with its own fresh, full-size stop.
+  - If the swap is blocked by ADX (2nd candle confirms, ADX too weak):
+    the tightened stop STAYS tightened for the rest of that position's
+    life — explicit user decision — two candles opposing the trade in a
+    row is a real warning sign even without ADX confirming, so the extra
+    protection is kept rather than restored to full.
+  - If no second opposing candle ever arrives and the market goes back in
+    the position's favor: the tightened stop just sits there unused
+    unless price happens to dip into it first — not explicitly
+    traded-off against restoring to full in that specific case, since it
+    never came up in the real examples checked; worth watching for.
+  - `on_tick()`'s stop-loss-hit log line now reports the ACTUAL distance
+    that fired (`abs(entry_price - stop_loss)`), not always the base
+    `config.stop_loss_usd` — it would otherwise misleadingly say e.g.
+    "$5.00 stop-loss hit" even when the tightened $2.50 stop is what
+    actually triggered.
 """
 from __future__ import annotations
 
@@ -154,10 +195,11 @@ class DualCrossConfirmedSwapAdxEngine:
     def _active_sessions(self) -> list:
         return self.config.sessions["dual_cross_confirmed_swap_adx"]
 
-    def _compute_stop_loss(self, direction: Direction, entry_price: float) -> float:
+    def _compute_stop_loss(self, direction: Direction, entry_price: float, distance_usd: float | None = None) -> float:
+        distance = distance_usd if distance_usd is not None else self.config.stop_loss_usd
         return (
-            entry_price - self.config.stop_loss_usd if direction == Direction.BUY
-            else entry_price + self.config.stop_loss_usd
+            entry_price - distance if direction == Direction.BUY
+            else entry_price + distance
         )
 
     def _reject_manual_positions(self) -> None:
@@ -299,16 +341,42 @@ class DualCrossConfirmedSwapAdxEngine:
                                 f"ema21={ema21:.2f}) but adx="
                                 f"{'nan' if math.isnan(adx_value) else f'{adx_value:.1f}'} < "
                                 f"{self.config.swap_adx_filter.adx_threshold:.1f} -> swap BLOCKED, "
-                                f"{self.position.direction.value} position keeps running",
+                                f"{self.position.direction.value} position keeps running with its stop-loss "
+                                f"still tightened from the pending-reversal warning (stays tightened, not "
+                                f"restored -- two opposing candles in a row is a real warning sign even "
+                                f"without ADX confirming)",
                             )
                             self.pending_reversal_direction = None
                     else:
                         self.pending_reversal_direction = direction
+                        # Tighten the HELD position's stop-loss to half its
+                        # normal distance the instant the first opposing
+                        # candle appears -- real evidence the trade might be
+                        # going wrong, even before the 2-candle+ADX bar is
+                        # cleared. If the swap later fires, this is moot
+                        # (a fresh position with its own full stop opens).
+                        # If it's blocked by ADX, the tightened stop STAYS
+                        # (explicit user decision 2026-08-24) -- two candles
+                        # opposing the trade in a row is a real warning sign
+                        # even without ADX confirming. Traced against real
+                        # 2026-08-24 data before building: on two real
+                        # losing trades this would have roughly halved the
+                        # loss; on a trade with two false-alarm warnings
+                        # that still won, price never got remotely close to
+                        # where the tightened stop would sit, so it
+                        # wouldn't have caused an early false exit either.
+                        tightened_distance = self.config.stop_loss_usd / 2
+                        old_stop_loss = self.position.stop_loss
+                        self.position.stop_loss = self._compute_stop_loss(
+                            self.position.direction, self.position.entry_price, tightened_distance,
+                        )
                         log_decision(
                             self.config.symbol, "swap_pending",
                             f"{direction.value} candle close (ema13={ema13:.2f}, "
                             f"ema21={ema21:.2f}) opposes held {self.position.direction.value} position but "
-                            f"not swapped yet -> waiting for next candle to confirm before acting",
+                            f"not swapped yet -> waiting for next candle to confirm before acting; "
+                            f"stop-loss tightened to ${tightened_distance:.2f} (was ${self.config.stop_loss_usd:.2f}) "
+                            f"at {self.position.stop_loss:.2f} (was {old_stop_loss:.2f})",
                         )
                 else:
                     if self.pending_reversal_direction is not None:
@@ -412,9 +480,16 @@ class DualCrossConfirmedSwapAdxEngine:
                     or (position.direction == Direction.SELL and tick.bid >= position.stop_loss)
                 )
                 if stop_hit:
+                    # Report the ACTUAL distance that fired, not always the
+                    # base config value -- position.stop_loss may have been
+                    # tightened to half by a pending-reversal warning (see
+                    # the swap_pending branch in on_new_candle()), and the
+                    # log must reflect what really happened, not the
+                    # account's normal stop size.
+                    actual_distance = abs(position.entry_price - position.stop_loss)
                     events.append(self._close_position(
                         category="stop_loss",
-                        reason=f"${self.config.stop_loss_usd:.2f} stop-loss hit at {position.stop_loss:.2f}",
+                        reason=f"${actual_distance:.2f} stop-loss hit at {position.stop_loss:.2f}",
                         exit_price=position.stop_loss,
                     ))
                 else:
