@@ -30,9 +30,6 @@ from bot.indicators.adx import compute_adx
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
 
-TIMEFRAME_MINUTES = {"M1": 1, "M3": 3, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--account", required=True, type=validate_account_name)
@@ -50,8 +47,20 @@ def main() -> None:
     dt_to = datetime.strptime(args.dt_to, "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
     offset = timedelta(hours=args.offset_hours)
 
-    minutes_per_candle = TIMEFRAME_MINUTES[config.timeframe]
-    warmup_start = dt_from - timedelta(minutes=config.candles_to_fetch * minutes_per_candle)
+    # NOTE: warmup is requested as a generous CALENDAR-day lookback (not a
+    # fixed candles_to_fetch*minutes_per_candle duration) because a
+    # duration-based warmup_start can land inside a market-closed gap
+    # (weekend/holiday) -- copy_rates_range then returns far fewer than
+    # candles_to_fetch real candles for that "duration", which can crash
+    # compute_adx() outright near a weekly market reopen (confirmed
+    # 2026-08-24, IndexError: iloc cannot enlarge its target object,
+    # investigating a real trade shortly after that week's open). The
+    # live bot avoids this because main.py fetches by POSITION
+    # (mt5.copy_rates_from_pos) -- always the last N real candles,
+    # gap or no gap -- not by a fixed time duration. 10 calendar days
+    # guarantees at least one full prior trading week's worth of real
+    # candles even right after a fresh weekly reopen.
+    warmup_start = dt_from - timedelta(days=10)
 
     connector = MT5Connector(config.mt5)
     connector.connect()
