@@ -1,5 +1,17 @@
 """Average Directional Index (ADX) calculation — Wilder's original
-smoothing method, matching MT5's own built-in ADX indicator's definition.
+method (mutual-exclusivity +DM/-DM rule: only the larger of the two
+counts per bar, the other is forced to zero).
+
+IMPORTANT (confirmed 2026-08-24 against a real chart discrepancy, see
+[[project_dual_cross_and_cross_confirmed]]): MT5 ships TWO different ADX
+indicators that read differently on the same data —
+"Average Directional Movement Index" (MetaQuotes' own variant, +DM/-DM
+computed independently, can both be nonzero on the same bar) and
+"Average Directional Movement Index Wilder" (the textbook formula this
+module implements). They are NOT the same indicator. To visually verify
+this module's output against a live MT5 chart, add "ADX Wilder" (not
+plain "ADX") with Period 14 — the plain "ADX" will read differently,
+sometimes substantially, especially on volatile candles.
 
   ADX below ~20-25  = weak/no trend (ranging, choppy)
   ADX above ~25     = trending, real directional force
