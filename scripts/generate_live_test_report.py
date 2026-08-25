@@ -62,8 +62,12 @@ from bot.analytics import COLOMBO, get_closed_trades_range
 
 # Fixed cutoff, not "earliest decisions.jsonl entry" -- see module
 # docstring. Noon Asia/Colombo -- see trading_day() below for why noon,
-# not midnight, is this report's day boundary.
-TESTING_START_UTC = datetime(2026, 8, 26, 12, 0, tzinfo=COLOMBO).astimezone(timezone.utc)
+# not midnight, is this report's day boundary. Set one trading-day back
+# from when this report was first stood up (2026-08-26) so there's real
+# data to sanity-check against immediately, rather than starting
+# completely empty -- explicit user request ("yester and the future
+# trade are show").
+TESTING_START_UTC = datetime(2026, 8, 25, 12, 0, tzinfo=COLOMBO).astimezone(timezone.utc)
 
 
 def trading_day(dt: datetime) -> date_cls:
