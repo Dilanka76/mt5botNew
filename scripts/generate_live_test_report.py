@@ -59,28 +59,33 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from bot.analytics import COLOMBO, get_closed_trades_range
+from bot.config import PROJECT_ROOT, SessionWindow, load_config
+
+# MT5 app/broker time -- true UTC + 3h, confirmed repeatedly throughout
+# this project (NOT Sri Lanka time, which is UTC+5:30 -- a different,
+# separate offset). This report's day boundary matches MT5's own "Today"
+# view exactly: plain midnight-to-midnight in APP time. Explicit user
+# decision 2026-08-25/26, after briefly trying noon-to-noon Sri Lanka
+# time and finding it diverged from what the MT5 app itself shows as
+# "Today" -- the app's own count is the source of truth the user checks
+# against, so this report matches it exactly rather than using a
+# different convention.
+APP_TZ = timezone(timedelta(hours=3))
 
 # Fixed cutoff, not "earliest decisions.jsonl entry" -- see module
-# docstring. Noon Asia/Colombo -- see trading_day() below for why noon,
-# not midnight, is this report's day boundary. Set one trading-day back
-# from when this report was first stood up (2026-08-26) so there's real
-# data to sanity-check against immediately, rather than starting
-# completely empty -- explicit user request ("yester and the future
-# trade are show").
-TESTING_START_UTC = datetime(2026, 8, 25, 12, 0, tzinfo=COLOMBO).astimezone(timezone.utc)
+# docstring. Midnight app time, one full day back from when this report
+# was first stood up, so there's real data to sanity-check against
+# immediately rather than starting completely empty.
+TESTING_START_UTC = datetime(2026, 8, 25, 0, 0, tzinfo=APP_TZ).astimezone(timezone.utc)
 
 
 def trading_day(dt: datetime) -> date_cls:
-    """This report's calendar day runs NOON-to-NOON Asia/Colombo, not
-    midnight-to-midnight -- explicit user request 2026-08-26. Shifting
-    back by 12 hours before taking the date turns a noon-anchored day
-    into a plain .date() call: anything from 12:00 PM through 11:59 PM
-    lands on today's date already; anything from 12:00 AM through 11:59
-    AM shifts back onto YESTERDAY's date, correctly extending the
-    previous noon-to-noon day rather than starting a new one at
-    midnight."""
-    return (dt.astimezone(COLOMBO) - timedelta(hours=12)).date()
-from bot.config import PROJECT_ROOT, SessionWindow, load_config
+    """This report's calendar day is plain midnight-to-midnight in MT5
+    APP time (UTC+3) -- matches what the MT5 app itself shows as
+    "Today" exactly (confirmed against a real 18-trade count 2026-08-25).
+    NOT Sri Lanka time, NOT a noon-anchored day (an earlier version of
+    this function tried both; explicitly reverted)."""
+    return dt.astimezone(APP_TZ).date()
 from bot.mt5_connector import MT5Connector
 
 ACCOUNTS = [("demo1_m1", "M1"), ("demo1_m3", "M3")]
