@@ -112,6 +112,51 @@ def get_closed_trades(symbol: str, magic: int, target_date: date_cls) -> list[di
     return trades
 
 
+def get_closed_trades_range(symbol: str, magic: int, date_from_utc: datetime, date_to_utc: datetime) -> list[dict]:
+    """Same entry/exit deal pairing and dict shape as get_closed_trades()
+    above, but over an explicit UTC range instead of a single calendar day
+    + fixed lookback — for reports that need this bot's FULL trade history
+    in one query (e.g. scripts/generate_live_test_report.py) rather than
+    looping get_closed_trades() one day at a time. "ticket" is the
+    position ticket (== position_id, matching bot.logging_setup.logger's
+    trade_exited/trade_closed_tp "ticket" field), not a deal ticket — so
+    callers can join against logs/<account>/decisions.jsonl."""
+    deals = mt5.history_deals_get(date_from_utc, date_to_utc)
+    if not deals:
+        return []
+
+    relevant = [d for d in deals if d.symbol == symbol and d.magic == magic]
+
+    by_position: dict[int, list] = {}
+    for d in relevant:
+        by_position.setdefault(d.position_id, []).append(d)
+
+    trades = []
+    for position_id, deal_list in by_position.items():
+        entry_deal = next((d for d in deal_list if d.entry == mt5.DEAL_ENTRY_IN), None)
+        exit_deal = next((d for d in deal_list if d.entry == mt5.DEAL_ENTRY_OUT), None)
+        if entry_deal is None or exit_deal is None:
+            continue  # still open, or entry/exit fell outside the queried range
+
+        direction = "BUY" if entry_deal.type == mt5.ORDER_TYPE_BUY else "SELL"
+
+        trades.append({
+            "position_id": position_id,
+            "ticket": position_id,
+            "direction": direction,
+            "volume": exit_deal.volume,
+            "entry_time": datetime.fromtimestamp(entry_deal.time, tz=timezone.utc).astimezone(COLOMBO),
+            "exit_time": datetime.fromtimestamp(exit_deal.time, tz=timezone.utc).astimezone(COLOMBO),
+            "entry_price": entry_deal.price,
+            "exit_price": exit_deal.price,
+            "profit": trade_profit(exit_deal, entry_deal),
+            "exit_reason": classify_exit_reason(exit_deal),
+        })
+
+    trades.sort(key=lambda t: t["entry_time"])
+    return trades
+
+
 def get_balance_at(target_utc_moment: datetime, current_balance: float) -> float:
     """Reconstructs the account balance at a past UTC moment by reversing
     out every balance-affecting deal (ANY trade or deposit/withdrawal on
