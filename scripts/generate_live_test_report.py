@@ -4,10 +4,20 @@ timeframe variants, demo1_m1 (M1) and demo1_m3 (M3).
 
     python scripts/generate_live_test_report.py
 
-No date args: always covers the full history (earliest decisions.jsonl
-entry through now) and always rewrites reports/live_test/live_test_report.xlsx
-from scratch — idempotent by construction (nothing is appended to an
-existing file, so re-running never duplicates a row).
+No date args: always covers TESTING_START_UTC (below) through now, and
+always rewrites reports/live_test/live_test_report.xlsx from scratch —
+idempotent by construction (nothing is appended to an existing file, so
+re-running never duplicates a row).
+
+TESTING_START_UTC is a fixed cutoff, NOT "earliest decisions.jsonl
+entry" — explicit user request 2026-08-26: don't mix in trades from
+earlier, retired strategy variants (this project has been through
+several: dual_cross, cross_confirmed, dual_cross_tight_exit,
+dual_cross_confirmed_swap_adx, dual_cross_confirmed_adx_m15, back to
+dual_cross_confirmed_swap_adx...) — this report tracks the
+CURRENTLY-deployed strategy's live/shadow testing specifically, starting
+fresh from today. Update the constant if the user ever wants to reset
+the tracking window again (e.g. after a major strategy change).
 
 Two sources, joined per trade:
   - MT5 deal history (mt5.history_deals_get, via bot.analytics.
@@ -49,6 +59,10 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from bot.analytics import COLOMBO, get_closed_trades_range
+
+# Fixed cutoff, not "earliest decisions.jsonl entry" -- see module
+# docstring. Midnight Asia/Colombo, matching this report's own timezone.
+TESTING_START_UTC = datetime(2026, 8, 26, 0, 0, tzinfo=COLOMBO).astimezone(timezone.utc)
 from bot.config import PROJECT_ROOT, SessionWindow, load_config
 from bot.mt5_connector import MT5Connector
 
@@ -376,23 +390,29 @@ def kpi_cell(ws, row: int, col: int, label: str, value: str) -> None:
 
 
 def gather_account_data(account: str, timeframe: str) -> tuple[list[dict], list[dict], dict]:
-    decisions = read_decisions(account)
+    decisions = [e for e in read_decisions(account) if e["_ts"] >= TESTING_START_UTC]
     config = load_config(account)
 
     if decisions:
         earliest = min(e["_ts"] for e in decisions)
     else:
-        earliest = datetime.now(timezone.utc) - timedelta(days=1)
+        earliest = TESTING_START_UTC
 
     connector = MT5Connector(config.mt5)
     connector.connect()
     try:
         mt5_trades = get_closed_trades_range(
             config.symbol, config.execution.magic_number,
-            earliest - timedelta(days=1), datetime.now(timezone.utc),
+            TESTING_START_UTC, datetime.now(timezone.utc),
         )
     finally:
         connector.disconnect()
+    # Extra safety: a position that opened before TESTING_START_UTC but
+    # closed after it would otherwise sneak in via the range query above
+    # (get_closed_trades_range pairs by position, keyed off the exit deal
+    # falling inside the range) -- exclude anything whose ENTRY predates
+    # the testing-start cutoff too.
+    mt5_trades = [t for t in mt5_trades if t["entry_time"].astimezone(timezone.utc) >= TESTING_START_UTC]
 
     records = build_trade_records(account, timeframe, decisions, mt5_trades)
     sessions = config.sessions.get(config.strategy_variant, [])
