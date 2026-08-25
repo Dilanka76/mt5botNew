@@ -61,8 +61,21 @@ from openpyxl.utils import get_column_letter
 from bot.analytics import COLOMBO, get_closed_trades_range
 
 # Fixed cutoff, not "earliest decisions.jsonl entry" -- see module
-# docstring. Midnight Asia/Colombo, matching this report's own timezone.
-TESTING_START_UTC = datetime(2026, 8, 26, 0, 0, tzinfo=COLOMBO).astimezone(timezone.utc)
+# docstring. Noon Asia/Colombo -- see trading_day() below for why noon,
+# not midnight, is this report's day boundary.
+TESTING_START_UTC = datetime(2026, 8, 26, 12, 0, tzinfo=COLOMBO).astimezone(timezone.utc)
+
+
+def trading_day(dt: datetime) -> date_cls:
+    """This report's calendar day runs NOON-to-NOON Asia/Colombo, not
+    midnight-to-midnight -- explicit user request 2026-08-26. Shifting
+    back by 12 hours before taking the date turns a noon-anchored day
+    into a plain .date() call: anything from 12:00 PM through 11:59 PM
+    lands on today's date already; anything from 12:00 AM through 11:59
+    AM shifts back onto YESTERDAY's date, correctly extending the
+    previous noon-to-noon day rather than starting a new one at
+    midnight."""
+    return (dt.astimezone(COLOMBO) - timedelta(hours=12)).date()
 from bot.config import PROJECT_ROOT, SessionWindow, load_config
 from bot.mt5_connector import MT5Connector
 
@@ -317,11 +330,11 @@ def build_daily_log(m1_records: list[dict], m3_records: list[dict]) -> list[dict
     all_records = m1_records + m3_records
     if not all_records:
         return []
-    dates = sorted({r["exit_time"].astimezone(COLOMBO).date() for r in all_records})
-    start, end = dates[0], date_cls.today()
+    dates = sorted({trading_day(r["exit_time"]) for r in all_records})
+    start, end = dates[0], trading_day(datetime.now(timezone.utc))
 
     def by_date(records: list[dict], d: date_cls) -> list[dict]:
-        return [r for r in records if r["exit_time"].astimezone(COLOMBO).date() == d]
+        return [r for r in records if trading_day(r["exit_time"]) == d]
 
     rows = []
     d = start
@@ -494,8 +507,8 @@ def build_workbook(m1: tuple, m3: tuple) -> Workbook:
     ])
     autofit(ws_dash, 4)
 
-    today = date_cls.today()
-    today_records = [r for r in all_records if r["exit_time"].astimezone(COLOMBO).date() == today]
+    today = trading_day(datetime.now(timezone.utc))
+    today_records = [r for r in all_records if trading_day(r["exit_time"]) == today]
     if today_records:
         common = Counter(category_label(r["close_category"]) for r in today_records).most_common(1)[0]
         callout = f"{common[0]} ({common[1]} of {len(today_records)} closes today)"
