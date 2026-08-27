@@ -16,6 +16,9 @@ logs/**/*.json.tmp
 KILL_SWITCH
 KILL_SWITCH_*
 
+# Google OAuth credentials for scripts/upload_report_to_drive.py -- never commit
+credentials/
+
 reports/daily/**/*.md
 
 .idea/
