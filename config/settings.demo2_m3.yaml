@@ -42,7 +42,7 @@ execution:
   magic_number: 920003
   order_deviation_points: 20
   order_comment: dual-cross-confirmed-swap
-  reject_manual_trades: false
+  reject_manual_trades: true
   sibling_magic_numbers: [920001]   # demo2_m1, same underlying demo2 MT5 login
 
 logging:
