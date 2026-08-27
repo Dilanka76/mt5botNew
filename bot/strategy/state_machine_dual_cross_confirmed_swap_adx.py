@@ -119,44 +119,31 @@ would sit):
     "$5.00 stop-loss hit" even when the tightened $2.50 stop is what
     actually triggered.
 
-**ADX-momentum entry filter, added 2026-08-24/25.** Built after tracing
-two real losses (both on demo1_m1): both entries happened while ADX was
-already falling every candle beforehand (a fading, tired trend, not a
-fresh one), then a single violent 1-minute candle spiked through the
-stop before any EMA reversal warning could register. Root cause
-diagnosis, not just a guess — both losses shared the identical
-technical signature.
+**ADX-momentum entry filter — added 2026-08-24/25, REMOVED 2026-08-27.**
+Required ADX to be RISING versus the previous candle on every flat entry
+(not a fixed threshold like 25 — that was explicitly rejected, an
+earlier fixed-threshold design had blocked the vast majority of real
+signals). Built after tracing two real losses where ADX was already
+falling before entry and a violent single-candle spike hit the stop
+before any EMA reversal could register.
 
-  - Every flat entry (fresh EMA13/21 confirmed cross) now additionally
-    requires ADX to be RISING versus the previous candle
-    (`adx_now > self.prev_adx`) — NOT a fixed threshold like 25.
-    Explicitly NOT a threshold check: an earlier fixed-25-threshold
-    design (`dual_cross_confirmed_adx_m15`) blocked the vast majority of
-    real signals when tried live, which the user explicitly does not
-    want repeated ("if we look 25 above and entry this time we have to
-    miss so many trade, like happened yesterday").
-  - Direction-agnostic: applies identically to BUY and SELL, since ADX
-    measures trend STRENGTH regardless of direction — the direction
-    itself still comes entirely from the EMA13/21 cross, unchanged.
-  - Fails safe like every other ADX check in this project: if
-    `self.prev_adx` is None (warmup) or either value is NaN, the entry
-    is blocked, not allowed through by default.
-  - Real, acknowledged trade-off, confirmed explicitly with the user:
-    if a signal is blocked because ADX dipped for exactly one candle,
-    but EMA13/21 never produces a NEW cross afterward (the original
-    direction just continues, ADX recovers on its own), that whole move
-    — win or lose — is missed entirely. This filter only re-checks at
-    the moment of a FRESH cross, never retroactively. Traced against one
-    real example where blocking WOULD have worked out well (the blocked
-    signal's later ADX recovery coincided with a genuine trend reversal
-    that produced its own fresh, correctly-gated cross in the new
-    direction) — but this is not guaranteed in general, and the net
-    effect (fewer bad trades taken vs. some good trades missed) is not
-    yet validated against a larger real sample.
-  - Does NOT apply to the swap/reversal path at all — that keeps its own
-    unchanged 2-candle + fixed-25-threshold ADX gate, plus the
-    pending-reversal stop-tightening above. This filter only touches
-    fresh entries from flat.
+Removed after real evidence outgrew the two losses that motivated it:
+`scripts/simulate_blocked_adx_signals.py` automatically traced every one
+of the 41 real signals this filter blocked across its two days live
+(cross-checked against 4 hand-traced signals first, exact match on all
+4) — 27 would-be wins (~+$810) vs. 14 would-be losses (~-$720), net
+**~+$90 that the filter cost, not saved**. It was blocking more good
+trades than bad ones. Explicit user decision to remove
+("i think both 1m and 3m no need that... it makes miss changes").
+`self.prev_adx` and its tracking were removed too, not just disabled —
+no longer read anywhere. Every flat entry now takes any confirmed
+EMA13/21 cross again, exactly as before 2026-08-24, gated only by the
+$5 gap + EMA5-pullback rule below.
+
+Does NOT affect the swap/reversal path — that still keeps its own
+unchanged 2-candle + fixed-25-threshold ADX gate, plus the
+pending-reversal stop-tightening above (both still live, both
+unaffected by this removal).
 """
 from __future__ import annotations
 
@@ -225,7 +212,6 @@ class DualCrossConfirmedSwapAdxEngine:
         self.pending: PendingSetup | None = None
         self.prev_ema13: float | None = None
         self.prev_ema21: float | None = None
-        self.prev_adx: float | None = None
         self.current_ema5: float | None = None
         self.current_candle_time: pd.Timestamp | None = None
         # Armed by a confirmed opposite cross while a position is held;
@@ -324,7 +310,6 @@ class DualCrossConfirmedSwapAdxEngine:
         ema13 = float(last_closed["ema13"])
         ema21 = float(last_closed["ema21"])
         exit_price = float(last_closed["close"])
-        adx_now = float(last_closed["adx"])
 
         # No own-candle-validation step here at all — every position opens
         # already validated (see module docstring), so there is nothing to
@@ -452,52 +437,33 @@ class DualCrossConfirmedSwapAdxEngine:
                             f"{direction.value} confirmed cross at {last_closed_time}, no session open",
                         )
                     else:
-                        # ADX-momentum entry filter, added 2026-08-24/25:
-                        # require ADX to be RISING vs the previous candle,
-                        # not a fixed threshold like 25 (explicitly
-                        # rejected -- that blocked the vast majority of
-                        # real signals when tried before, see
-                        # dual_cross_confirmed_adx_m15's real results).
-                        # Direction-agnostic: applies identically to BUY
-                        # and SELL, since ADX measures trend STRENGTH, not
-                        # direction. Traced against two real 2026-08-24/25
-                        # losses before building: both entered while ADX
-                        # was already falling every candle beforehand,
-                        # then a single violent 1-minute spike blew
-                        # through the stop before any EMA reversal could
-                        # register -- this filter would have blocked both.
-                        # self.prev_adx is None during warmup or right
-                        # after a fresh flat->position transition reset;
-                        # fail-safe blocked, same pattern as every other
-                        # ADX check in this project.
-                        adx_rising = (
-                            self.prev_adx is not None and not math.isnan(adx_now)
-                            and not math.isnan(self.prev_adx) and adx_now > self.prev_adx
+                        # ADX-momentum entry filter (required ADX rising
+                        # vs the previous candle) was tried 2026-08-24/25
+                        # and REMOVED 2026-08-27 -- explicit user decision,
+                        # backed by real data: automated trace of all 41
+                        # real signals it blocked across its 2 days live
+                        # (scripts/simulate_blocked_adx_signals.py,
+                        # cross-checked against 4 hand-traced signals,
+                        # exact match) showed 27 would-be wins (~+$810) vs
+                        # 14 would-be losses (~-$720) -- net ~+$90 LOST by
+                        # having the filter, not saved. It was blocking
+                        # more good trades than bad ones. See
+                        # [[project_dual_cross_and_cross_confirmed]] for
+                        # the full history if this is ever revisited.
+                        opened = self._maybe_enter_or_pend(
+                            direction, exit_price, ema13,
+                            base_reason=(
+                                f"close-confirmed: candle closed with a genuine "
+                                f"{prev_state.value}->{new_state.value} cross (ema13={ema13:.2f}, "
+                                f"ema21={ema21:.2f})"
+                            ),
+                            cross_candle_time_override=last_closed_time,
                         )
-                        if not adx_rising:
-                            log_decision(
-                                self.config.symbol, "entry_blocked_adx_falling",
-                                f"{direction.value} cross confirmed (ema13={ema13:.2f}, ema21={ema21:.2f}) but "
-                                f"ADX is not rising (now={'nan' if math.isnan(adx_now) else f'{adx_now:.1f}'}, "
-                                f"prev={'nan' if self.prev_adx is None or math.isnan(self.prev_adx) else f'{self.prev_adx:.1f}'}) "
-                                f"-> ENTRY BLOCKED, staying flat, waiting for the next independent signal",
-                            )
-                        else:
-                            opened = self._maybe_enter_or_pend(
-                                direction, exit_price, ema13,
-                                base_reason=(
-                                    f"close-confirmed: candle closed with a genuine "
-                                    f"{prev_state.value}->{new_state.value} cross (ema13={ema13:.2f}, "
-                                    f"ema21={ema21:.2f}, adx={adx_now:.1f} rising from {self.prev_adx:.1f})"
-                                ),
-                                cross_candle_time_override=last_closed_time,
-                            )
-                            if opened is not None:
-                                events.append(opened)
+                        if opened is not None:
+                            events.append(opened)
 
         self.prev_ema13 = ema13
         self.prev_ema21 = ema21
-        self.prev_adx = adx_now
         self.current_ema5 = ema5
         self.current_candle_time = df_with_emas.index[-1]
         self._update_state()
