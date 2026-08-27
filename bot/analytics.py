@@ -67,13 +67,26 @@ def day_bounds_utc(target_date: date_cls) -> tuple[datetime, datetime]:
     return day_start_local.astimezone(timezone.utc), day_end_local.astimezone(timezone.utc)
 
 
-def get_closed_trades(symbol: str, magic: int, target_date: date_cls) -> list[dict]:
+def get_closed_trades(symbol: str, magic: int, target_date: date_cls, offset: timedelta) -> list[dict]:
     """Pairs entry/exit deals (by position_id) for THIS bot's trades
-    (filtered by symbol + magic number) whose EXIT fell on target_date."""
+    (filtered by symbol + magic number) whose EXIT fell on target_date.
+
+    `offset` is the broker-vs-true-UTC offset (see mt5_utc_offset's
+    docstring) — MUST be measured by the caller via mt5_utc_offset(connector,
+    symbol) and passed in; this function has no connector of its own to
+    measure it fresh. Applied to the query boundaries (ADDED, since
+    mt5.history_deals_get expects broker time) and to each returned deal's
+    .time field (SUBTRACTED, to get true UTC before the day-boundary check
+    and the Colombo conversion) — confirmed 2026-08-27 this was missing
+    entirely, producing entry/exit times off by the broker's offset (+3h)
+    on every trade (see get_closed_trades_range's identical fix, same
+    day) — P/L amounts (computed from prices, not timestamps) were
+    unaffected, but a trade closing near a day boundary could have been
+    silently placed in the wrong day's report."""
     day_start_utc, day_end_utc = day_bounds_utc(target_date)
     query_from = day_start_utc - timedelta(days=LOOKBACK_DAYS)
 
-    deals = mt5.history_deals_get(query_from, day_end_utc)
+    deals = mt5.history_deals_get(query_from + offset, day_end_utc + offset)
     if not deals:
         return []
 
@@ -90,7 +103,7 @@ def get_closed_trades(symbol: str, magic: int, target_date: date_cls) -> list[di
         if entry_deal is None or exit_deal is None:
             continue  # still open, or entry fell outside our lookback window
 
-        exit_time_utc = datetime.fromtimestamp(exit_deal.time, tz=timezone.utc)
+        exit_time_utc = datetime.fromtimestamp(exit_deal.time, tz=timezone.utc) - offset
         if not (day_start_utc <= exit_time_utc < day_end_utc):
             continue  # closed on a different day
 
@@ -100,7 +113,7 @@ def get_closed_trades(symbol: str, magic: int, target_date: date_cls) -> list[di
             "position_id": position_id,
             "direction": direction,
             "volume": exit_deal.volume,
-            "entry_time": datetime.fromtimestamp(entry_deal.time, tz=timezone.utc).astimezone(COLOMBO),
+            "entry_time": (datetime.fromtimestamp(entry_deal.time, tz=timezone.utc) - offset).astimezone(COLOMBO),
             "exit_time": exit_time_utc.astimezone(COLOMBO),
             "entry_price": entry_deal.price,
             "exit_price": exit_deal.price,
@@ -112,7 +125,9 @@ def get_closed_trades(symbol: str, magic: int, target_date: date_cls) -> list[di
     return trades
 
 
-def get_closed_trades_range(symbol: str, magic: int, date_from_utc: datetime, date_to_utc: datetime) -> list[dict]:
+def get_closed_trades_range(
+    symbol: str, magic: int, date_from_utc: datetime, date_to_utc: datetime, offset: timedelta,
+) -> list[dict]:
     """Same entry/exit deal pairing and dict shape as get_closed_trades()
     above, but over an explicit UTC range instead of a single calendar day
     + fixed lookback — for reports that need this bot's FULL trade history
@@ -120,8 +135,20 @@ def get_closed_trades_range(symbol: str, magic: int, date_from_utc: datetime, da
     looping get_closed_trades() one day at a time. "ticket" is the
     position ticket (== position_id, matching bot.logging_setup.logger's
     trade_exited/trade_closed_tp "ticket" field), not a deal ticket — so
-    callers can join against logs/<account>/decisions.jsonl."""
-    deals = mt5.history_deals_get(date_from_utc, date_to_utc)
+    callers can join against logs/<account>/decisions.jsonl.
+
+    `offset` is the broker-vs-true-UTC offset (see mt5_utc_offset's
+    docstring) — MUST be measured by the caller via mt5_utc_offset(connector,
+    symbol) and passed in; this function has no connector of its own to
+    measure it fresh. Applied both to the query boundaries (ADDED, since
+    mt5.history_deals_get expects broker time) and to each returned deal's
+    .time field (SUBTRACTED, to get true UTC before the Colombo
+    conversion) — confirmed 2026-08-27 this was missing entirely in an
+    earlier version of this function, producing entry/exit times off by
+    the broker's offset (+3h) on every trade in
+    scripts/generate_live_test_report.py's Detail tabs, even though the
+    P/L amounts (computed from prices, not timestamps) were unaffected."""
+    deals = mt5.history_deals_get(date_from_utc + offset, date_to_utc + offset)
     if not deals:
         return []
 
@@ -145,8 +172,8 @@ def get_closed_trades_range(symbol: str, magic: int, date_from_utc: datetime, da
             "ticket": position_id,
             "direction": direction,
             "volume": exit_deal.volume,
-            "entry_time": datetime.fromtimestamp(entry_deal.time, tz=timezone.utc).astimezone(COLOMBO),
-            "exit_time": datetime.fromtimestamp(exit_deal.time, tz=timezone.utc).astimezone(COLOMBO),
+            "entry_time": (datetime.fromtimestamp(entry_deal.time, tz=timezone.utc) - offset).astimezone(COLOMBO),
+            "exit_time": (datetime.fromtimestamp(exit_deal.time, tz=timezone.utc) - offset).astimezone(COLOMBO),
             "entry_price": entry_deal.price,
             "exit_price": exit_deal.price,
             "profit": trade_profit(exit_deal, entry_deal),

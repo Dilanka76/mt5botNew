@@ -58,7 +58,7 @@ from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from bot.analytics import COLOMBO, get_closed_trades_range
+from bot.analytics import COLOMBO, get_closed_trades_range, mt5_utc_offset
 from bot.config import PROJECT_ROOT, SessionWindow, load_config
 
 # MT5 app/broker time -- true UTC + 3h, confirmed repeatedly throughout
@@ -423,9 +423,16 @@ def gather_account_data(account: str, timeframe: str) -> tuple[list[dict], list[
     connector = MT5Connector(config.mt5)
     connector.connect()
     try:
+        # MT5's own deal .time fields (and history_deals_get's query args)
+        # use the broker's own time convention, NOT true UTC -- confirmed
+        # 2026-08-27 this was missing here, producing entry/exit times off
+        # by the broker offset (+3h) throughout M1/M3 Detail. Measure it
+        # fresh via the connector, same pattern as
+        # scripts/tight_exit_real_trades_report.py.
+        offset = mt5_utc_offset(connector, config.symbol)
         mt5_trades = get_closed_trades_range(
             config.symbol, config.execution.magic_number,
-            TESTING_START_UTC, datetime.now(timezone.utc),
+            TESTING_START_UTC, datetime.now(timezone.utc), offset,
         )
     finally:
         connector.disconnect()

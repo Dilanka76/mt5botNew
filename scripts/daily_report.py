@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bot.analytics import COLOMBO, day_bounds_utc, get_balance_at, get_closed_trades
+from bot.analytics import COLOMBO, day_bounds_utc, get_balance_at, get_closed_trades, mt5_utc_offset
 from bot.config import load_config, validate_account_name
 from bot.mt5_connector import MT5Connector
 from bot.trade_stats import compute_day_stats
@@ -107,7 +107,11 @@ def main() -> None:
     connector.connect()
 
     try:
-        trades = get_closed_trades(config.symbol, config.execution.magic_number, target_date)
+        # MT5's own deal .time fields use the broker's own time convention,
+        # NOT true UTC -- see mt5_utc_offset's docstring. Measure it fresh
+        # via the connector, same pattern used elsewhere in this project.
+        offset = mt5_utc_offset(connector, config.symbol)
+        trades = get_closed_trades(config.symbol, config.execution.magic_number, target_date, offset)
 
         account = connector.account_info()
         current_balance = account.balance
