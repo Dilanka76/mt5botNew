@@ -106,7 +106,9 @@ class TradeExecutor:
 
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-            raise ExecutionError(f"order_send (open) failed: {result}")
+            raise ExecutionError(
+                f"order_send (open) failed: {result}; mt5.last_error()={mt5.last_error()}"
+            )
 
         logger.info(
             "Order opened: %s %s lots=%.2f price=%.2f tp=%.2f ticket=%s",
@@ -146,6 +148,14 @@ class TradeExecutor:
 
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
-            raise ExecutionError(f"order_send (close) failed: {result}")
+            # result is None (not even a rejection code) whenever order_send
+            # couldn't submit the request at all -- mt5.last_error() carries
+            # the actual reason in that case (e.g. AutoTrading disabled,
+            # invalid request) and is otherwise silently lost, which cost
+            # real debugging time tracing a manual-trade-rejection failure
+            # back to AutoTrading being off (2026-08-27).
+            raise ExecutionError(
+                f"order_send (close) failed: {result}; mt5.last_error()={mt5.last_error()}"
+            )
 
         logger.info("Position closed: ticket=%s price=%.2f", ticket, price)
