@@ -28,12 +28,21 @@ not full Drive access -- this script can never see or touch any other file
 in the user's Drive.
 
     python scripts/upload_report_to_drive.py
+    python scripts/upload_report_to_drive.py --report-name demo2_report.xlsx --file-id-name demo2_drive_file_id.txt
 
 Intended to run right after scripts/generate_live_test_report.py, same
 Scheduled Task, so the Drive copy stays in sync with the local Excel file.
+
+The client_secret.json/token.json login (below) is shared across every
+report -- one Google login covers all of them. --file-id-name MUST be
+distinct per report (e.g. demo1's default drive_file_id.txt vs demo2's
+demo2_drive_file_id.txt), generalized 2026-08-27 for a second report
+covering demo2 -- otherwise a second report would silently overwrite the
+first one's Drive file instead of creating its own.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -52,9 +61,18 @@ SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 CREDENTIALS_DIR = PROJECT_ROOT / "credentials"
 CLIENT_SECRET_PATH = CREDENTIALS_DIR / "client_secret.json"
 TOKEN_PATH = CREDENTIALS_DIR / "token.json"
-FILE_ID_PATH = CREDENTIALS_DIR / "drive_file_id.txt"
-REPORT_PATH = PROJECT_ROOT / "reports" / "live_test" / "live_test_report.xlsx"
 REPORT_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--report-name", default="live_test_report.xlsx", help="Filename under reports/live_test/ to upload.")
+    parser.add_argument(
+        "--file-id-name", default="drive_file_id.txt",
+        help="Filename under credentials/ tracking this specific report's Drive file id -- "
+             "MUST be distinct per report so two reports don't overwrite each other's Drive file.",
+    )
+    return parser.parse_args()
 
 
 def get_credentials() -> Credentials:
@@ -91,16 +109,20 @@ def get_credentials() -> Credentials:
 
 
 def main() -> None:
-    if not REPORT_PATH.exists():
+    args = parse_args()
+    report_path = PROJECT_ROOT / "reports" / "live_test" / args.report_name
+    file_id_path = CREDENTIALS_DIR / args.file_id_name
+
+    if not report_path.exists():
         raise SystemExit(
-            f"{REPORT_PATH} not found -- run scripts/generate_live_test_report.py first."
+            f"{report_path} not found -- run scripts/generate_live_test_report.py first."
         )
 
     creds = get_credentials()
     drive = build("drive", "v3", credentials=creds)
-    media = MediaFileUpload(str(REPORT_PATH), mimetype=REPORT_MIME_TYPE, resumable=False)
+    media = MediaFileUpload(str(report_path), mimetype=REPORT_MIME_TYPE, resumable=False)
 
-    existing_id = FILE_ID_PATH.read_text().strip() if FILE_ID_PATH.exists() else None
+    existing_id = file_id_path.read_text().strip() if file_id_path.exists() else None
 
     if existing_id:
         try:
@@ -110,9 +132,9 @@ def main() -> None:
         except Exception as exc:
             print(f"Update of existing file failed ({exc}) -- creating a fresh file instead.")
 
-    file_metadata = {"name": "live_test_report.xlsx"}
+    file_metadata = {"name": args.report_name}
     result = drive.files().create(body=file_metadata, media_body=media, fields="id, webViewLink").execute()
-    FILE_ID_PATH.write_text(result["id"])
+    file_id_path.write_text(result["id"])
     print(f"Created new Drive file (id={result['id']}).")
     print(f"View it at: {result.get('webViewLink', '(link not returned)')}")
 

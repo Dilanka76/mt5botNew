@@ -1,13 +1,27 @@
 """Generates reports/live_test/live_test_report.xlsx — a daily Excel report
 tracking live/shadow testing of the currently-deployed strategy across both
-timeframe variants, demo1_m1 (M1) and demo1_m3 (M3).
+timeframe variants of one account pair. Defaults to demo1_m1 (M1) and
+demo1_m3 (M3); pass --m1-account/--m3-account/--output-name to point it at
+a different pair (e.g. demo2_m1/demo2_m3), generalized 2026-08-27 at the
+user's request for a separate report covering demo2.
 
     python scripts/generate_live_test_report.py
+    python scripts/generate_live_test_report.py --m1-account demo2_m1 --m3-account demo2_m3 --output-name demo2_report.xlsx
+
+The "Strategy Rule Tracking" tab's content genuinely differs by account:
+each account's config.strategy_variant is read fresh at report-run time
+and used to pick the right rule breakdown (see build_rule_tracking_swap_adx
+vs build_rule_tracking_simple_swap below) -- demo1's dual_cross_confirmed_
+swap_adx has an ADX-gated, 2-candle-debounced swap and stop-loss
+tightening; demo2's dual_cross_confirmed_swap has none of those (see
+bot/strategy/state_machine_dual_cross_confirmed_swap.py's module
+docstring). Reusing demo1's rule-tracking numbers for demo2 would be
+actively misleading, not just cosmetically wrong.
 
 No date args: always covers TESTING_START_UTC (below) through now, and
-always rewrites reports/live_test/live_test_report.xlsx from scratch —
-idempotent by construction (nothing is appended to an existing file, so
-re-running never duplicates a row).
+always rewrites its output file from scratch — idempotent by construction
+(nothing is appended to an existing file, so re-running never duplicates
+a row).
 
 TESTING_START_UTC is a fixed cutoff, NOT "earliest decisions.jsonl
 entry" — explicit user request 2026-08-26: don't mix in trades from
@@ -42,6 +56,7 @@ to re-run any number of times.
 """
 from __future__ import annotations
 
+import argparse
 import glob
 import json
 import re
@@ -86,8 +101,6 @@ def trading_day(dt: datetime) -> date_cls:
     to the PREVIOUS date's trading day (it hasn't rolled over yet)."""
     return (dt.astimezone(COLOMBO) - DAY_BOUNDARY).date()
 from bot.mt5_connector import MT5Connector
-
-ACCOUNTS = [("demo1_m1", "M1"), ("demo1_m3", "M3")]
 
 ENTRY_PAIR_WINDOW_SECONDS = 300  # max gap between a trade_entered log line and the MT5 fill it caused
 
@@ -270,7 +283,12 @@ def _time_in_range(t: dt_time, start_str: str, end_str: str) -> bool:
     return t >= start or t <= end  # wraps past midnight
 
 
-def build_rule_tracking(account: str, decisions: list[dict], records: list[dict], sessions: list[SessionWindow]) -> dict:
+def build_rule_tracking_swap_adx(account: str, decisions: list[dict], records: list[dict], sessions: list[SessionWindow]) -> dict:
+    """For strategy_variant=dual_cross_confirmed_swap_adx (demo1_m1/
+    demo1_m3): ADX-gated, 2-candle-debounced swap; stop-loss tightening
+    on the first opposing candle. See build_rule_tracking_simple_swap for
+    demo2's genuinely different, simpler engine -- do NOT reuse this
+    function's numbers for an account running a different variant."""
     entries = [e for e in decisions if e.get("action") == "trade_entered"]
     gaps = [g for e in entries if (g := _extract_gap(e.get("reason", ""))) is not None]
 
@@ -297,6 +315,7 @@ def build_rule_tracking(account: str, decisions: list[dict], records: list[dict]
     validation_failed = [e for e in decisions if e.get("action") == "validation_failed"]
 
     return {
+        "variant": "dual_cross_confirmed_swap_adx",
         "account": account,
         "entries_fired": len(entries),
         "avg_gap": mean(gaps) if gaps else None,
@@ -314,6 +333,51 @@ def build_rule_tracking(account: str, decisions: list[dict], records: list[dict]
         "swap_blocked_count": len(swap_blocked),
         "swap_cancelled_count": len(swap_cancelled),
         "swap_confirmed_avg_pl": mean([r["profit"] for r in swap_closes]) if swap_closes else None,
+        "gap_setup_pending_count": len([e for e in decisions if e.get("action") == "setup_pending"]),
+        "gap_setup_cancelled_count": len(gap_setup_cancelled),
+        "session_blocked_count": len(session_blocked),
+        "session_gap_counts": session_gap_counts,
+        "total_closes": total_closes,
+    }
+
+
+def build_rule_tracking_simple_swap(account: str, decisions: list[dict], records: list[dict], sessions: list[SessionWindow]) -> dict:
+    """For strategy_variant=dual_cross_confirmed_swap (demo2_m1/demo2_m3):
+    NO ADX gate anywhere, NO 2-candle debounce, NO stop-loss tightening --
+    the first candle that confirms an opposite cross flips the position
+    immediately (see bot/strategy/state_machine_dual_cross_confirmed_swap.py's
+    module docstring). There is no "episode" state machine to report on for
+    the swap, just a plain count of swapped_reversal closes."""
+    entries = [e for e in decisions if e.get("action") == "trade_entered"]
+    gaps = [g for e in entries if (g := _extract_gap(e.get("reason", ""))) is not None]
+
+    total_closes = len(records)
+    stop_loss_closes = [r for r in records if r["close_category"] == "stop_loss"]
+    tp_closes = [r for r in records if r["close_category"] == "take_profit"]
+    swap_closes = [r for r in records if r["close_category"] == "swapped_reversal"]
+
+    gap_setup_cancelled = [e for e in decisions if e.get("action") == "pending_cancelled"]
+
+    session_blocked = [
+        e for e in decisions if e.get("action") in ("cross_ignored_outside_session", "pending_touch_outside_session")
+    ]
+    session_gap_counts = Counter(_session_gap_label(e["_ts"], sessions) for e in session_blocked)
+
+    return {
+        "variant": "dual_cross_confirmed_swap",
+        "account": account,
+        "entries_fired": len(entries),
+        "avg_gap": mean(gaps) if gaps else None,
+        "gap_histogram": _histogram(gaps),
+        "gap_sample_count": len(gaps),
+        "entries_no_gap_logged": len(entries) - len(gaps),  # swap re-entries, by design
+        "stop_loss_hits": len(stop_loss_closes),
+        "stop_loss_pct": 100 * len(stop_loss_closes) / total_closes if total_closes else 0,
+        "take_profit_hits": len(tp_closes),
+        "take_profit_pct": 100 * len(tp_closes) / total_closes if total_closes else 0,
+        "swap_reversal_count": len(swap_closes),
+        "swap_reversal_pct": 100 * len(swap_closes) / total_closes if total_closes else 0,
+        "swap_reversal_avg_pl": mean([r["profit"] for r in swap_closes]) if swap_closes else None,
         "gap_setup_pending_count": len([e for e in decisions if e.get("action") == "setup_pending"]),
         "gap_setup_cancelled_count": len(gap_setup_cancelled),
         "session_blocked_count": len(session_blocked),
@@ -444,7 +508,14 @@ def gather_account_data(account: str, timeframe: str) -> tuple[list[dict], list[
 
     records = build_trade_records(account, timeframe, decisions, mt5_trades)
     sessions = config.sessions.get(config.strategy_variant, [])
-    rules = build_rule_tracking(account, decisions, records, sessions)
+    if config.strategy_variant == "dual_cross_confirmed_swap":
+        rules = build_rule_tracking_simple_swap(account, decisions, records, sessions)
+    else:
+        # Default/fallback: dual_cross_confirmed_swap_adx (demo1's lineage)
+        # -- also what every account ran before demo2 existed, so this
+        # stays the safe default for any variant not explicitly handled
+        # above rather than silently mislabeling an unknown one.
+        rules = build_rule_tracking_swap_adx(account, decisions, records, sessions)
     return decisions, records, rules
 
 
@@ -609,7 +680,8 @@ def build_workbook(m1: tuple, m3: tuple) -> Workbook:
     write_detail(ws_m3, m3_records, m3_stats, "M3")
 
     # ---- Strategy Rule Tracking ----
-    ws_rules.cell(row=1, column=1, value="Strategy Rule Tracking — dual_cross_confirmed_swap_adx").font = SECTION_FONT
+    variant = m1_rules["variant"]  # both legs of one account pair always run the same variant
+    ws_rules.cell(row=1, column=1, value=f"Strategy Rule Tracking — {variant}").font = SECTION_FONT
     ws_rules.cell(row=2, column=1, value=(
         "Each account's ACTIVE strategy_variant / sessions are read fresh from its current config at report-run "
         "time — historical entries logged under a different config are still counted by action type, but session-gap "
@@ -619,15 +691,19 @@ def build_workbook(m1: tuple, m3: tuple) -> Workbook:
     r = 4
     ws_rules.cell(row=r, column=1, value="a) Entry (gap-tolerance) rule").font = Font(bold=True, size=12)
     r += 1
-    r = write_table(ws_rules, r, ["Metric", "M1", "M3"], [
+    entry_rows = [
         ["Entries fired", m1_rules["entries_fired"], m3_rules["entries_fired"]],
         ["Entries with a logged gap (flat entries)", m1_rules["gap_sample_count"], m3_rules["gap_sample_count"]],
         ["Entries with no gap logged (swap re-entries, by design)", m1_rules["entries_no_gap_logged"], m3_rules["entries_no_gap_logged"]],
         ["Avg |close-EMA13| gap at entry ($)",
          round(m1_rules["avg_gap"], 3) if m1_rules["avg_gap"] is not None else "N/A",
          round(m3_rules["avg_gap"], 3) if m3_rules["avg_gap"] is not None else "N/A"],
-        ["ADX-momentum filter blocks (bonus filter, not gap-related)", m1_rules["adx_entry_blocked_count"], m3_rules["adx_entry_blocked_count"]],
-    ])
+    ]
+    if variant == "dual_cross_confirmed_swap_adx":
+        entry_rows.append(
+            ["ADX-momentum filter blocks (bonus filter, not gap-related)", m1_rules["adx_entry_blocked_count"], m3_rules["adx_entry_blocked_count"]]
+        )
+    r = write_table(ws_rules, r, ["Metric", "M1", "M3"], entry_rows)
     ws_rules.cell(row=r, column=1, value="Gap size histogram (M1)").font = Font(italic=True)
     r += 1
     r = write_table(ws_rules, r, ["Bucket", "Count"], [[b, c] for b, c in m1_rules["gap_histogram"]])
@@ -640,17 +716,19 @@ def build_workbook(m1: tuple, m3: tuple) -> Workbook:
     ws_rules.cell(row=r, column=1, value="b) Validation-at-close rule").font = Font(bold=True, size=12)
     r += 1
     ws_rules.cell(row=r, column=1, value=(
-        "N/A for dual_cross_confirmed_swap_adx — every position opens already close-confirmed, so there is no "
-        "own-candle validation step and no validation_failed category (see the engine's module docstring)."
+        f"N/A for {variant} — every position opens already close-confirmed, so there is no own-candle "
+        "validation step and no validation_failed category (see the engine's module docstring)."
     )).font = NOTE_FONT
-    r += 1
-    r = write_table(ws_rules, r, ["Metric", "M1", "M3"], [
-        ["validation_failed events logged", m1_rules["validation_failed_count"], m3_rules["validation_failed_count"]],
-    ])
     r += 2
 
     ws_rules.cell(row=r, column=1, value="c) Stop-loss rule").font = Font(bold=True, size=12)
     r += 1
+    if variant != "dual_cross_confirmed_swap_adx":
+        ws_rules.cell(row=r, column=1, value=(
+            "No pending-reversal stop-loss tightening in this variant — the stop-loss stays at its full "
+            "configured distance for the whole life of every position (see the engine's module docstring)."
+        )).font = NOTE_FONT
+        r += 1
     r = write_table(ws_rules, r, ["Metric", "M1", "M3"], [
         ["Stop-loss hits", m1_rules["stop_loss_hits"], m3_rules["stop_loss_hits"]],
         ["% of all closes", round(m1_rules["stop_loss_pct"], 1), round(m3_rules["stop_loss_pct"], 1)],
@@ -665,35 +743,51 @@ def build_workbook(m1: tuple, m3: tuple) -> Workbook:
     ])
     r += 2
 
-    ws_rules.cell(row=r, column=1, value="e) Swap / reversal episode rule").font = Font(bold=True, size=12)
+    ws_rules.cell(row=r, column=1, value="e) Swap / reversal rule").font = Font(bold=True, size=12)
     r += 1
-    ws_rules.cell(row=r, column=1, value=(
-        "dual_cross_confirmed_swap_adx holds at most ONE position at a time (single-position, reversal-based "
-        "engine) — there is no scenario where a 2nd position opens while the 1st is still open, so this is "
-        "reframed as: episode = the FIRST opposing candle arming a pending reversal (swap_pending) while a "
-        "position is held. Each episode resolves one of three ways: CONFIRMED (2nd candle + ADX both pass -> "
-        "old position closes, new one opens immediately), BLOCKED_BY_ADX (2nd candle confirms but ADX too weak "
-        "-> old position keeps running, stop-loss stays tightened), or CANCELLED (no 2nd opposing candle -> "
-        "old position keeps running, tightened stop stays as-is)."
-    )).font = NOTE_FONT
-    r += 1
-    r = write_table(ws_rules, r, ["Outcome", "M1", "M3"], [
-        ["Episodes armed (swap_pending)", m1_rules["swap_pending_count"], m3_rules["swap_pending_count"]],
-        ["Confirmed (closed original, opened new)", m1_rules["swap_confirmed_count"], m3_rules["swap_confirmed_count"]],
-        ["Blocked by ADX (no close)", m1_rules["swap_blocked_count"], m3_rules["swap_blocked_count"]],
-        ["Cancelled (no 2nd candle, no close)", m1_rules["swap_cancelled_count"], m3_rules["swap_cancelled_count"]],
-        ["Avg P/L of the closed trade on CONFIRMED outcomes",
-         round(m1_rules["swap_confirmed_avg_pl"], 2) if m1_rules["swap_confirmed_avg_pl"] is not None else "N/A",
-         round(m3_rules["swap_confirmed_avg_pl"], 2) if m3_rules["swap_confirmed_avg_pl"] is not None else "N/A"],
-    ])
+    if variant == "dual_cross_confirmed_swap_adx":
+        ws_rules.cell(row=r, column=1, value=(
+            "dual_cross_confirmed_swap_adx holds at most ONE position at a time (single-position, reversal-based "
+            "engine) — there is no scenario where a 2nd position opens while the 1st is still open, so this is "
+            "reframed as: episode = the FIRST opposing candle arming a pending reversal (swap_pending) while a "
+            "position is held. Each episode resolves one of three ways: CONFIRMED (2nd candle + ADX both pass -> "
+            "old position closes, new one opens immediately), BLOCKED_BY_ADX (2nd candle confirms but ADX too weak "
+            "-> old position keeps running, stop-loss stays tightened), or CANCELLED (no 2nd opposing candle -> "
+            "old position keeps running, tightened stop stays as-is)."
+        )).font = NOTE_FONT
+        r += 1
+        r = write_table(ws_rules, r, ["Outcome", "M1", "M3"], [
+            ["Episodes armed (swap_pending)", m1_rules["swap_pending_count"], m3_rules["swap_pending_count"]],
+            ["Confirmed (closed original, opened new)", m1_rules["swap_confirmed_count"], m3_rules["swap_confirmed_count"]],
+            ["Blocked by ADX (no close)", m1_rules["swap_blocked_count"], m3_rules["swap_blocked_count"]],
+            ["Cancelled (no 2nd candle, no close)", m1_rules["swap_cancelled_count"], m3_rules["swap_cancelled_count"]],
+            ["Avg P/L of the closed trade on CONFIRMED outcomes",
+             round(m1_rules["swap_confirmed_avg_pl"], 2) if m1_rules["swap_confirmed_avg_pl"] is not None else "N/A",
+             round(m3_rules["swap_confirmed_avg_pl"], 2) if m3_rules["swap_confirmed_avg_pl"] is not None else "N/A"],
+        ])
+    else:
+        ws_rules.cell(row=r, column=1, value=(
+            "dual_cross_confirmed_swap has NO debounce and NO ADX gate on the swap — the very first candle "
+            "whose close confirms an opposite EMA13/21 cross closes the held position and opens the new one "
+            "the same instant, regardless of P/L (category swapped_reversal — deliberately a different name "
+            "from demo1's swapped_confirmed_reversal, since the semantics genuinely differ)."
+        )).font = NOTE_FONT
+        r += 1
+        r = write_table(ws_rules, r, ["Metric", "M1", "M3"], [
+            ["Swap reversal closes", m1_rules["swap_reversal_count"], m3_rules["swap_reversal_count"]],
+            ["% of all closes", round(m1_rules["swap_reversal_pct"], 1), round(m3_rules["swap_reversal_pct"], 1)],
+            ["Avg P/L of swap-reversal closes",
+             round(m1_rules["swap_reversal_avg_pl"], 2) if m1_rules["swap_reversal_avg_pl"] is not None else "N/A",
+             round(m3_rules["swap_reversal_avg_pl"], 2) if m3_rules["swap_reversal_avg_pl"] is not None else "N/A"],
+        ])
     r += 2
 
     ws_rules.cell(row=r, column=1, value="f) 2-position cap rule").font = Font(bold=True, size=12)
     r += 1
     ws_rules.cell(row=r, column=1, value=(
-        "N/A for dual_cross_confirmed_swap_adx — this engine has no concurrent-position code path at all "
-        "(self.position is a single optional slot, never a list); a 2-position cap only exists in the older "
-        "dual_cross variant (state_machine_dual_cross.py's max_concurrent_positions), which is not what's live."
+        f"N/A for {variant} — this engine has no concurrent-position code path at all (self.position is a "
+        "single optional slot, never a list); a 2-position cap only exists in the older dual_cross variant "
+        "(state_machine_dual_cross.py's max_concurrent_positions), which is not what's live on this account."
     )).font = NOTE_FONT
     r += 2
 
@@ -729,16 +823,30 @@ def build_workbook(m1: tuple, m3: tuple) -> Workbook:
     return wb
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--m1-account", default="demo1_m1")
+    parser.add_argument("--m3-account", default="demo1_m3")
+    parser.add_argument(
+        "--output-name", default="live_test_report.xlsx",
+        help="Filename under reports/live_test/ (default matches the original demo1 report -- "
+             "pass a distinct name, e.g. demo2_report.xlsx, for a different account pair so it "
+             "doesn't overwrite demo1's file).",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
-    print("Reading decisions + MT5 history for demo1_m1 (M1)...")
-    m1 = gather_account_data("demo1_m1", "M1")
-    print("Reading decisions + MT5 history for demo1_m3 (M3)...")
-    m3 = gather_account_data("demo1_m3", "M3")
+    args = parse_args()
+    print(f"Reading decisions + MT5 history for {args.m1_account} (M1)...")
+    m1 = gather_account_data(args.m1_account, "M1")
+    print(f"Reading decisions + MT5 history for {args.m3_account} (M3)...")
+    m3 = gather_account_data(args.m3_account, "M3")
 
     print("Building workbook...")
     wb = build_workbook(m1, m3)
 
-    out_path = PROJECT_ROOT / "reports" / "live_test" / "live_test_report.xlsx"
+    out_path = PROJECT_ROOT / "reports" / "live_test" / args.output_name
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(out_path)
 
