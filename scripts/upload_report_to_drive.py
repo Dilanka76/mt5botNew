@@ -34,6 +34,7 @@ Scheduled Task, so the Drive copy stays in sync with the local Excel file.
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -59,7 +60,12 @@ REPORT_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.
 def get_credentials() -> Credentials:
     creds = None
     if TOKEN_PATH.exists():
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+        # utf-8-sig: PowerShell's `-Encoding utf8` writes a BOM that Python's
+        # plain utf-8 JSON parser rejects -- this happened once already when
+        # manually reconstructing this file over RDP, see
+        # feedback_windows_restart_gotchas memory for the full story.
+        with open(TOKEN_PATH, "r", encoding="utf-8-sig") as f:
+            creds = Credentials.from_authorized_user_info(json.load(f), SCOPES)
 
     if creds and creds.valid:
         return creds
