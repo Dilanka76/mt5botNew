@@ -23,6 +23,21 @@ from bot.strategy.cross_detector import Direction
 
 logger = logging.getLogger("bot.execution")
 
+# Real incident, 2026-08-27: demo2's order_comment ("dual-cross-confirmed-swap",
+# 25 chars) plus the "-close" suffix below hit exactly 31 characters, and MT5
+# rejected every close_position() call with retcode=None, last_error=(-2,
+# 'Invalid "comment" argument') -- the documented 31-char MT5 comment limit is
+# not safe to rely on exactly at the boundary. 26 leaves real margin and still
+# fits every comment used in this project so far.
+MAX_ORDER_COMMENT_LENGTH = 26
+
+
+def _safe_comment(comment: str, *, suffix: str = "") -> str:
+    """Truncates the BASE comment first so a suffix (e.g. "-close") always
+    survives intact rather than being cut off itself."""
+    base_budget = MAX_ORDER_COMMENT_LENGTH - len(suffix)
+    return comment[:base_budget] + suffix
+
 
 class ExecutionError(Exception):
     pass
@@ -99,7 +114,7 @@ class TradeExecutor:
             "tp": take_profit,
             "deviation": self.config.order_deviation_points,
             "magic": self.config.magic_number,
-            "comment": self.config.order_comment,
+            "comment": _safe_comment(self.config.order_comment),
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
@@ -141,7 +156,7 @@ class TradeExecutor:
             "price": price,
             "deviation": self.config.order_deviation_points,
             "magic": self.config.magic_number,
-            "comment": f"{self.config.order_comment}-close",
+            "comment": _safe_comment(self.config.order_comment, suffix="-close"),
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
