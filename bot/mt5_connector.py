@@ -105,9 +105,27 @@ class MT5Connector:
         return account_info.margin_mode == mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING
 
     def account_info(self):
+        """The single funnel every balance/lot-sizing/order-decision read
+        goes through -- deliberately re-checks the login on every call, not
+        just at connect() time. Real incident, 2026-08-27: with multiple MT5
+        terminal instances running on one machine (demo1/demo2/live1 all at
+        once), the shared MetaTrader5 Python API silently returned a
+        DIFFERENT terminal's account_info for ~9 minutes mid-session (no
+        error, no disconnect) -- demo1_m1 sized a real trade using demo2's
+        balance ($176.93 instead of demo1's real ~$918). Failing loudly here
+        turns that into a safe, already-handled main-loop error (skips the
+        iteration, retries next tick) instead of a silent wrong-account
+        trade."""
         info = mt5.account_info()
         if info is None:
             raise MT5ConnectionError("Not connected to MT5")
+        if self.config.login and info.login != self.config.login:
+            raise MT5ConnectionError(
+                f"Connected to WRONG account: expected login={self.config.login}, "
+                f"got login={info.login} (server={info.server}). Another MT5 terminal "
+                f"instance likely stole the shared API connection -- refusing to act on "
+                f"this data."
+            )
         return info
 
     def ensure_symbol(self, symbol: str) -> None:
