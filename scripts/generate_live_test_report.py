@@ -63,13 +63,11 @@ from bot.config import PROJECT_ROOT, SessionWindow, load_config
 
 # MT5 app/broker time -- true UTC + 3h, confirmed repeatedly throughout
 # this project (NOT Sri Lanka time, which is UTC+5:30 -- a different,
-# separate offset). This report's day boundary matches MT5's own "Today"
-# view exactly: plain midnight-to-midnight in APP time. Explicit user
-# decision 2026-08-25/26, after briefly trying noon-to-noon Sri Lanka
-# time and finding it diverged from what the MT5 app itself shows as
-# "Today" -- the app's own count is the source of truth the user checks
-# against, so this report matches it exactly rather than using a
-# different convention.
+# separate offset). Only used below for TESTING_START_UTC's fixed anchor
+# point now -- the report's actual day-boundary convention (trading_day(),
+# below) switched to a 03:30-to-03:30 Sri Lanka time window 2026-08-27,
+# no longer tied to APP_TZ at all. See trading_day()'s own docstring for
+# that history.
 APP_TZ = timezone(timedelta(hours=3))
 
 # Fixed cutoff, not "earliest decisions.jsonl entry" -- see module
@@ -79,13 +77,19 @@ APP_TZ = timezone(timedelta(hours=3))
 TESTING_START_UTC = datetime(2026, 8, 25, 0, 0, tzinfo=APP_TZ).astimezone(timezone.utc)
 
 
+DAY_BOUNDARY = timedelta(hours=3, minutes=30)
+
+
 def trading_day(dt: datetime) -> date_cls:
-    """This report's calendar day is plain midnight-to-midnight in MT5
-    APP time (UTC+3) -- matches what the MT5 app itself shows as
-    "Today" exactly (confirmed against a real 18-trade count 2026-08-25).
-    NOT Sri Lanka time, NOT a noon-anchored day (an earlier version of
-    this function tried both; explicitly reverted)."""
-    return dt.astimezone(APP_TZ).date()
+    """This report's calendar day runs 03:30-to-03:30 in Sri Lanka time
+    (Asia/Colombo, UTC+5:30) -- explicit user instruction 2026-08-27,
+    replacing the earlier midnight-to-midnight MT5 APP-time convention
+    (which matched the MT5 app's own "Today" view but is no longer what
+    the user wants here). Anchored by subtracting the boundary offset
+    before taking the date: a moment at or after 03:30 Colombo belongs to
+    THAT calendar date's trading day; anything before 03:30 still belongs
+    to the PREVIOUS date's trading day (it hasn't rolled over yet)."""
+    return (dt.astimezone(COLOMBO) - DAY_BOUNDARY).date()
 from bot.mt5_connector import MT5Connector
 
 ACCOUNTS = [("demo1_m1", "M1"), ("demo1_m3", "M3")]
