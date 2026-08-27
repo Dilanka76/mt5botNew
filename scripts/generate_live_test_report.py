@@ -61,23 +61,18 @@ from openpyxl.utils import get_column_letter
 from bot.analytics import COLOMBO, get_closed_trades_range, mt5_utc_offset
 from bot.config import PROJECT_ROOT, SessionWindow, load_config
 
-# MT5 app/broker time -- true UTC + 3h, confirmed repeatedly throughout
-# this project (NOT Sri Lanka time, which is UTC+5:30 -- a different,
-# separate offset). Only used below for TESTING_START_UTC's fixed anchor
-# point now -- the report's actual day-boundary convention (trading_day(),
-# below) switched to a 03:30-to-03:30 Sri Lanka time window 2026-08-27,
-# no longer tied to APP_TZ at all. See trading_day()'s own docstring for
-# that history.
-APP_TZ = timezone(timedelta(hours=3))
+# The report's calendar day runs 03:30-to-03:30 Sri Lanka time -- see
+# trading_day()'s own docstring below for the full history/reasoning.
+DAY_BOUNDARY = timedelta(hours=3, minutes=30)
 
 # Fixed cutoff, not "earliest decisions.jsonl entry" -- see module
-# docstring. Midnight app time, one full day back from when this report
-# was first stood up, so there's real data to sanity-check against
-# immediately rather than starting completely empty.
-TESTING_START_UTC = datetime(2026, 8, 25, 0, 0, tzinfo=APP_TZ).astimezone(timezone.utc)
-
-
-DAY_BOUNDARY = timedelta(hours=3, minutes=30)
+# docstring. 03:30 Sri Lanka time on 2026-08-25, the same day-boundary
+# convention as trading_day() below (explicit user instruction
+# 2026-08-27: "the 25th is the start date... finalize the analyze report
+# with this daily time") -- so the very first day this report ever
+# counts is itself a complete 03:30-to-03:30 trading day under the
+# current convention, not a partial one under some earlier convention.
+TESTING_START_UTC = datetime(2026, 8, 25, 3, 30, tzinfo=COLOMBO).astimezone(timezone.utc)
 
 
 def trading_day(dt: datetime) -> date_cls:
