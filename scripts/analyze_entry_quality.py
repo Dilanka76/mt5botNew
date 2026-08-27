@@ -25,9 +25,19 @@ blocked signal to its candle) to compute:
     strength read, distinct from ADX)
 
 Breaks win rate and avg P/L down by entry type, gap-size bucket, candle
-body-size bucket, volume bucket, EMA-separation bucket, and hour of day
-(app time) -- so what to build next (if anything) is grounded in real
-outcomes, not a plausible-sounding theory.
+body-size bucket, volume bucket, EMA-separation bucket, ATR-14 bucket, and
+hour of day (app time) -- so what to build next (if anything) is grounded
+in real outcomes, not a plausible-sounding theory.
+
+ATR added 2026-08-27 at the user's explicit direction to base any
+volatility-filter decision on REAL current-strategy trade data, not the
+2026-08-12 backtest experiment (see project_volatility_filter_experiment
+memory) -- that one used demo1's old, now-retired strategy variant's
+backtest history and a hand-picked quintile band that failed an
+out-of-sample split test. `compute_atr()` here is copied unchanged from
+scripts/volatility_filter_analysis.py (simple rolling-mean True Range,
+shift(1) to avoid lookahead) for definitional consistency with that prior
+work, but applied to real trades only -- no backtest, no hand-picked band.
 
 Read-only: connects to MT5 only to read historical data, never touches
 live/demo trading.
@@ -81,6 +91,16 @@ def read_decisions(account: str) -> list[dict]:
                 continue
     entries.sort(key=lambda e: e["_ts"])
     return entries
+
+
+def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    prev_close = df["close"].shift(1)
+    true_range = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - prev_close).abs(),
+        (df["low"] - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return true_range.rolling(period).mean().shift(1)
 
 
 def find_confirming_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
@@ -138,6 +158,7 @@ def main() -> None:
         finally:
             connector.disconnect()
         df = compute_emas(df, config.ema_periods)
+        atr_series = compute_atr(df)
 
         entries = [e for e in decisions if e.get("action") == "trade_entered" and e["_ts"] >= since]
         used_idx: set[int] = set()
@@ -176,12 +197,14 @@ def main() -> None:
             ema_gap = abs(row["ema13"] - row["ema21"])
             volume = float(row.get("tick_volume", 0) or 0)
             hour = entry_utc.hour
+            atr = float(atr_series.loc[candle_time]) if pd.notna(atr_series.loc[candle_time]) else None
 
             all_rows.append({
                 "account": account, "direction": t["direction"], "profit": t["profit"],
                 "outcome": "WIN" if t["profit"] > 0 else ("LOSS" if t["profit"] < 0 else "BREAKEVEN"),
                 "entry_type": entry_type, "gap": gap, "body": body, "body_ratio": body_ratio,
                 "closed_in_favor": closed_in_favor, "ema_gap": ema_gap, "volume": volume, "hour": hour,
+                "atr": atr,
             })
 
     if not all_rows:
@@ -218,6 +241,13 @@ def main() -> None:
     egaps = sorted(r["ema_gap"] for r in all_rows)
     eg33, eg66 = egaps[len(egaps) // 3], egaps[2 * len(egaps) // 3]
     summarize(all_rows, lambda r: bucket(r["ema_gap"], [eg33, eg66], ["1_tight", "2_medium", "3_wide"]), "EMA13/21 separation at entry (tertiles)")
+
+    atrs = sorted(r["atr"] for r in all_rows if r["atr"] is not None)
+    if atrs:
+        a33, a66 = atrs[len(atrs) // 3], atrs[2 * len(atrs) // 3]
+        summarize([r for r in all_rows if r["atr"] is not None],
+                   lambda r: bucket(r["atr"], [a33, a66], ["1_low_vol", "2_medium_vol", "3_high_vol"]),
+                   "ATR-14 at confirming candle (tertiles)")
 
     summarize(all_rows, lambda r: f"{r['hour']:02d}:00 UTC", "hour of day (true UTC)")
 
