@@ -1,0 +1,56 @@
+# demo2_m1 — M1 leg of the new demo2 strategy (dual_cross_confirmed_swap).
+# Independent from demo1_m1/demo1_m3 (dual_cross_confirmed_swap_adx) — see
+# bot/strategy/state_machine_dual_cross_confirmed_swap.py for the design.
+# Secrets (MT5 login/password) live in .env.demo2_m1, not here.
+
+mt5:
+  timeout_ms: 10000
+
+symbol: XAUUSDp   # CONFIRM against the real demo2 account before going live — broker symbol suffix has changed before (see project memory)
+timeframe: M1
+candles_to_fetch: 500
+tick_poll_interval_seconds: 1
+
+ema_periods:
+  fast: 5
+  mid: 13
+  slow: 21
+
+gap_threshold_usd: 5.0   # |close - EMA13| at the confirming candle: below this, enter immediately; else wait for EMA5 touch
+take_profit_usd: 5.0
+stop_loss_usd: 5.0
+breakeven_trigger_usd: null
+
+strategy_variant: dual_cross_confirmed_swap
+
+# Sri Lanka time (Asia/Colombo, fixed UTC+5:30, no DST) — same windows as demo1_m1.
+sessions:
+  dual_cross_confirmed_swap:
+    - {start: "04:00", end: "08:00"}
+    - {start: "12:00", end: "16:00"}
+    - {start: "16:00", end: "19:00"}
+    - {start: "19:00", end: "22:00"}
+
+position_sizing:
+  - {max_balance: 50, lots: 0.01}
+  - {max_balance: 100, lots: 0.02}
+  - {max_balance: 200, lots: 0.03}
+  - {max_balance: 300, lots: 0.04}
+  - {max_balance: 1000, lots: 0.06}
+  - {max_balance: null, lots: 0.12}
+
+execution:
+  mode: demo_execute
+  require_demo_account: true
+  magic_number: 920001
+  order_deviation_points: 20
+  order_comment: dual-cross-confirmed-swap
+  reject_manual_trades: true
+  sibling_magic_numbers: [920003]   # demo2_m3, same underlying demo2 MT5 login
+
+logging:
+  log_dir: logs
+  level: INFO
+
+kill_switch:
+  file_path: KILL_SWITCH

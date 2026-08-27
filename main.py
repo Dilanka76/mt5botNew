@@ -63,6 +63,7 @@ from bot.strategy.state_machine_dual_cross_confirmed_entry import DualCrossConfi
 from bot.strategy.state_machine_dual_cross_tight_exit import DualCrossTightExitEngine
 from bot.strategy.state_machine_dual_cross_tight_exit_swap_confirm import DualCrossTightExitSwapConfirmEngine
 from bot.strategy.state_machine_dual_cross_confirmed_swap_adx import DualCrossConfirmedSwapAdxEngine
+from bot.strategy.state_machine_dual_cross_confirmed_swap import DualCrossConfirmedSwapEngine
 from bot.strategy.state_machine_dual_cross_confirmed_adx_m15 import DualCrossConfirmedAdxM15Engine
 from bot.trade_ledger import append_new_trades, trade_ledger_path
 
@@ -78,6 +79,7 @@ STRATEGY_ENGINES = {
     "dual_cross_tight_exit": DualCrossTightExitEngine,
     "dual_cross_tight_exit_swap_confirm": DualCrossTightExitSwapConfirmEngine,
     "dual_cross_confirmed_swap_adx": DualCrossConfirmedSwapAdxEngine,
+    "dual_cross_confirmed_swap": DualCrossConfirmedSwapEngine,
     "dual_cross_confirmed_adx_m15": DualCrossConfirmedAdxM15Engine,
     "cross_confirmed": CrossConfirmedEngine,
     "cross_confirmed_adaptive_tp": CrossConfirmedAdaptiveTPEngine,
@@ -88,8 +90,8 @@ STRATEGY_ENGINES = {
 # actually be in hedging margin mode, or it would just net against the
 # first at the broker instead of opening a genuinely separate ticket.
 # dual_cross_confirmed_entry, dual_cross_tight_exit,
-# dual_cross_tight_exit_swap_confirm, and dual_cross_confirmed_swap_adx
-# deliberately do NOT belong here — all four always close the opposite
+# dual_cross_tight_exit_swap_confirm, dual_cross_confirmed_swap_adx, and
+# dual_cross_confirmed_swap deliberately do NOT belong here — all always close the opposite
 # position before/as the new one opens (see each engine's module
 # docstring), so none of them ever actually holds two at once and none has
 # a hedging-account requirement of its own.

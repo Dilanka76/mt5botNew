@@ -77,6 +77,7 @@ from bot.strategy.state_machine_dual_cross_tight_exit_swap_confirm_adx import Du
 from bot.strategy.state_machine_dual_cross_confirmed_swap_adx import DualCrossConfirmedSwapAdxEngine
 from bot.strategy.state_machine_dual_cross_confirmed_swap_adx_entrygate import DualCrossConfirmedSwapAdxEntrygateEngine
 from bot.strategy.state_machine_dual_cross_confirmed_adx_m15 import DualCrossConfirmedAdxM15Engine
+from bot.strategy.state_machine_dual_cross_confirmed_swap import DualCrossConfirmedSwapEngine
 import bot.strategy.state_machine as state_machine_module
 import bot.strategy.state_machine_cross_confirmed as state_machine_cross_confirmed_module
 import bot.strategy.state_machine_cross_confirmed_adaptive_tp as state_machine_cross_confirmed_adaptive_tp_module
@@ -89,6 +90,7 @@ import bot.strategy.state_machine_dual_cross_tight_exit_swap_confirm_adx as stat
 import bot.strategy.state_machine_dual_cross_confirmed_swap_adx as state_machine_dual_cross_confirmed_swap_adx_module
 import bot.strategy.state_machine_dual_cross_confirmed_swap_adx_entrygate as state_machine_dual_cross_confirmed_swap_adx_entrygate_module
 import bot.strategy.state_machine_dual_cross_confirmed_adx_m15 as state_machine_dual_cross_confirmed_adx_m15_module
+import bot.strategy.state_machine_dual_cross_confirmed_swap as state_machine_dual_cross_confirmed_swap_module
 from bot.sessions import is_within_session as _real_is_within_session
 
 STRATEGY_ENGINES = {
@@ -111,6 +113,7 @@ STRATEGY_ENGINES = {
     # extra data dependency, it's safe to backtest (backtest.py already
     # computes "adx" the same conditional way main.py does).
     "dual_cross_confirmed_adx_m15": DualCrossConfirmedAdxM15Engine,
+    "dual_cross_confirmed_swap": DualCrossConfirmedSwapEngine,
     "cross_confirmed": CrossConfirmedEngine,
     "cross_confirmed_adaptive_tp": CrossConfirmedAdaptiveTPEngine,
 }
@@ -118,16 +121,17 @@ STRATEGY_ENGINES = {
 # dual_cross, dual_cross_confirmed_entry, dual_cross_tight_exit,
 # dual_cross_tight_exit_gap_ema5, dual_cross_tight_exit_swap_confirm,
 # dual_cross_tight_exit_swap_confirm_adx, dual_cross_confirmed_swap_adx,
-# dual_cross_confirmed_swap_adx_entrygate, cross_confirmed, and
-# cross_confirmed_adaptive_tp all return explicit OpenedTrade/ClosedTrade
-# event lists from on_tick()/on_new_candle() instead of requiring
-# before/after diffing (see their module docstrings) — anything in this
-# set uses the shared event-consuming recording path below.
+# dual_cross_confirmed_swap_adx_entrygate, dual_cross_confirmed_swap,
+# cross_confirmed, and cross_confirmed_adaptive_tp all return explicit
+# OpenedTrade/ClosedTrade event lists from on_tick()/on_new_candle() instead
+# of requiring before/after diffing (see their module docstrings) —
+# anything in this set uses the shared event-consuming recording path below.
 EVENT_BASED_VARIANTS = {
     "dual_cross", "dual_cross_confirmed_entry", "dual_cross_tight_exit",
     "dual_cross_tight_exit_gap_ema5", "dual_cross_tight_exit_swap_confirm",
     "dual_cross_tight_exit_swap_confirm_adx", "dual_cross_confirmed_swap_adx",
     "dual_cross_confirmed_swap_adx_entrygate", "dual_cross_confirmed_adx_m15",
+    "dual_cross_confirmed_swap",
     "cross_confirmed", "cross_confirmed_adaptive_tp",
 }
 
@@ -210,6 +214,7 @@ def run_backtest(
     original_is_within_session_dccsa = state_machine_dual_cross_confirmed_swap_adx_module.is_within_session
     original_is_within_session_dccsaeg = state_machine_dual_cross_confirmed_swap_adx_entrygate_module.is_within_session
     original_is_within_session_dccam15 = state_machine_dual_cross_confirmed_adx_m15_module.is_within_session
+    original_is_within_session_dccs = state_machine_dual_cross_confirmed_swap_module.is_within_session
     original_is_within_session_cc = state_machine_cross_confirmed_module.is_within_session
     original_is_within_session_cc_atp = state_machine_cross_confirmed_adaptive_tp_module.is_within_session
     state_machine_module.is_within_session = _historical_is_within_session
@@ -222,6 +227,7 @@ def run_backtest(
     state_machine_dual_cross_confirmed_swap_adx_module.is_within_session = _historical_is_within_session
     state_machine_dual_cross_confirmed_swap_adx_entrygate_module.is_within_session = _historical_is_within_session
     state_machine_dual_cross_confirmed_adx_m15_module.is_within_session = _historical_is_within_session
+    state_machine_dual_cross_confirmed_swap_module.is_within_session = _historical_is_within_session
     state_machine_cross_confirmed_module.is_within_session = _historical_is_within_session
     state_machine_cross_confirmed_adaptive_tp_module.is_within_session = _historical_is_within_session
 
@@ -244,6 +250,7 @@ def run_backtest(
     original_grace_period_dccsa = state_machine_dual_cross_confirmed_swap_adx_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_dccsaeg = state_machine_dual_cross_confirmed_swap_adx_entrygate_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_dccam15 = state_machine_dual_cross_confirmed_adx_m15_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
+    original_grace_period_dccs = state_machine_dual_cross_confirmed_swap_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_cc = state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     original_grace_period_cc_atp = state_machine_cross_confirmed_adaptive_tp_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS
     state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
@@ -256,6 +263,7 @@ def run_backtest(
     state_machine_dual_cross_confirmed_swap_adx_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_dual_cross_confirmed_swap_adx_entrygate_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_dual_cross_confirmed_adx_m15_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
+    state_machine_dual_cross_confirmed_swap_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
     state_machine_cross_confirmed_adaptive_tp_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = 0.0
 
@@ -510,6 +518,7 @@ def run_backtest(
         state_machine_dual_cross_confirmed_swap_adx_module.is_within_session = original_is_within_session_dccsa
         state_machine_dual_cross_confirmed_swap_adx_entrygate_module.is_within_session = original_is_within_session_dccsaeg
         state_machine_dual_cross_confirmed_adx_m15_module.is_within_session = original_is_within_session_dccam15
+        state_machine_dual_cross_confirmed_swap_module.is_within_session = original_is_within_session_dccs
         state_machine_cross_confirmed_module.is_within_session = original_is_within_session_cc
         state_machine_cross_confirmed_adaptive_tp_module.is_within_session = original_is_within_session_cc_atp
         state_machine_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period
@@ -522,6 +531,7 @@ def run_backtest(
         state_machine_dual_cross_confirmed_swap_adx_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_dccsa
         state_machine_dual_cross_confirmed_swap_adx_entrygate_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_dccsaeg
         state_machine_dual_cross_confirmed_adx_m15_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_dccam15
+        state_machine_dual_cross_confirmed_swap_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_dccs
         state_machine_cross_confirmed_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_cc
         state_machine_cross_confirmed_adaptive_tp_module.POSITION_CLOSE_GRACE_PERIOD_SECONDS = original_grace_period_cc_atp
 
