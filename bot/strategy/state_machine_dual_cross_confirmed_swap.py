@@ -333,16 +333,53 @@ class DualCrossConfirmedSwapEngine:
         if self.position is not None:
             position = self.position
             if time.monotonic() - position.opened_monotonic >= POSITION_CLOSE_GRACE_PERIOD_SECONDS:
+                # Breakeven-stop (config.breakeven_trigger_usd, only set on
+                # accounts that want it -- explicit user request 2026-08-31,
+                # M1 only: once floating profit reaches this many dollars,
+                # move the stop-loss to the entry price ONE-WAY (never
+                # un-arms) so the trade can never turn into a real loss
+                # once this close to take-profit. Checked BEFORE the
+                # stop_hit check below so the same tick can act on the
+                # freshly-moved stop.
+                if self.config.breakeven_trigger_usd is not None and not position.breakeven_armed:
+                    favorable = (
+                        tick.bid - position.entry_price if position.direction == Direction.BUY
+                        else position.entry_price - tick.bid
+                    )
+                    if favorable >= self.config.breakeven_trigger_usd:
+                        position.breakeven_armed = True
+                        position.stop_loss = position.entry_price
+                        log_decision(
+                            self.config.symbol, "breakeven_armed",
+                            f"Floating profit reached ${favorable:.2f} (>= ${self.config.breakeven_trigger_usd:.2f} "
+                            f"trigger) -> stop-loss moved to entry {position.entry_price:.2f}",
+                        )
+
                 stop_hit = (
                     (position.direction == Direction.BUY and tick.bid <= position.stop_loss)
                     or (position.direction == Direction.SELL and tick.bid >= position.stop_loss)
                 )
                 if stop_hit:
-                    events.append(self._close_position(
-                        category="stop_loss",
-                        reason=f"${self.config.stop_loss_usd:.2f} stop-loss hit at {position.stop_loss:.2f}",
-                        exit_price=position.stop_loss,
-                    ))
+                    # Distinct category when the stop that fired was the
+                    # breakeven-armed one (stop_loss == entry_price) -- a
+                    # $0 exit is a very different real outcome from a
+                    # genuine stop-loss hit, and the old reason text
+                    # (always citing config.stop_loss_usd) would be wrong
+                    # here since the real distance that fired is $0, not
+                    # the account's normal stop size.
+                    if position.breakeven_armed and abs(position.stop_loss - position.entry_price) < 1e-9:
+                        events.append(self._close_position(
+                            category="breakeven",
+                            reason=f"Breakeven-stop hit at {position.stop_loss:.2f} (armed at "
+                                   f"+${self.config.breakeven_trigger_usd:.2f} floating profit, price reversed to entry)",
+                            exit_price=position.stop_loss,
+                        ))
+                    else:
+                        events.append(self._close_position(
+                            category="stop_loss",
+                            reason=f"${self.config.stop_loss_usd:.2f} stop-loss hit at {position.stop_loss:.2f}",
+                            exit_price=position.stop_loss,
+                        ))
                 else:
                     if self.config.execution.mode == "shadow":
                         tp_hit = (

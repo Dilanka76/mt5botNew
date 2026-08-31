@@ -227,7 +227,9 @@ def build_trade_records(account: str, timeframe: str, decisions: list[dict], mt5
 
 CATEGORY_LABELS = {
     "stop_loss": "Stop-Loss",
+    "breakeven": "Breakeven-Stop",
     "swapped_confirmed_reversal": "Swap Reversal",
+    "swapped_reversal": "Swap Reversal (immediate)",
     "take_profit": "Take-Profit",
     "closed_by_concurrent_validation": "Concurrent Validation Close",
     "bot_close_unclassified": "Bot Close (uncategorized)",
