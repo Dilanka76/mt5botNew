@@ -39,6 +39,11 @@ with it rather than expecting the tunnel to strip it):
                                            trade comparison, not account-
                                            scoped (see
                                            scripts/generate_comparison_json.py)
+    GET  /apiconnect/dashboard/...        the Flutter Web dashboard itself
+                                           (static files) -- MUST live
+                                           under /apiconnect, since that's
+                                           the only path the Cloudflare
+                                           Tunnel forwards to this origin
 
 Which accounts are served is discovered at startup by scanning
 config/settings.<account>.yaml (bot.config.discover_configured_accounts())
@@ -369,23 +374,29 @@ app.include_router(router)
 # Serves the Flutter Web build (mt5botc_controll's `flutter build web`
 # output) from this SAME process/port, so it's reachable through the SAME
 # Cloudflare Tunnel URL as the API -- no second web server, no second
-# tunnel route. Path is configurable via WEB_DASHBOARD_DIR in
-# .env.gateway since the Flutter app lives in a separate repo/checkout;
-# defaults to a sibling `mt5bot_controll/build/web` directory next to this
-# project, but that sibling location has not been established as the real
-# deployed path on the server -- verify/set WEB_DASHBOARD_DIR explicitly
-# rather than trusting the default silently. Mounted at /dashboard, NOT
-# at "/", to keep it clearly separate from the /apiconnect API routes
-# sharing this same origin. Statically skipped (no 500) if the directory
-# doesn't exist yet -- lets this gateway keep running even before the
-# Flutter build has been deployed.
+# tunnel route. MUST be mounted under /apiconnect, not at the site root --
+# confirmed via SETUP.md (and a real 404 hit deploying this the first
+# time): the Cloudflare Tunnel's "Public hostname path" is configured as
+# exactly /apiconnect, so Cloudflare itself never forwards a request for
+# any path outside that prefix to this origin at all -- it 404s before
+# this server even sees the request. Path is configurable via
+# WEB_DASHBOARD_DIR in .env.gateway since the Flutter app lives in a
+# separate repo/checkout; defaults to a sibling `mt5bot_controll/build/web`
+# directory next to this project. The Flutter build itself must ALSO be
+# built with `flutter build web --base-href /apiconnect/dashboard/` --
+# otherwise its index.html's internal asset links (main.dart.js, CSS,
+# manifest) point at the site root and 404 even once this mount is
+# correct, since Flutter bakes the base href into the build output at
+# build time, not something this server can fix at serve time. Statically
+# skipped (no 500) if the directory doesn't exist yet -- lets this
+# gateway keep running even before the Flutter build has been deployed.
 _web_dashboard_dir = Path(os.getenv("WEB_DASHBOARD_DIR", str(PROJECT_ROOT.parent / "mt5bot_controll" / "build" / "web")))
 if _web_dashboard_dir.is_dir():
-    app.mount("/dashboard", StaticFiles(directory=str(_web_dashboard_dir), html=True), name="dashboard")
-    logging.info("Serving web dashboard from %s at /dashboard", _web_dashboard_dir)
+    app.mount("/apiconnect/dashboard", StaticFiles(directory=str(_web_dashboard_dir), html=True), name="dashboard")
+    logging.info("Serving web dashboard from %s at /apiconnect/dashboard", _web_dashboard_dir)
 else:
     logging.warning(
-        "Web dashboard directory not found at %s -- /dashboard will 404 until "
+        "Web dashboard directory not found at %s -- /apiconnect/dashboard will 404 until "
         "the Flutter web build is deployed there (or WEB_DASHBOARD_DIR is set "
         "in .env.gateway to point elsewhere).",
         _web_dashboard_dir,
