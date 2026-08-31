@@ -151,6 +151,28 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MT5 Bot Control Gateway", lifespan=lifespan)
 
+
+@app.middleware("http")
+async def no_cache_dashboard(request, call_next):
+    """Cloudflare's default "cache static file extensions" behavior was
+    caching /apiconnect/dashboard/main.dart.js at the edge (confirmed via a
+    real CF-Cache-Status: HIT after a rebuild) -- Flutter's web build keeps
+    that filename stable across builds, so the CDN never noticed new
+    content and kept serving a stale build indefinitely. There's no
+    Cloudflare dashboard access on this project to fix it with a Cache
+    Rule, so instead: tell Cloudflare (and browsers) not to cache anything
+    under /apiconnect/dashboard at all via the origin response headers,
+    which Cloudflare's standard cache level respects unless a Page/Cache
+    Rule overrides it. This dashboard's content changes often (config
+    values, the research log), so "never cache" is the right call here,
+    not just a fix for this one incident.
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/apiconnect/dashboard"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return response
+
+
 # All routes live under /apiconnect — required because the Cloudflare
 # Tunnel this is deployed behind forwards the FULL request path (including
 # the "/apiconnect" prefix it matched on) to this origin, rather than
