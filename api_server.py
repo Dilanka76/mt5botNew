@@ -91,6 +91,7 @@ from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException
+from fastapi.staticfiles import StaticFiles
 
 from bot.config import AppConfig, discover_configured_accounts, load_config, validate_account_name
 from bot.kill_switch import KillSwitch
@@ -364,6 +365,31 @@ def start_all():
 
 
 app.include_router(router)
+
+# Serves the Flutter Web build (mt5botc_controll's `flutter build web`
+# output) from this SAME process/port, so it's reachable through the SAME
+# Cloudflare Tunnel URL as the API -- no second web server, no second
+# tunnel route. Path is configurable via WEB_DASHBOARD_DIR in
+# .env.gateway since the Flutter app lives in a separate repo/checkout;
+# defaults to a sibling `mt5bot_controll/build/web` directory next to this
+# project, but that sibling location has not been established as the real
+# deployed path on the server -- verify/set WEB_DASHBOARD_DIR explicitly
+# rather than trusting the default silently. Mounted at /dashboard, NOT
+# at "/", to keep it clearly separate from the /apiconnect API routes
+# sharing this same origin. Statically skipped (no 500) if the directory
+# doesn't exist yet -- lets this gateway keep running even before the
+# Flutter build has been deployed.
+_web_dashboard_dir = Path(os.getenv("WEB_DASHBOARD_DIR", str(PROJECT_ROOT.parent / "mt5bot_controll" / "build" / "web")))
+if _web_dashboard_dir.is_dir():
+    app.mount("/dashboard", StaticFiles(directory=str(_web_dashboard_dir), html=True), name="dashboard")
+    logging.info("Serving web dashboard from %s at /dashboard", _web_dashboard_dir)
+else:
+    logging.warning(
+        "Web dashboard directory not found at %s -- /dashboard will 404 until "
+        "the Flutter web build is deployed there (or WEB_DASHBOARD_DIR is set "
+        "in .env.gateway to point elsewhere).",
+        _web_dashboard_dir,
+    )
 
 
 def parse_args() -> argparse.Namespace:
