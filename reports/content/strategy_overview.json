@@ -1,0 +1,60 @@
+{
+  "updated_utc": "2026-08-31T14:45:00Z",
+  "symbol": "XAUUSDp",
+  "engines": [
+    {
+      "key": "dual_cross_confirmed_swap_adx",
+      "label": "demo1 — cautious swap",
+      "accounts": ["demo1_m1", "demo1_m3"],
+      "entry_rule": "A confirmed EMA13/21 cross on candle close enters immediately. The old gap-size/EMA5-pullback branching (small gap = immediate entry, large gap = wait for a pullback to EMA5) was tried, then removed entirely on 2026-08-31 — every confirmed cross now enters directly, on every account.",
+      "swap_rule": "On a fresh opposing cross, the engine requires 2 consecutive confirming candles AND ADX(14) >= 25 before actually reversing the position — a lower ADX threshold was tested against real blocked signals and found to change nothing, so 25 stayed. If the ADX gate blocks the reversal, the ORIGINAL position's stop-loss is halved the moment the first opposing candle appears (pending-reversal stop-tightening, live since 2026-08-24) — protection kicks in even when the swap itself doesn't happen.",
+      "breakeven_rule": "demo1_m1 only: once floating profit reaches $4.50 (90% of the $5 take-profit), the stop-loss moves to the entry price, so a trade that nearly hits its target and then reverses closes flat instead of at a full loss. demo1_m3 does not have this — M1 timeframe only, by explicit design."
+    },
+    {
+      "key": "dual_cross_confirmed_swap",
+      "label": "demo2 — immediate swap",
+      "accounts": ["demo2_m1", "demo2_m3"],
+      "entry_rule": "Same confirmed EMA13/21 cross, immediate entry — no gap-size branching, same as demo1's engine.",
+      "swap_rule": "Reverses immediately on the very first confirming opposing candle — no 2-candle debounce, no ADX gate, no pending-reversal stop-tightening. Built deliberately simpler than demo1's engine, specifically to be demo1's real-data A/B comparison partner (see the demo1-vs-demo2 comparison tab): the standing question is whether demo1's extra caution here is actually worth its cost in missed/delayed trades.",
+      "breakeven_rule": "demo2_m1 only: same $4.50-of-$5 trigger as demo1_m1, moves stop to entry. demo2_m3 does not have this — M1 timeframe only."
+    }
+  ],
+  "accounts": [
+    {
+      "account": "demo1_m1",
+      "timeframe": "M1",
+      "stop_loss_usd": 5.0,
+      "take_profit_usd": 5.0,
+      "breakeven_trigger_usd": 4.5,
+      "sessions": "04:00–08:00, 12:00–16:00, 16:00–19:00, 19:00–22:00"
+    },
+    {
+      "account": "demo1_m3",
+      "timeframe": "M3",
+      "stop_loss_usd": 10.0,
+      "take_profit_usd": 6.0,
+      "breakeven_trigger_usd": null,
+      "sessions": "04:00–01:29 (wraps past midnight)"
+    },
+    {
+      "account": "demo2_m1",
+      "timeframe": "M1",
+      "stop_loss_usd": 5.0,
+      "take_profit_usd": 5.0,
+      "breakeven_trigger_usd": 4.5,
+      "sessions": "04:00–08:00, 12:00–16:00, 19:00–22:00 (16:00–19:00 excluded)"
+    },
+    {
+      "account": "demo2_m3",
+      "timeframe": "M3",
+      "stop_loss_usd": 10.0,
+      "take_profit_usd": 6.0,
+      "breakeven_trigger_usd": null,
+      "sessions": "04:00–01:29 (wraps past midnight)"
+    }
+  ],
+  "notes": [
+    "gap_threshold_usd is set to 999999.0 (effectively infinite) on all four accounts as of 2026-08-31 — this is how the old gap/EMA5-pullback code path is disabled without removing the field itself.",
+    "Sessions are Sri Lanka time (Asia/Colombo, fixed UTC+5:30, no daylight saving)."
+  ]
+}
