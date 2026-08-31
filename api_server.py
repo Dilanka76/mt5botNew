@@ -30,6 +30,15 @@ with it rather than expecting the tunnel to strip it):
                                            for that account, by session
                                            window — a separate, much larger
                                            simulated sample, not live data
+    GET  /apiconnect/{account}/analytics/full
+                                           overall stats, close categories,
+                                           entry types, rule-compliance
+                                           violations, swap-mechanism stats
+                                           (see scripts/generate_analytics_json.py)
+    GET  /apiconnect/comparison           today's demo1-vs-demo2 trade-by-
+                                           trade comparison, not account-
+                                           scoped (see
+                                           scripts/generate_comparison_json.py)
 
 Which accounts are served is discovered at startup by scanning
 config/settings.<account>.yaml (bot.config.discover_configured_accounts())
@@ -238,6 +247,44 @@ def backtest(config: AppConfig = Depends(get_account_config)):
     latest = max(reports, key=lambda p: p.stat().st_mtime)
     data = json.loads(latest.read_text())
     return {"account": account, "available": True, **data}
+
+
+@router.get("/{account}/analytics/full")
+def analytics_full(config: AppConfig = Depends(get_account_config)):
+    """Overall stats, close-reason categories, entry types, rule-compliance
+    violations, and (for the ADX-gated variant) the swap-mechanism
+    breakdown -- see scripts/generate_analytics_json.py, which writes this
+    file periodically via a Scheduled Task. Same read-only-file pattern as
+    /backtest above -- this gateway never computes it itself.
+
+    Reports live at reports/analytics/<account>/latest.json.
+    """
+    account = config.account
+    path = PROJECT_ROOT / "reports" / "analytics" / account / "latest.json"
+    if not path.is_file():
+        return {"account": account, "available": False}
+
+    data = json.loads(path.read_text())
+    return {"available": True, **data}
+
+
+@router.get("/comparison", dependencies=[Depends(verify_api_key)])
+def comparison():
+    """Today's demo1-vs-demo2 trade-by-trade comparison (matched trades,
+    trades only one side took, and why) -- see
+    scripts/generate_comparison_json.py, written periodically via a
+    Scheduled Task. Not account-scoped (spans both account pairs), so this
+    route lives outside the {account}/... family. Same read-only-file
+    pattern as /backtest and /analytics/full.
+
+    Reports live at reports/analytics/comparison/latest.json.
+    """
+    path = PROJECT_ROOT / "reports" / "analytics" / "comparison" / "latest.json"
+    if not path.is_file():
+        return {"available": False}
+
+    data = json.loads(path.read_text())
+    return {"available": True, **data}
 
 
 @router.post("/{account}/start")
