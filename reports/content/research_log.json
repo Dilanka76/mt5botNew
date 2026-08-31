@@ -1,0 +1,165 @@
+{
+  "updated_utc": "2026-08-31T14:30:00Z",
+  "entries": [
+    {
+      "date": "2026-08-24",
+      "title": "Pending-reversal stop-tightening deployed",
+      "category": "Feature",
+      "context": "demo1_m1 and demo1_m3 had no protection against a trade that shows an early warning sign (an opposing candle) before eventually hitting its full stop-loss.",
+      "finding": null,
+      "decision": "Added logic that halves the stop distance the moment the first opposing candle appears after entry. Deployed live on both accounts at 17:19 UTC."
+    },
+    {
+      "date": "2026-08-25",
+      "title": "ADX-momentum entry filter added",
+      "category": "Feature",
+      "context": "Looking for a way to avoid entering right as momentum was already fading.",
+      "finding": null,
+      "decision": "Required ADX to be rising versus the previous candle at the confirming candle, otherwise the entry was blocked outright. Went live 06:45 UTC on both accounts."
+    },
+    {
+      "date": "2026-08-25",
+      "title": "ADX filter's first day: at least 3 real missed wins",
+      "category": "Investigation",
+      "context": "Traced the new filter's blocked signals against real forward price action on its first live day.",
+      "finding": "At least 3 blocked signals that day were genuine wins if taken (one ~$30 win missed entirely, price rallied ~$12 afterward with no fresh cross to re-enter on); only 1 of 4 blocked signals would have been a loss.",
+      "decision": "Flagged as concerning on day one, kept running to gather more data rather than reacting to a single day."
+    },
+    {
+      "date": "2026-08-26",
+      "title": "Full 16-trade day under stop-tightening + ADX filter",
+      "category": "Investigation",
+      "context": "First full day of real results combining both live protections.",
+      "finding": "16 trades, 9W/7L, 56.2% win rate, net +$53.70 combined. demo1_m3 (+$90.84) carried the day; demo1_m1 lost -$37.14 on a 3-loss streak.",
+      "decision": "Logged as baseline, no change made yet."
+    },
+    {
+      "date": "2026-08-26",
+      "title": "Post-entry ADX-check alternative traced against real trades",
+      "category": "Investigation",
+      "context": "Considered a different design: let every signal enter, then exit early only if ADX is still falling on the very next candle, instead of blocking the entry up front.",
+      "finding": "Traced against all 16 real trades from 2026-08-26: would have saved ~$26.83 on 2 real losses caught early, but given up ~$21.22 on 1 real win cut short. Net effect roughly +$5.61 -- essentially a wash.",
+      "decision": "Not built. Neither the existing before-entry filter nor this alternative showed a decisive real edge."
+    },
+    {
+      "date": "2026-08-27",
+      "title": "ADX-momentum entry filter removed",
+      "category": "Investigation",
+      "context": "Built a script to automatically trace every blocked signal across both real trading days, instead of hand-tracing one at a time.",
+      "finding": "41 blocked signals across both accounts over 2 days: 27 would-be wins (~+$810) versus 14 would-be losses (~-$720) -- the filter cost about $90 more than it saved.",
+      "decision": "Removed entirely. Every confirmed cross is taken again, gated only by the gap/EMA5-pullback rule (itself later removed, see 2026-08-31 below). The stop-tightening and swap/reversal gate were unaffected."
+    },
+    {
+      "date": "2026-08-27",
+      "title": "demo1_m3 risk:reward rebalanced 15:5 to 10:6",
+      "category": "Config Change",
+      "context": "The old 3:1 stop:take-profit ratio needed a 75% win rate just to break even.",
+      "finding": "demo1_m3's real win rate so far (87.5% across 16 trades, under the old 15:5 settings) comfortably cleared both the old and new ratios, but the new 1.67:1 ratio leaves much more room if win rate ever drops.",
+      "decision": "stop_loss_usd 15 to 10, take_profit_usd 5 to 6. Agreed not to judge the change on fewer than 10-15 new trades under the new settings."
+    },
+    {
+      "date": "2026-08-27",
+      "title": "demo2 account pair built and deployed",
+      "category": "Feature",
+      "context": "A second, simpler engine variant was built for a separate demo2_m1/demo2_m3 account pair -- same entry rule as demo1's engine, but deliberately without the 2-candle debounce, ADX gate, or stop-tightening demo1 has.",
+      "finding": null,
+      "decision": "Went live 09:58 UTC under Task Scheduler supervision, entirely separate from demo1 -- created specifically to be demo1's real-data A/B comparison partner."
+    },
+    {
+      "date": "2026-08-27",
+      "title": "Swap-ADX-threshold simulation",
+      "category": "Investigation",
+      "context": "Tested whether lowering the ADX >= 25 threshold gating demo1's swap/reversal mechanism would recover any real blocked trades.",
+      "finding": "0 of the real blocked swaps had an actual ADX reading >= 20 -- a lower threshold would have changed nothing.",
+      "decision": "Threshold left at 25, no change made."
+    },
+    {
+      "date": "2026-08-27",
+      "title": "\"Force every entry through EMA5-pullback\" -- tested, not deployed",
+      "category": "Investigation",
+      "context": "Since wide-gap/EMA5-touch entries were already known to outperform small-gap immediate entries, tested forcing every entry through the pullback rule.",
+      "finding": "demo1_m1 (23 samples): forced pullback would net exactly $0.00 versus real -$13.80, and 1 of 23 would have been cancelled entirely -- the exact risk flagged before testing, confirmed to actually happen. demo1_m3 (8 samples): looked strong (+$96.00 vs real +$30.48) but far too small a sample to trust -- the same size that made the ADX filter look good just before it cost $90.",
+      "decision": "Not deployed. Kept the existing small-gap-immediate-entry rule; planned to re-check once demo1_m3 had more samples."
+    },
+    {
+      "date": "2026-08-27",
+      "title": "Tick volume, EMA separation, and ATR volatility filters -- checked, not pursued",
+      "category": "Investigation",
+      "context": "Three more candidate entry-quality filters suggested by an earlier analysis.",
+      "finding": "Tick volume showed a real but small effect (~4.7% of total P/L, cutting 35% of trades to get it). EMA13/21 separation was weak and noisy. ATR volatility was clean and monotonic, but the low-volatility bucket was barely breakeven, not a real loss -- nothing to reclaim.",
+      "decision": "None pursued as standalone rules -- all three closed out."
+    },
+    {
+      "date": "2026-08-27",
+      "title": "Time-of-day check flags demo1_m1's 12:00-16:00 window",
+      "category": "Investigation",
+      "context": "Broke down every real trade into 4-hour app-time buckets.",
+      "finding": "demo1_m1's 12:00-16:00 window was its single biggest bucket (12 of 26 trades) and its worst -- only 33.3% win rate, -$91.20, nearly all of the account's net loss for the period. Everything else was too small a sample to trust yet.",
+      "decision": "Not acted on. Flagged to keep watching -- a real candidate for a targeted fix (tighter stop, or exclusion) if the pattern holds up over more trades."
+    },
+    {
+      "date": "2026-08-28",
+      "title": "Wrong-account balance cross-talk bug fixed",
+      "category": "Bug Fix",
+      "context": "A real ~9-minute balance mismatch was traced to the MetaTrader5 package's single-global-connection limitation letting one account's data leak into another's request.",
+      "finding": null,
+      "decision": "account_info() now verifies the connected login matches the account's own config on every call, raising an error on any mismatch."
+    },
+    {
+      "date": "2026-08-28",
+      "title": "Order-comment-length bug fixed",
+      "category": "Bug Fix",
+      "context": "A manual test trade got stuck open after the broker rejected an order whose comment exceeded its length limit.",
+      "finding": null,
+      "decision": "Added a hard 26-character cap with a safe-truncation helper, applied to every open/close order comment."
+    },
+    {
+      "date": "2026-08-28",
+      "title": "demo1-vs-demo2 daily comparison log established",
+      "category": "Feature",
+      "context": "With demo2 running the same entry rule but none of demo1's extra swap-side protections, this became a genuine live A/B test on the same real market.",
+      "finding": "Day 1: demo1's caution was a wash on M1 (avoided trades net -$11.58, near breakeven) but clearly helped on M3 (avoided trades net -$57.60).",
+      "decision": "Track daily going forward. Explicitly agreed not to conclude anything before 1-2 consistent weeks of data -- the ADX filter's first-day result had already been a false signal once."
+    },
+    {
+      "date": "2026-08-28",
+      "title": "demo1_m3 gap threshold raised to $7",
+      "category": "Config Change",
+      "context": "User's explicit call, made despite a flagged concern that this ran against stronger existing evidence.",
+      "finding": "The flagged concern: only 1 trade that day was attributable to the gap-threshold difference (too small a sample), and raising the threshold pushed more trades into the weaker immediate-entry category rather than the stronger EMA5-pullback one.",
+      "decision": "Changed anyway per explicit user decision -- gap_threshold_usd 5 to 7 on demo1_m3 only."
+    },
+    {
+      "date": "2026-08-28",
+      "title": "demo2_m1 stopped trading 16:00-19:00 Sri Lanka time",
+      "category": "Config Change",
+      "context": "User's explicit request, demo2_m1 only -- demo2_m3 explicitly excluded from the change.",
+      "finding": null,
+      "decision": "Removed that session window entirely, confirmed live via the account's own heartbeat showing WAITING (not ACTIVE) during that window."
+    },
+    {
+      "date": "2026-08-31",
+      "title": "Gap/EMA5-pullback rule removed on all four accounts",
+      "category": "Config Change",
+      "context": "Final strategy decision: every confirmed cross now enters immediately, with no gap-size branching or EMA5-pullback wait on any account.",
+      "finding": null,
+      "decision": "gap_threshold_usd set effectively infinite on demo1_m1, demo1_m3, demo2_m1, and demo2_m3 -- the EMA5-pullback code path is now fully dormant everywhere."
+    },
+    {
+      "date": "2026-08-31",
+      "title": "Breakeven-stop added on M1 accounts",
+      "category": "Feature",
+      "context": "A trade that gets most of the way to its take-profit and then reverses was closing at a full loss instead of flat.",
+      "finding": null,
+      "decision": "Once floating profit reaches $4.50 (90% of the $5 take-profit) on demo1_m1 or demo2_m1, the stop-loss moves to the entry price. demo1_m3/demo2_m3 explicitly untouched -- M1 only."
+    },
+    {
+      "date": "2026-08-31",
+      "title": "Professional web dashboard built and deployed",
+      "category": "Feature",
+      "context": "All of the analysis above was only ever visible by asking directly -- none of it was surfaced in the existing mobile control app.",
+      "finding": null,
+      "decision": "Built a Flutter Web dashboard (Dashboard, Strategy Analysis, demo1-vs-demo2 comparison, plus this Strategy Overview and Research Log) reachable through the same Cloudflare Tunnel URL, while trimming the mobile app down to just the on/off control. Fixed a Cloudflare Tunnel path-scoping bug found during first deployment."
+    }
+  ]
+}

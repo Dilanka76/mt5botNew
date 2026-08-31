@@ -39,6 +39,14 @@ with it rather than expecting the tunnel to strip it):
                                            trade comparison, not account-
                                            scoped (see
                                            scripts/generate_comparison_json.py)
+    GET  /apiconnect/content/strategy-overview
+                                           hand-authored spec of the current,
+                                           finalized strategy (per-engine
+                                           entry/swap/breakeven rules,
+                                           per-account parameters)
+    GET  /apiconnect/content/research-log hand-authored chronological log of
+                                           real investigations/decisions
+                                           behind the strategy
     GET  /apiconnect/dashboard/...        the Flutter Web dashboard itself
                                            (static files) -- MUST live
                                            under /apiconnect, since that's
@@ -286,6 +294,45 @@ def comparison():
     Reports live at reports/analytics/comparison/latest.json.
     """
     path = PROJECT_ROOT / "reports" / "analytics" / "comparison" / "latest.json"
+    if not path.is_file():
+        return {"available": False}
+
+    data = json.loads(path.read_text())
+    return {"available": True, **data}
+
+
+@router.get("/content/strategy-overview", dependencies=[Depends(verify_api_key)])
+def content_strategy_overview():
+    """Plain-language spec of the current, finalized strategy -- entry/swap/
+    breakeven rules per engine and current per-account parameters. Hand-
+    authored (not computed from trade data -- there's no script that could
+    derive "why this rule exists" from raw MT5 records), so this is a single
+    static file, not "latest by mtime" like the reports above. Updated by
+    editing reports/content/strategy_overview.json directly and redeploying
+    (git pull; no Flutter rebuild needed since the Flutter app just fetches
+    this file's contents at runtime).
+
+    Lives at reports/content/strategy_overview.json.
+    """
+    path = PROJECT_ROOT / "reports" / "content" / "strategy_overview.json"
+    if not path.is_file():
+        return {"available": False}
+
+    data = json.loads(path.read_text())
+    return {"available": True, **data}
+
+
+@router.get("/content/research-log", dependencies=[Depends(verify_api_key)])
+def content_research_log():
+    """Chronological log of real investigations/decisions behind the
+    strategy (what was tried, what the real data showed, what was decided
+    and why) -- the user-facing mirror of this project's own memory-file
+    discipline. Same static-file pattern as /content/strategy-overview
+    above; append new entries to the JSON as real decisions happen.
+
+    Lives at reports/content/research_log.json.
+    """
+    path = PROJECT_ROOT / "reports" / "content" / "research_log.json"
     if not path.is_file():
         return {"available": False}
 
