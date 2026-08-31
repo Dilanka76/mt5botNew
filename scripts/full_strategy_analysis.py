@@ -76,15 +76,30 @@ def item3_entry_types(records: list[dict], label: str) -> None:
         print(f"  {etype:<12} n={n:>3}  win={pct(wins, n):5.1f}%  P/L=${pl:+8.2f}  avg=${pl / n:+.2f}")
 
 
+def _gap_threshold_at(account: str, entry_time_utc: datetime) -> float:
+    """demo1_m3's gap_threshold_usd changed $5 -> $7 at GAP_CHANGE_CUTOVER_UTC
+    (see module docstring) -- a fixed $5.0 for every other account/time.
+    Fixed 2026-08-31: an earlier version of this script hardcoded $5.0
+    unconditionally, misclassifying demo1_m3 trades entered after the
+    change (real threshold $7, so a $5-$7 gap should read as "immediate"
+    but the old code called it "ema5_touch")."""
+    if account == "demo1_m3" and entry_time_utc >= GAP_CHANGE_CUTOVER_UTC:
+        return 7.0
+    return 5.0
+
+
 def tag_entry_type(records: list[dict]) -> None:
     """entry_gap is None for swap re-entries (by design); everything else
     is 'immediate' if a small gap was logged, 'ema5_touch' if a wide one
-    was, going by build_trade_records's own gap extraction."""
+    was, going by build_trade_records's own gap extraction -- using the
+    gap threshold that was ACTUALLY live at each trade's own entry time,
+    not a single fixed value (see _gap_threshold_at)."""
     for r in records:
         if r["entry_gap"] is None:
             r["_entry_type"] = "swap_reentry (no gap logged, by design)"
         else:
-            r["_entry_type"] = "immediate" if r["entry_gap"] < 5.0 else "ema5_touch"
+            threshold = _gap_threshold_at(r["account"], r["entry_time"].astimezone(timezone.utc))
+            r["_entry_type"] = "immediate" if r["entry_gap"] < threshold else "ema5_touch"
 
 
 def item4_rule_compliance(account: str, decisions: list[dict], records: list[dict], config) -> list[str]:
@@ -121,6 +136,22 @@ def item4_rule_compliance(account: str, decisions: list[dict], records: list[dic
             violations.append(f"{account}: stop_loss-categorized close (ticket={r['ticket']}) has POSITIVE profit ${r['profit']:+.2f} -- category mismatch?")
 
     return violations
+
+
+def item6b_swap_mechanism(account: str, rules: dict) -> None:
+    """Real pending/confirmed/blocked/cancelled breakdown for the swap --
+    already computed by build_rule_tracking_swap_adx inside
+    gather_account_data(), just wasn't being printed before. Answers the
+    question raised by item 2 finding ZERO swap-category closes: is the
+    swap a rare-but-real safety net, or effectively inert?"""
+    armed = rules["swap_pending_count"]
+    confirmed = rules["swap_confirmed_count"]
+    blocked = rules["swap_blocked_count"]
+    cancelled = rules["swap_cancelled_count"]
+    print(f"  {account}: armed={armed}  confirmed={confirmed}  blocked_by_adx={blocked}  cancelled_no_2nd_candle={cancelled}")
+    if armed:
+        print(f"    -> of {armed} armed episodes: {pct(confirmed, armed):.1f}% confirmed, "
+              f"{pct(blocked, armed):.1f}% blocked by ADX, {pct(cancelled, armed):.1f}% cancelled (no 2nd candle)")
 
 
 def item5_before_after_gap_change(m3_records: list[dict]) -> None:
@@ -160,6 +191,10 @@ def main() -> None:
 
     item1_overall(all_records, "COMBINED (demo1_m1 + demo1_m3)")
     item2_categories(all_records, "COMBINED")
+
+    print(f"\n{'=' * 78}\n6b) SWAP MECHANISM — armed vs confirmed vs blocked vs cancelled\n{'=' * 78}")
+    for account, _ in accounts:
+        item6b_swap_mechanism(account, per_account[account][2])
 
     item5_before_after_gap_change(per_account["demo1_m3"][1])
 
