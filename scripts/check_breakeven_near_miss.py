@@ -40,7 +40,14 @@ config = load_config(args.account)
 connector = MT5Connector(config.mt5)
 connector.connect()
 try:
-    ticks = mt5.copy_ticks_range(config.symbol, dt_from, dt_to, mt5.COPY_TICKS_ALL)
+    # mt5.copy_ticks_range() expects BROKER time, not true UTC (same
+    # reason inspect_candles_fixed_offset.py adds the offset before
+    # calling copy_rates_range) -- measured live since the market is open
+    # right now, matching inspect_live_candle.py's approach.
+    from bot.analytics import mt5_utc_offset
+    offset = mt5_utc_offset(connector, config.symbol)
+    print(f"measured offset (broker time - true UTC): {offset.total_seconds() / 3600:+.2f}h")
+    ticks = mt5.copy_ticks_range(config.symbol, dt_from + offset, dt_to + offset, mt5.COPY_TICKS_ALL)
 finally:
     connector.disconnect()
 
@@ -66,13 +73,20 @@ for t in ticks:
 print(f"account={args.account} direction={args.direction} entry={args.entry} trigger=${args.trigger}")
 print(f"{len(ticks)} real ticks in window\n")
 
-best_time = datetime.fromtimestamp(best_tick["time_msc"] / 1000, tz=timezone.utc)
-print(f"BEST (most favorable) real tick: bid={float(best_tick['bid']):.2f} at {best_time.isoformat()} true UTC "
-      f"-> favorable=${best_favorable:.2f}")
+# tick["time_msc"] comes back in the SAME raw-broker-time-labeled-as-UTC
+# convention as trade_history.jsonl's close_time (see mt5_connector.
+# get_recent_closed_trades) -- subtract the offset to get true UTC.
+best_broker_time = datetime.fromtimestamp(best_tick["time_msc"] / 1000, tz=timezone.utc)
+best_true_utc = best_broker_time - offset
+print(f"BEST (most favorable) real tick: bid={float(best_tick['bid']):.2f} at "
+      f"{best_broker_time.strftime('%H:%M:%S.%f')[:-3]} broker/app time "
+      f"({best_true_utc.isoformat()} true UTC) -> favorable=${best_favorable:.2f}")
 
 if crossed_at is not None:
-    cross_time = datetime.fromtimestamp(crossed_at["time_msc"] / 1000, tz=timezone.utc)
-    print(f"\n*** REAL TICKS DID CROSS THE ${args.trigger} TRIGGER at {cross_time.isoformat()} true UTC "
+    cross_broker_time = datetime.fromtimestamp(crossed_at["time_msc"] / 1000, tz=timezone.utc)
+    cross_true_utc = cross_broker_time - offset
+    print(f"\n*** REAL TICKS DID CROSS THE ${args.trigger} TRIGGER at "
+          f"{cross_broker_time.strftime('%H:%M:%S.%f')[:-3]} broker/app time ({cross_true_utc.isoformat()} true UTC) "
           f"(bid={float(crossed_at['bid']):.2f}) -- breakeven SHOULD have armed. If it didn't, this is a real bug worth investigating. ***")
 else:
     print(f"\nReal ticks NEVER reached the ${args.trigger} trigger -- genuine near-miss, "
