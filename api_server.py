@@ -47,7 +47,7 @@ with it rather than expecting the tunnel to strip it):
     GET  /apiconnect/content/research-log hand-authored chronological log of
                                            real investigations/decisions
                                            behind the strategy
-    GET  /apiconnect/dashboard/...        the Flutter Web dashboard itself
+    GET  /apiconnect/dashboard-v2/...     the Flutter Web dashboard itself
                                            (static files) -- MUST live
                                            under /apiconnect, since that's
                                            the only path the Cloudflare
@@ -155,7 +155,7 @@ app = FastAPI(title="MT5 Bot Control Gateway", lifespan=lifespan)
 @app.middleware("http")
 async def no_cache_dashboard(request, call_next):
     """Cloudflare's default "cache static file extensions" behavior was
-    caching /apiconnect/dashboard/main.dart.js at the edge (confirmed via a
+    caching main.dart.js at the edge (confirmed via a
     real CF-Cache-Status: HIT after a rebuild) -- Flutter's web build keeps
     that filename stable across builds, so the CDN never noticed new
     content and kept serving a stale build indefinitely. There's no
@@ -166,6 +166,12 @@ async def no_cache_dashboard(request, call_next):
     Rule overrides it. This dashboard's content changes often (config
     values, the research log), so "never cache" is the right call here,
     not just a fix for this one incident.
+
+    NOTE: since this header only prevents FUTURE caching and can't evict
+    something already cached, and there's no Cloudflare dashboard access
+    on this project to force a purge, the mount itself was also moved from
+    /apiconnect/dashboard to /apiconnect/dashboard-v2 on 2026-08-31 to
+    dodge the already-stale cached copy entirely -- see the mount below.
     """
     response = await call_next(request)
     if request.url.path.startswith("/apiconnect/dashboard"):
@@ -452,23 +458,32 @@ app.include_router(router)
 # WEB_DASHBOARD_DIR in .env.gateway since the Flutter app lives in a
 # separate repo/checkout; defaults to a sibling `mt5bot_controll/build/web`
 # directory next to this project. The Flutter build itself must ALSO be
-# built with `flutter build web --base-href /apiconnect/dashboard/` --
+# built with `flutter build web --base-href /apiconnect/dashboard-v2/` --
 # otherwise its index.html's internal asset links (main.dart.js, CSS,
-# manifest) point at the site root and 404 even once this mount is
+# manifest) point at the wrong path and 404 even once this mount is
 # correct, since Flutter bakes the base href into the build output at
 # build time, not something this server can fix at serve time. Statically
 # skipped (no 500) if the directory doesn't exist yet -- lets this
 # gateway keep running even before the Flutter build has been deployed.
+#
+# Mounted at /apiconnect/dashboard-v2, not /apiconnect/dashboard -- see the
+# no_cache_dashboard middleware's docstring above for why: Cloudflare had
+# already cached the old path's main.dart.js indefinitely before this
+# server started sending no-store headers, and there's no dashboard access
+# on this project to force-purge that stale entry. This is a fresh path
+# Cloudflare has never cached, so it's a guaranteed MISS on first request.
+DASHBOARD_URL_PATH = "/apiconnect/dashboard-v2"
 _web_dashboard_dir = Path(os.getenv("WEB_DASHBOARD_DIR", str(PROJECT_ROOT.parent / "mt5bot_controll" / "build" / "web")))
 if _web_dashboard_dir.is_dir():
-    app.mount("/apiconnect/dashboard", StaticFiles(directory=str(_web_dashboard_dir), html=True), name="dashboard")
-    logging.info("Serving web dashboard from %s at /apiconnect/dashboard", _web_dashboard_dir)
+    app.mount(DASHBOARD_URL_PATH, StaticFiles(directory=str(_web_dashboard_dir), html=True), name="dashboard")
+    logging.info("Serving web dashboard from %s at %s", _web_dashboard_dir, DASHBOARD_URL_PATH)
 else:
     logging.warning(
-        "Web dashboard directory not found at %s -- /apiconnect/dashboard will 404 until "
+        "Web dashboard directory not found at %s -- %s will 404 until "
         "the Flutter web build is deployed there (or WEB_DASHBOARD_DIR is set "
         "in .env.gateway to point elsewhere).",
         _web_dashboard_dir,
+        DASHBOARD_URL_PATH,
     )
 
 
