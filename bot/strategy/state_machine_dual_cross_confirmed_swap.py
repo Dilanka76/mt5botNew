@@ -202,6 +202,34 @@ class DualCrossConfirmedSwapEngine:
         ema21 = float(last_closed["ema21"])
         exit_price = float(last_closed["close"])
 
+        # Candle-based breakeven check (2026-08-31 addition, real incident
+        # -- see the sibling ADX engine's identical block for the full
+        # writeup): the tick-based check in on_tick() only samples price
+        # once per tick_poll_interval_seconds, which can miss a real but
+        # very brief (sub-second) touch of the trigger. This catches it
+        # retroactively using the just-closed candle's high/low, already
+        # fetched for cross detection -- no extra API calls. This engine
+        # has no pending-reversal stop-tightening to guard against
+        # overwriting (see module docstring), so no further guard needed.
+        if (
+            self.position is not None
+            and self.config.breakeven_trigger_usd is not None
+            and not self.position.breakeven_armed
+        ):
+            if self.position.direction == Direction.BUY:
+                candle_favorable = float(last_closed["high"]) - self.position.entry_price
+            else:
+                candle_favorable = self.position.entry_price - float(last_closed["low"])
+            if candle_favorable >= self.config.breakeven_trigger_usd:
+                self.position.breakeven_armed = True
+                self.position.stop_loss = self.position.entry_price
+                log_decision(
+                    self.config.symbol, "breakeven_armed",
+                    f"Candle {last_closed_time} range reached ${candle_favorable:.2f} (>= "
+                    f"${self.config.breakeven_trigger_usd:.2f} trigger) -> stop-loss moved to entry "
+                    f"{self.position.entry_price:.2f} (caught via candle high/low, not the live tick poll)",
+                )
+
         # No own-candle-validation step here at all — every position opens
         # already validated (see module docstring), so there is nothing to
         # check on the candle following entry.

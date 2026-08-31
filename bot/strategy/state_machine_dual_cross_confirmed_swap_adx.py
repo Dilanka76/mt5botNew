@@ -311,6 +311,39 @@ class DualCrossConfirmedSwapAdxEngine:
         ema21 = float(last_closed["ema21"])
         exit_price = float(last_closed["close"])
 
+        # Candle-based breakeven check (2026-08-31 addition, real incident):
+        # the tick-based check in on_tick() only samples price once per
+        # tick_poll_interval_seconds (typically 1s) -- a real trade's tick
+        # history showed the live bid crossing the trigger for well under a
+        # second (~40ms) and being missed entirely by that single snapshot.
+        # This catches it retroactively using data already fetched for
+        # cross detection (no extra API calls): if the JUST-CLOSED candle's
+        # favorable extreme (high for BUY, low for SELL) reached the
+        # trigger at any point during that period, arm breakeven now even
+        # though the live tick poll missed the exact moment. Runs BEFORE
+        # the swap/reversal logic below so an already-armed breakeven stop
+        # (== entry price, strictly better than any tightened distance)
+        # doesn't get overwritten by the pending-reversal tightening
+        # further down -- see that branch's own guard.
+        if (
+            self.position is not None
+            and self.config.breakeven_trigger_usd is not None
+            and not self.position.breakeven_armed
+        ):
+            if self.position.direction == Direction.BUY:
+                candle_favorable = float(last_closed["high"]) - self.position.entry_price
+            else:
+                candle_favorable = self.position.entry_price - float(last_closed["low"])
+            if candle_favorable >= self.config.breakeven_trigger_usd:
+                self.position.breakeven_armed = True
+                self.position.stop_loss = self.position.entry_price
+                log_decision(
+                    self.config.symbol, "breakeven_armed",
+                    f"Candle {last_closed_time} range reached ${candle_favorable:.2f} (>= "
+                    f"${self.config.breakeven_trigger_usd:.2f} trigger) -> stop-loss moved to entry "
+                    f"{self.position.entry_price:.2f} (caught via candle high/low, not the live tick poll)",
+                )
+
         # No own-candle-validation step here at all — every position opens
         # already validated (see module docstring), so there is nothing to
         # check on the candle following entry.
@@ -391,19 +424,36 @@ class DualCrossConfirmedSwapAdxEngine:
                         # that still won, price never got remotely close to
                         # where the tightened stop would sit, so it
                         # wouldn't have caused an early false exit either.
-                        tightened_distance = self.config.stop_loss_usd / 2
-                        old_stop_loss = self.position.stop_loss
-                        self.position.stop_loss = self._compute_stop_loss(
-                            self.position.direction, self.position.entry_price, tightened_distance,
-                        )
-                        log_decision(
-                            self.config.symbol, "swap_pending",
-                            f"{direction.value} candle close (ema13={ema13:.2f}, "
-                            f"ema21={ema21:.2f}) opposes held {self.position.direction.value} position but "
-                            f"not swapped yet -> waiting for next candle to confirm before acting; "
-                            f"stop-loss tightened to ${tightened_distance:.2f} (was ${self.config.stop_loss_usd:.2f}) "
-                            f"at {self.position.stop_loss:.2f} (was {old_stop_loss:.2f})",
-                        )
+                        #
+                        # SKIPPED if breakeven already armed: a breakeven
+                        # stop sits exactly at entry (guaranteed >= $0
+                        # outcome), which is strictly better than any
+                        # tightened-but-still-losing distance -- moving it
+                        # here would undo real protection the trade already
+                        # earned (2026-08-31 fix, found while investigating
+                        # why a real trade's breakeven never armed).
+                        if self.position.breakeven_armed:
+                            log_decision(
+                                self.config.symbol, "swap_pending_breakeven_kept",
+                                f"{direction.value} candle close (ema13={ema13:.2f}, ema21={ema21:.2f}) opposes "
+                                f"held {self.position.direction.value} position but not swapped yet -> stop-loss "
+                                f"stays at breakeven-armed entry price {self.position.stop_loss:.2f}, NOT "
+                                f"tightened to a worse level",
+                            )
+                        else:
+                            tightened_distance = self.config.stop_loss_usd / 2
+                            old_stop_loss = self.position.stop_loss
+                            self.position.stop_loss = self._compute_stop_loss(
+                                self.position.direction, self.position.entry_price, tightened_distance,
+                            )
+                            log_decision(
+                                self.config.symbol, "swap_pending",
+                                f"{direction.value} candle close (ema13={ema13:.2f}, "
+                                f"ema21={ema21:.2f}) opposes held {self.position.direction.value} position but "
+                                f"not swapped yet -> waiting for next candle to confirm before acting; "
+                                f"stop-loss tightened to ${tightened_distance:.2f} (was ${self.config.stop_loss_usd:.2f}) "
+                                f"at {self.position.stop_loss:.2f} (was {old_stop_loss:.2f})",
+                            )
                 else:
                     if self.pending_reversal_direction is not None:
                         log_decision(
