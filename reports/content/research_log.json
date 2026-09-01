@@ -160,6 +160,30 @@
       "context": "All of the analysis above was only ever visible by asking directly -- none of it was surfaced in the existing mobile control app.",
       "finding": null,
       "decision": "Built a Flutter Web dashboard (Dashboard, Strategy Analysis, demo1-vs-demo2 comparison, plus this Strategy Overview and Research Log) reachable through the same Cloudflare Tunnel URL, while trimming the mobile app down to just the on/off control. Fixed a Cloudflare Tunnel path-scoping bug found during first deployment."
+    },
+    {
+      "date": "2026-09-01",
+      "title": "Candle-based breakeven check confirmed working on a real trade",
+      "category": "Investigation",
+      "context": "Investigating why a specific real demo1_m1 trade (14:41 app time, 2026-08-31) never armed its $4.50 breakeven despite price appearing to reach the trigger on the 1-minute candle's low.",
+      "finding": "Replayed the real tick-by-tick bid stream for that exact trade: it genuinely never crossed $4.50 on a live tick (best real tick was $4.53 but landed on a different candle than first suspected) -- the tick-based check working exactly as designed, not a bug. Separately, checked every breakeven_armed event since deploy: all 10 on demo1_m1 and all 4 on demo2_m1 were followed by a real take-profit, never a reversal-saved-by-breakeven case yet. On 2026-09-01 the new candle-based check (added 2026-08-31) fired for real for the first time on demo1_m1 (01:04 UTC, caught via candle high/low, not the live tick poll) -- that trade also went on to hit take-profit shortly after.",
+      "decision": "No code change from this investigation -- confirms both the tick-based and candle-based breakeven paths are working as designed."
+    },
+    {
+      "date": "2026-09-01",
+      "title": "Full entry-quality research: 7 real-data points checked per account",
+      "category": "Investigation",
+      "context": "User asked for the root causes of losses, how to reduce them, and how to confirm a \"real\" entry -- ran scripts/analyze_entry_quality.py and scripts/analyze_time_of_day.py across all 4 accounts (demo1_m1, demo1_m3, demo2_m1, demo2_m3), 242 real trades since 2026-08-25, then verified every pooled finding against each account individually before trusting it (the project's standing small-sample lesson).",
+      "finding": "Only 3 of 7 candidate signals held up per-account, not just pooled: (1) Time-of-day -- 00:00-04:00 broker/app time positive in ALL 4 accounts (strongest, most consistent finding); 08:00-12:00 broker/app time negative in 3 of 4. (2) Tick volume on the entry candle -- \"busy candle wins more\" held on ALL 4 accounts independently, second-strongest. (3) Candle closed in the trade's own favor (green candle for BUY, red for SELL) -- real in all 4, but the dramatic pooled effect (48.5% vs 59.4% win rate) was mostly one account's small sample (demo2_m3, only 14 trades); modest on the other 3. The other 4 candidates (EMA13/21 separation, ATR/volatility, gap size, candle decisiveness) looked clean when pooled but fell apart or reversed per account -- not real, actionable signals.",
+      "decision": "Did not touch demo1's or demo2's live entry rule with any of this (same discipline as the ADX-filter lesson). Instead built a brand-new dedicated test account, demo3, to test the two strongest actionable candidates (candle-color + tick-volume) live, without risking demo1/demo2's real results."
+    },
+    {
+      "date": "2026-09-01",
+      "title": "demo3_m1/demo3_m3 built: combined entry-filter live test",
+      "category": "Feature",
+      "context": "Explicit user decision: rather than leave tick volume untested (no demo4 account exists), combine the two strongest real-data findings from the entry-quality research into ONE new engine variant and test both live on the one available account, logging which specific condition blocks each skipped entry so the two rules can be told apart later from demo3's own real trade history.",
+      "finding": null,
+      "decision": "New strategy_variant=dual_cross_confirmed_swap_adx_entryfilter (bot/strategy/state_machine_dual_cross_confirmed_swap_adx_entryfilter.py) -- identical to demo1's dual_cross_confirmed_swap_adx engine (same 2-candle+ADX swap debounce, pending-reversal stop-tightening, candle-based+tick-based breakeven) plus one addition: skip the entry unless the confirming candle closed in the trade's favor AND its tick volume is not in the bottom third of the recent distribution. demo3_m1/demo3_m3 mirror demo1_m1/demo1_m3's real current parameters exactly (same SL/TP/breakeven/sessions) for a clean A/B comparison. Verified with a real engine instance covering all 4 favor/volume combinations. Not yet deployed to the server -- still needs a new MT5 demo login installed as a terminal, .env.demo3_m1/.env.demo3_m3, and Scheduled Tasks."
     }
   ]
 }
