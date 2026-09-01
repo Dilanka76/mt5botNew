@@ -290,8 +290,8 @@ class DualCrossConfirmedSwapAdxEntryFilterEngine:
         comparability. df_with_emas already carries tick_volume for
         every candle (see bot/data/market_data.py) -- no extra fetch."""
         volumes = df_with_emas["tick_volume"].iloc[:-1]  # exclude the still-forming candle
-        threshold = volumes.quantile(1 / 3)
-        return float(candle["tick_volume"]) < threshold
+        threshold = float(volumes.quantile(1 / 3))  # float() -- a bare .quantile() result is numpy.float64
+        return bool(float(candle["tick_volume"]) < threshold)
 
     def _entry_filter_reason(self, direction: Direction, candle, df_with_emas: pd.DataFrame) -> str | None:
         """THE experimental filter this variant exists to test (see

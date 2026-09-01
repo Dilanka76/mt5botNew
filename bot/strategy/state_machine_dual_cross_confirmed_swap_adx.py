@@ -275,9 +275,45 @@ class DualCrossConfirmedSwapAdxEngine:
     def _update_state(self) -> None:
         self.state = TradeState.IN_POSITION if self.position is not None else TradeState.IDLE
 
+    def _shadow_filter_info(self, direction: Direction, candle, df_with_emas: pd.DataFrame) -> dict:
+        """SHADOW-ONLY, 2026-09-01: computes (but never acts on) what the
+        experimental demo3 entry filters
+        (state_machine_dual_cross_confirmed_swap_adx_entryfilter.py) would
+        have decided for this REAL entry, and attaches it to the
+        trade_entered log line. Does NOT change trading behavior at all --
+        every real signal here still enters exactly as before. Purpose:
+        after 1-2 weeks of real forward data, check whether trades marked
+        "would have failed" here actually tended to be the losing ones,
+        matching scripts/simulate_demo3_entry_filter.py's backtest
+        (demo1_m1: color filter looked real, +$122.58 backtested; demo1_m3:
+        volume filter looked real, +$151.02 backtested) -- BEFORE deciding
+        whether to actually turn either filter on for real. See
+        [[project_demo3_entryfilter_research]]."""
+        if direction == Direction.BUY:
+            closed_in_favor = float(candle["close"]) > float(candle["open"])
+        else:
+            closed_in_favor = float(candle["close"]) < float(candle["open"])
+
+        volumes = df_with_emas["tick_volume"].iloc[:-1]
+        vol_threshold = float(volumes.quantile(1 / 3))
+        vol_actual = float(candle["tick_volume"])
+        low_volume = vol_actual < vol_threshold
+
+        return {
+            # bool()/float() here matter -- comparisons against a pandas
+            # .quantile() result are numpy.bool_/numpy.float64, which
+            # json.dumps() (used by log_decision) cannot serialize and
+            # would crash real logging in production.
+            "shadow_closed_in_favor": bool(closed_in_favor),
+            "shadow_low_volume": bool(low_volume),
+            "shadow_tick_volume": vol_actual,
+            "shadow_volume_threshold": round(vol_threshold, 1),
+        }
+
     def _maybe_enter_or_pend(
         self, direction: Direction, price_now: float, ema13_now: float, base_reason: str,
         cross_candle_time_override: pd.Timestamp | None,
+        shadow_filter_info: dict | None = None,
     ) -> OpenedTrade | None:
         """Flat-entry-only gap check (see module docstring) — NEVER called
         from the swap path, which always enters immediately via _enter()
@@ -288,6 +324,7 @@ class DualCrossConfirmedSwapAdxEngine:
                 direction,
                 reason=f"{base_reason}, gap={gap:.2f} < ${self.config.gap_threshold_usd:.2f} threshold -> immediate entry",
                 cross_candle_time_override=cross_candle_time_override,
+                shadow_filter_info=shadow_filter_info,
             )
         else:
             self.pending = PendingSetup(
@@ -390,6 +427,7 @@ class DualCrossConfirmedSwapAdxEngine:
                                         f"candle's first signal"
                                     ),
                                     cross_candle_time_override=last_closed_time,
+                                    shadow_filter_info=self._shadow_filter_info(direction, last_closed, df_with_emas),
                                 )
                                 if opened is not None:
                                     events.append(opened)
@@ -508,6 +546,7 @@ class DualCrossConfirmedSwapAdxEngine:
                                 f"ema21={ema21:.2f})"
                             ),
                             cross_candle_time_override=last_closed_time,
+                            shadow_filter_info=self._shadow_filter_info(direction, last_closed, df_with_emas),
                         )
                         if opened is not None:
                             events.append(opened)
@@ -649,6 +688,7 @@ class DualCrossConfirmedSwapAdxEngine:
         direction: Direction,
         reason: str,
         cross_candle_time_override: pd.Timestamp | None = None,
+        shadow_filter_info: dict | None = None,
     ) -> OpenedTrade | None:
         balance = self.connector.account_info().balance
         lots = calculate_lots(balance, self.config.position_sizing)
@@ -667,6 +707,7 @@ class DualCrossConfirmedSwapAdxEngine:
             self.config.symbol, "trade_entered", reason,
             direction=direction.value, lots=lots, entry=result.price, tp=result.take_profit,
             stop_loss=self.position.stop_loss, balance=balance, pre_validated=True,
+            **(shadow_filter_info or {}),
         )
 
         return OpenedTrade(
