@@ -2,28 +2,37 @@
 dual_cross_confirmed_swap_adx, built 2026-09-01 for a dedicated demo3
 test account, strategy_variant=dual_cross_confirmed_swap_adx_entryfilter.
 
-**The one real difference from dual_cross_confirmed_swap_adx**: adds a
-"closed in favor" entry filter, based on real-data research from
-scripts/analyze_entry_quality.py's "confirming candle closed IN the
-trade's favor" breakdown (242 real trades across all 4 accounts,
-2026-09-01). Every entry already only fires on an already-CLOSED
-confirming candle -- this filter additionally requires that candle's own
-open->close direction to agree with the trade (a green/up candle for a
-BUY, a red/down candle for a SELL), not just that the EMA13/21 lines
-crossed. If the candle closed AGAINST the trade direction, the entry is
-skipped entirely (logged as entry_filtered_against_candle) rather than
-taken.
+**The real difference from dual_cross_confirmed_swap_adx**: adds TWO
+combined entry filters (see _entry_filter_reason()), based on real-data
+research from scripts/analyze_entry_quality.py (242 real trades across
+all 4 accounts, 2026-09-01). Every entry already only fires on an
+already-CLOSED confirming candle -- this variant additionally requires
+BOTH of the following before actually entering, or the entry is skipped
+entirely (logged as entry_filtered, reason states which condition(s)
+failed):
 
-Real evidence behind this (see the research log / project memory for the
-full per-account breakdown): candles that closed in the trade's favor
-won more often and made more money than candles that closed against it,
-in EVERY one of the 4 real accounts checked -- but the SIZE of that edge
-varied a lot per account (strong on demo1_m1 and demo2_m3, weak on
-demo1_m3 and demo2_m1), and the most dramatic version of the finding
-(demo2_m3) was based on only 14 real trades. NOT yet trustworthy enough
-to change demo1's or demo2's live entry rule -- this dedicated demo3
-account exists specifically to test this ONE rule live, on fresh data,
-before it's ever considered for demo1/demo2. Everything else in this
+  1. "Closed in favor" -- that candle's own open->close direction agrees
+     with the trade (a green/up candle for a BUY, a red/down candle for
+     a SELL), not just that the EMA13/21 lines crossed.
+  2. "Not low volume" -- that candle's tick_volume is NOT in the bottom
+     third of the recent (~500-candle) distribution -- i.e. the market
+     was reasonably active, not a quiet/thin moment.
+
+Real evidence behind these two (see the research log / project memory
+for the full per-account breakdowns): candle color held up in EVERY one
+of the 4 real accounts checked, but the SIZE of that edge varied a lot
+per account (strong on demo1_m1 and demo2_m3, weak on demo1_m3 and
+demo2_m1) and the most dramatic version (demo2_m3) was based on only 14
+real trades. Tick volume was the MORE consistent of the two -- the
+"busy candle" bucket was the best (or tied-best) performer on all 4
+accounts independently. Both are combined here (rather than tested on
+two separate accounts, since only one demo3 account exists) -- every
+skip is logged with which specific condition(s) failed, so demo3's own
+real trade history can later be broken down the same way to see which
+rule is actually carrying the result. NOT yet trustworthy enough to
+change demo1's or demo2's live entry rule -- this dedicated demo3
+account exists specifically to test these rules live, on fresh data,
+before they're ever considered for demo1/demo2. Everything else in this
 engine (2-candle+ADX swap debounce, pending-reversal stop-tightening,
 candle-based + tick-based breakeven check) is UNCHANGED from
 dual_cross_confirmed_swap_adx -- see that file's own docstring below for
@@ -261,16 +270,50 @@ class DualCrossConfirmedSwapAdxEntryFilterEngine:
         )
 
     def _closed_in_favor(self, direction: Direction, candle) -> bool:
-        """The EXPERIMENTAL entry filter this variant exists to test (see
-        module docstring): does the confirming candle's own open->close
-        direction agree with the trade -- a green/up candle for a BUY, a
-        red/down candle for a SELL? Same definition as
-        scripts/analyze_entry_quality.py's "closed_in_favor" metric, for
-        direct comparability with the real-data research behind this.
-        Used at BOTH entry points (flat and swap-reversal)."""
+        """Does the confirming candle's own open->close direction agree
+        with the trade -- a green/up candle for a BUY, a red/down candle
+        for a SELL? Same definition as scripts/analyze_entry_quality.py's
+        "closed_in_favor" metric, for direct comparability with the
+        real-data research behind this."""
         if direction == Direction.BUY:
             return float(candle["close"]) > float(candle["open"])
         return float(candle["close"]) < float(candle["open"])
+
+    def _low_volume(self, candle, df_with_emas: pd.DataFrame) -> bool:
+        """Is the confirming candle's tick_volume in the bottom third of
+        the recent (last ~500 candles, same window as candles_to_fetch)
+        distribution? Recomputed fresh every call -- adaptive to the
+        current session's activity level rather than a fixed number,
+        since "busy" varies a lot between a quiet Asian session and an
+        active London/NY overlap. Same tertile definition as
+        scripts/analyze_entry_quality.py's volume bucketing, for direct
+        comparability. df_with_emas already carries tick_volume for
+        every candle (see bot/data/market_data.py) -- no extra fetch."""
+        volumes = df_with_emas["tick_volume"].iloc[:-1]  # exclude the still-forming candle
+        threshold = volumes.quantile(1 / 3)
+        return float(candle["tick_volume"]) < threshold
+
+    def _entry_filter_reason(self, direction: Direction, candle, df_with_emas: pd.DataFrame) -> str | None:
+        """THE experimental filter this variant exists to test (see
+        module docstring): combines the two strongest real-data
+        candidates from 2026-09-01's entry-quality research (candle
+        color AND tick volume) into one live rule, rather than testing
+        them on two separate accounts that don't exist. Returns None if
+        the entry should proceed, or a human-readable reason string if
+        it should be skipped. Every skip is logged with which specific
+        condition(s) failed, so demo3's own real trade history can later
+        be broken down (same analyze_entry_quality.py approach) to see
+        which of the two rules is actually carrying the result -- see
+        module docstring for the full reasoning."""
+        against_candle = not self._closed_in_favor(direction, candle)
+        low_volume = self._low_volume(candle, df_with_emas)
+        if against_candle and low_volume:
+            return "candle closed AGAINST the trade AND tick volume was in the bottom third"
+        if against_candle:
+            return "candle closed AGAINST the trade"
+        if low_volume:
+            return "tick volume was in the bottom third (quiet candle)"
+        return None
 
     def _reject_manual_positions(self) -> None:
         if not self.config.execution.reject_manual_trades:
@@ -425,13 +468,13 @@ class DualCrossConfirmedSwapAdxEntryFilterEngine:
                                     self.config.symbol, "cross_ignored_outside_session",
                                     f"{direction.value} confirmed cross (2-candle) at {last_closed_time}, no session open",
                                 )
-                            elif not self._closed_in_favor(direction, last_closed):
+                            elif (filter_reason := self._entry_filter_reason(direction, last_closed, df_with_emas)) is not None:
                                 log_decision(
-                                    self.config.symbol, "entry_filtered_against_candle",
+                                    self.config.symbol, "entry_filtered",
                                     f"{direction.value} confirmed cross (2-candle reversal) at {last_closed_time}, but "
-                                    f"the confirming candle closed AGAINST the trade (open={last_closed['open']:.2f}, "
-                                    f"close={last_closed['close']:.2f}) -> entry skipped (experimental filter), "
-                                    f"staying flat",
+                                    f"{filter_reason} (open={last_closed['open']:.2f}, close={last_closed['close']:.2f}, "
+                                    f"tick_volume={last_closed['tick_volume']:.0f}) -> entry skipped (experimental "
+                                    f"filter), staying flat",
                                 )
                             else:
                                 opened = self._enter(
@@ -539,7 +582,7 @@ class DualCrossConfirmedSwapAdxEntryFilterEngine:
                             self.config.symbol, "cross_ignored_outside_session",
                             f"{direction.value} confirmed cross at {last_closed_time}, no session open",
                         )
-                    elif not self._closed_in_favor(direction, last_closed):
+                    elif (filter_reason := self._entry_filter_reason(direction, last_closed, df_with_emas)) is not None:
                         # THE experimental filter this variant exists to
                         # test -- see module docstring and
                         # scripts/analyze_entry_quality.py. Deliberately
@@ -549,10 +592,11 @@ class DualCrossConfirmedSwapAdxEntryFilterEngine:
                         # own dedicated demo3 account instead of going
                         # straight onto demo1/demo2.
                         log_decision(
-                            self.config.symbol, "entry_filtered_against_candle",
-                            f"{direction.value} confirmed cross at {last_closed_time}, but the confirming candle "
-                            f"closed AGAINST the trade (open={last_closed['open']:.2f}, close={last_closed['close']:.2f}) "
-                            f"-> entry skipped (experimental filter), staying flat",
+                            self.config.symbol, "entry_filtered",
+                            f"{direction.value} confirmed cross at {last_closed_time}, but {filter_reason} "
+                            f"(open={last_closed['open']:.2f}, close={last_closed['close']:.2f}, "
+                            f"tick_volume={last_closed['tick_volume']:.0f}) -> entry skipped (experimental filter), "
+                            f"staying flat",
                         )
                     else:
                         # ADX-momentum entry filter (required ADX rising
