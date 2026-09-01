@@ -299,6 +299,15 @@ class DualCrossConfirmedSwapAdxEngine:
         vol_actual = float(candle["tick_volume"])
         low_volume = vol_actual < vol_threshold
 
+        # Point 5 from the same research (2026-09-01): 08:00-12:00
+        # broker/app time was the worst window (negative in 3 of 4
+        # accounts), 00:00-04:00 the best (positive in all 4). The
+        # candle's own index is already raw broker/app time -- MT5's
+        # copy_rates_from_pos time converted with no offset correction
+        # (see bot/data/market_data.get_ohlc) -- no conversion needed.
+        app_hour = candle.name.hour
+        in_excluded_window = 8 <= app_hour < 12
+
         return {
             # bool()/float() here matter -- comparisons against a pandas
             # .quantile() result are numpy.bool_/numpy.float64, which
@@ -307,6 +316,8 @@ class DualCrossConfirmedSwapAdxEngine:
             "shadow_closed_in_favor": bool(closed_in_favor),
             "shadow_low_volume": bool(low_volume),
             "shadow_tick_volume": vol_actual,
+            "shadow_app_hour": int(app_hour),
+            "shadow_in_excluded_window": bool(in_excluded_window),
             "shadow_volume_threshold": round(vol_threshold, 1),
         }
 
