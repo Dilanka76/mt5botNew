@@ -184,6 +184,22 @@
       "context": "Explicit user decision: rather than leave tick volume untested (no demo4 account exists), combine the two strongest real-data findings from the entry-quality research into ONE new engine variant and test both live on the one available account, logging which specific condition blocks each skipped entry so the two rules can be told apart later from demo3's own real trade history.",
       "finding": null,
       "decision": "New strategy_variant=dual_cross_confirmed_swap_adx_entryfilter (bot/strategy/state_machine_dual_cross_confirmed_swap_adx_entryfilter.py) -- identical to demo1's dual_cross_confirmed_swap_adx engine (same 2-candle+ADX swap debounce, pending-reversal stop-tightening, candle-based+tick-based breakeven) plus one addition: skip the entry unless the confirming candle closed in the trade's favor AND its tick volume is not in the bottom third of the recent distribution. demo3_m1/demo3_m3 mirror demo1_m1/demo1_m3's real current parameters exactly (same SL/TP/breakeven/sessions) for a clean A/B comparison. Verified with a real engine instance covering all 4 favor/volume combinations. Not yet deployed to the server -- still needs a new MT5 demo login installed as a terminal, .env.demo3_m1/.env.demo3_m3, and Scheduled Tasks."
+    },
+    {
+      "date": "2026-09-01",
+      "title": "demo3 shelved -- proper backtest + shadow-logging in demo1 instead",
+      "category": "Investigation",
+      "context": "Rather than build the full demo3 infrastructure (new MT5 terminal, .env files, Scheduled Tasks) for an untested combined filter, ran a proper trade-by-trade backtest first (scripts/simulate_demo3_entry_filter.py, no lookahead), then added zero-risk shadow-only logging directly to demo1_m1/demo1_m3's real live engine instead of deploying demo3.",
+      "finding": "The backtest revealed the two filters have OPPOSITE effects per timeframe: candle-color filter +$122.58 on demo1_m1 (only skips 39% of trades) but -$41.94 on demo1_m3; tick-volume filter +$151.02 on demo1_m3 (only skips 21%) but -$59.82 on demo1_m1. Combining both (demo3's original design) nets to roughly break-even on both while skipping 46-65% of all trades -- the worst of the three options, since requiring both conditions cancels out each timeframe's own real edge with the other's harmful one.",
+      "decision": "demo3_m1/demo3_m3's code stays committed but is NOT deployed/running anywhere. Added non-blocking shadow fields (shadow_closed_in_favor, shadow_low_volume, shadow_tick_volume) to every real trade_entered log line on demo1_m1/demo1_m3 -- computed but never acted on, real trading unchanged. Will check after 1-2 weeks of real forward data whether shadow-flagged trades actually tended to lose, before considering any live rule change. Also caught and fixed a real bug while building this: a bare pandas .quantile() comparison returns numpy.bool_/numpy.float64, which json.dumps() cannot serialize -- would have crashed real logging in production."
+    },
+    {
+      "date": "2026-09-01",
+      "title": "Time-of-day (Point 5) backtested and shadow-logged too",
+      "category": "Investigation",
+      "context": "The 00:00-04:00 broker/app-time window was the single strongest, most consistent finding of the whole research session (positive in all 4 accounts independently) but hadn't been given the same trade-by-trade rigor as the entry-quality points -- built scripts/simulate_time_of_day_window.py to fix that.",
+      "finding": "\"Only trade the best window\" is a bad idea -- cuts 82-90% of all trades and costs real money on both accounts (-$11.58 demo1_m1, -$449.70 demo1_m3). \"Exclude the worst window\" (08:00-12:00 broker time) is genuinely promising on demo1_m1: +$179.88, only cutting 15% of trades -- the best cost/benefit ratio found in the entire research session. On demo1_m3 it's a small cost (-$23.64, only 11 trades), and notably contradicts an earlier per-account check that had shown this window clearly negative for demo1_m3 -- the picture shifted as more real data came in.",
+      "decision": "Added shadow_app_hour and shadow_in_excluded_window fields to demo1_m1/demo1_m3's real trade_entered log line, same non-blocking pattern as the entry filters -- no live MT5 offset measurement needed since the candle's own timestamp is already raw broker/app time. Will re-check with real forward data before considering an actual session exclusion."
     }
   ]
 }
