@@ -17,11 +17,14 @@ with it rather than expecting the tunnel to strip it):
     GET  /apiconnect/{account}/status     that account's status (see below)
     POST /apiconnect/{account}/start      launch that account's main.py if not running
     POST /apiconnect/{account}/stop       activate that account's kill switch
-    POST /apiconnect/stop-all             activate EVERY configured account's kill
-                                           switch in one call (master "all off")
-    POST /apiconnect/start-all            start EVERY configured account in one call
-                                           (master "all on") — no per-account
-                                           confirmation; see note on the endpoint
+    POST /apiconnect/stop-all             activate every configured DEMO account's
+                                           kill switch in one call (master "all
+                                           off") — real-money (live_execute)
+                                           accounts are deliberately excluded,
+                                           see note on the endpoint
+    POST /apiconnect/start-all            start every configured DEMO account in
+                                           one call (master "all on") — same
+                                           live_execute exclusion as stop-all
     GET  /apiconnect/{account}/analytics  daily/hourly P/L breakdown + win
                                            rate, computed live from that
                                            account's local trade ledger
@@ -402,10 +405,19 @@ def stop(config: AppConfig = Depends(get_account_config)):
 
 @router.post("/stop-all", dependencies=[Depends(verify_api_key)])
 def stop_all():
-    """Master 'all off' — activates every configured account's kill
-    switch in one call, independent of per-account UI state."""
+    """Master 'all off' — activates every configured DEMO account's kill
+    switch in one call, independent of per-account UI state.
+
+    UPDATED 2026-09-01, explicit user decision: real-money accounts
+    (execution.mode == live_execute) are now deliberately EXCLUDED from
+    the mobile app's single master toggle -- the user wants that one
+    tap/switch to only ever touch demo accounts. A live account still has
+    its own per-account /stop endpoint if it's ever genuinely needed;
+    this master toggle just never reaches it anymore."""
     results = []
     for account, kill_switch in app.state.kill_switches.items():
+        if app.state.configs[account].execution.mode == "live_execute":
+            continue
         was_active = kill_switch.is_active()
         if not was_active:
             kill_switch.activate(reason="Stopped via API (stop-all)")
@@ -415,17 +427,20 @@ def stop_all():
 
 @router.post("/start-all", dependencies=[Depends(verify_api_key)])
 def start_all():
-    """Master 'all on' — deactivates every configured account's kill
+    """Master 'all on' — deactivates every configured DEMO account's kill
     switch and launches its main.py if not already running, in one call.
 
-    DELIBERATE PRODUCT DECISION, not an oversight: this starts every
-    account with NO per-account confirmation, including live-money
-    accounts once they're set to live_execute. The caller (the mobile
-    app's single master toggle) was explicitly chosen this way — see
-    SETUP.md. If that ever needs to change, add confirmation in the
-    client, not here."""
+    UPDATED 2026-09-01, explicit user decision: real-money accounts
+    (execution.mode == live_execute) are now deliberately EXCLUDED from
+    this master toggle, same as stop_all above -- previously this
+    started every account including live-money ones with no per-account
+    confirmation, which was a deliberate original design choice the user
+    has now explicitly asked to change. A live account still has its own
+    per-account /start endpoint if genuinely needed."""
     results = []
     for account, kill_switch in app.state.kill_switches.items():
+        if app.state.configs[account].execution.mode == "live_execute":
+            continue
         was_active = kill_switch.is_active()
         if was_active:
             kill_switch.deactivate()
