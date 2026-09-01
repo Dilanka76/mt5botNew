@@ -1,0 +1,69 @@
+# demo3_m1 — M1 leg of the dedicated live-research test pair for the
+# "closed in favor" entry filter
+# (bot/strategy/state_machine_dual_cross_confirmed_swap_adx_entryfilter.py).
+# Mirrors demo1_m1's real, current parameters exactly (same SL/TP/
+# breakeven/sessions) so this is a clean A/B test of ONE variable — the
+# new entry filter — against demo1_m1's own real results, not a mix of
+# unrelated differences. Shares its underlying MT5 login with demo3_m3
+# (same pattern as demo1_m1/demo1_m3 and demo2_m1/demo2_m3 — one login,
+# two bot processes, distinguished by magic number). Secrets (MT5 login/
+# password) live in .env.demo3_m1, not here.
+
+mt5:
+  timeout_ms: 10000
+
+symbol: XAUUSDp   # CONFIRM against the real demo3 account before going live — broker symbol suffix has changed before (see project memory)
+timeframe: M1
+candles_to_fetch: 500
+tick_poll_interval_seconds: 1
+
+ema_periods:
+  fast: 5
+  mid: 13
+  slow: 21
+
+# Matches demo1_m1's current live value (gap/EMA5-pullback rule disabled
+# project-wide as of 2026-08-31 — every entry is immediate, gated only by
+# the new closed-in-favor filter this account exists to test).
+gap_threshold_usd: 999999.0
+take_profit_usd: 5.0
+stop_loss_usd: 5.0
+breakeven_trigger_usd: 4.5
+
+strategy_variant: dual_cross_confirmed_swap_adx_entryfilter
+
+swap_adx_filter:
+  adx_period: 14
+  adx_threshold: 25.0
+
+# Sri Lanka time (Asia/Colombo, fixed UTC+5:30, no DST) — matches demo1_m1's current windows.
+sessions:
+  dual_cross_confirmed_swap_adx_entryfilter:
+    - {start: "04:00", end: "08:00"}
+    - {start: "12:00", end: "16:00"}
+    - {start: "16:00", end: "19:00"}
+    - {start: "19:00", end: "22:00"}
+
+position_sizing:
+  - {max_balance: 50, lots: 0.01}
+  - {max_balance: 100, lots: 0.02}
+  - {max_balance: 200, lots: 0.03}
+  - {max_balance: 300, lots: 0.04}
+  - {max_balance: 1000, lots: 0.06}
+  - {max_balance: null, lots: 0.12}
+
+execution:
+  mode: demo_execute
+  require_demo_account: true
+  magic_number: 930001
+  order_deviation_points: 20
+  order_comment: swap-adx-filter
+  reject_manual_trades: true
+  sibling_magic_numbers: [930003]   # demo3_m3, same underlying demo3 MT5 login
+
+logging:
+  log_dir: logs
+  level: INFO
+
+kill_switch:
+  file_path: KILL_SWITCH

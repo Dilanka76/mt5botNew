@@ -63,6 +63,7 @@ from bot.strategy.state_machine_dual_cross_confirmed_entry import DualCrossConfi
 from bot.strategy.state_machine_dual_cross_tight_exit import DualCrossTightExitEngine
 from bot.strategy.state_machine_dual_cross_tight_exit_swap_confirm import DualCrossTightExitSwapConfirmEngine
 from bot.strategy.state_machine_dual_cross_confirmed_swap_adx import DualCrossConfirmedSwapAdxEngine
+from bot.strategy.state_machine_dual_cross_confirmed_swap_adx_entryfilter import DualCrossConfirmedSwapAdxEntryFilterEngine
 from bot.strategy.state_machine_dual_cross_confirmed_swap import DualCrossConfirmedSwapEngine
 from bot.strategy.state_machine_dual_cross_confirmed_adx_m15 import DualCrossConfirmedAdxM15Engine
 from bot.trade_ledger import append_new_trades, trade_ledger_path
@@ -79,6 +80,7 @@ STRATEGY_ENGINES = {
     "dual_cross_tight_exit": DualCrossTightExitEngine,
     "dual_cross_tight_exit_swap_confirm": DualCrossTightExitSwapConfirmEngine,
     "dual_cross_confirmed_swap_adx": DualCrossConfirmedSwapAdxEngine,
+    "dual_cross_confirmed_swap_adx_entryfilter": DualCrossConfirmedSwapAdxEntryFilterEngine,
     "dual_cross_confirmed_swap": DualCrossConfirmedSwapEngine,
     "dual_cross_confirmed_adx_m15": DualCrossConfirmedAdxM15Engine,
     "cross_confirmed": CrossConfirmedEngine,

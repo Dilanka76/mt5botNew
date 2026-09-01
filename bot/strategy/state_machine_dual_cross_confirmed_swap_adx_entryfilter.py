@@ -1,0 +1,769 @@
+"""dual_cross_confirmed_swap_adx_entryfilter — EXPERIMENTAL variant of
+dual_cross_confirmed_swap_adx, built 2026-09-01 for a dedicated demo3
+test account, strategy_variant=dual_cross_confirmed_swap_adx_entryfilter.
+
+**The one real difference from dual_cross_confirmed_swap_adx**: adds a
+"closed in favor" entry filter, based on real-data research from
+scripts/analyze_entry_quality.py's "confirming candle closed IN the
+trade's favor" breakdown (242 real trades across all 4 accounts,
+2026-09-01). Every entry already only fires on an already-CLOSED
+confirming candle -- this filter additionally requires that candle's own
+open->close direction to agree with the trade (a green/up candle for a
+BUY, a red/down candle for a SELL), not just that the EMA13/21 lines
+crossed. If the candle closed AGAINST the trade direction, the entry is
+skipped entirely (logged as entry_filtered_against_candle) rather than
+taken.
+
+Real evidence behind this (see the research log / project memory for the
+full per-account breakdown): candles that closed in the trade's favor
+won more often and made more money than candles that closed against it,
+in EVERY one of the 4 real accounts checked -- but the SIZE of that edge
+varied a lot per account (strong on demo1_m1 and demo2_m3, weak on
+demo1_m3 and demo2_m1), and the most dramatic version of the finding
+(demo2_m3) was based on only 14 real trades. NOT yet trustworthy enough
+to change demo1's or demo2's live entry rule -- this dedicated demo3
+account exists specifically to test this ONE rule live, on fresh data,
+before it's ever considered for demo1/demo2. Everything else in this
+engine (2-candle+ADX swap debounce, pending-reversal stop-tightening,
+candle-based + tick-based breakeven check) is UNCHANGED from
+dual_cross_confirmed_swap_adx -- see that file's own docstring below for
+the full inherited history.
+
+======================================================================
+Original dual_cross_confirmed_swap_adx docstring follows, unchanged —
+strategy_variant=dual_cross_confirmed_swap_adx.
+
+Deployed LIVE to demo1_m1/demo1_m3 2026-08-20, WITHOUT a prior backtest —
+explicit user decision, made the same way several earlier variants in
+this project were: judge it on real results, not backtest P/L (see
+[[feedback-live-trading-discipline]]). No real-trade data exists for this
+variant yet at deploy time.
+
+Built on user's explicit instruction 2026-08-20, after reviewing real
+entry-type data: drop tick-based tolerance entry entirely, every entry is
+close-confirmed only, and (as a direct structural consequence, also
+explicitly requested) the $3 early-exit net goes away too — since a
+close-confirmed entry has always opened already-validated (see
+dual_cross_tight_exit's original design), removing tick-based entry means
+NO position is EVER unvalidated any more, so that net's condition can
+never be true. Rather than leave that dead code sitting around, this is a
+genuinely new, simpler engine — not a config flag on top of
+dual_cross_tight_exit_swap_confirm_adx.
+
+Keeps, unchanged from dual_cross_tight_exit_swap_confirm_adx:
+  - The 2-candle swap-confirm debounce (arm on first confirmed opposite
+    cross, fire only if the very next candle still opposes the held
+    direction).
+  - The ADX(14) >= threshold gate on top of that (default 25.0) — swap
+    only actually fires if ADX also clears the bar at the confirming
+    candle; below that, blocked (category swap_blocked_low_adx), pending
+    reversal thrown away, held position keeps running untouched.
+  - $5 take-profit (broker-side), unchanged.
+
+Structurally simpler than every dual_cross_tight_exit-family engine
+before it:
+  - Every position opens already validated — there is no "unvalidated"
+    state at all in this engine, so there is also no "own-candle
+    validation" step, no validation_failed category, no
+    early_exit_unconfirmed category, and no one-tick-attempt-per-candle
+    tracking (nothing to track — there are no tick-based attempts).
+  - The $15 stop-loss is checked on every position from the moment it
+    opens (previously only active once a tick-based entry had survived
+    its own candle's close) — this is the one real risk trade-off of
+    removing the $3 net: a bad entry's worst case before TP/swap now
+    rides all the way to $15 instead of being capped at ~$3, since there
+    is no tighter net any more. Explicitly acknowledged to the user
+    before building.
+
+Requires a df_with_emas that also has an "adx" column precomputed (see
+bot.indicators.adx.compute_adx) — scripts/backtest.py wires this in
+whenever config.swap_adx_filter is set. Does NOT require a
+dual_cross_tight_exit config section at all (no tick tolerance, no early
+net) — only stop_loss_usd, take_profit_usd, and swap_adx_filter.
+
+**$5 gap + EMA5-pullback rule added 2026-08-20** (the original "day one"
+rule, merged in from dual_cross_tight_exit_gap_ema5's design), applying
+ONLY to the flat entry path — explicitly NOT to the swap's re-entry,
+confirmed with the user via a concrete before-building example:
+
+  - When a confirmed close-based cross would normally trigger a fresh
+    entry from flat, first check the gap between that candle's close
+    price and EMA13: gap = |close - ema13|.
+  - gap < gap_threshold_usd (reuses the existing top-level
+    gap_threshold_usd config field, $5 in the real configs): enter
+    immediately, exactly as before this addition.
+  - gap >= gap_threshold_usd: do NOT enter yet. Remember the setup
+    (direction only) as pending, and wait for a later tick where price
+    pulls back and touches EMA5. Only then does the trade actually open
+    (still opens fully validated, same as every entry in this engine).
+  - If a genuine confirmed cross happens in the OPPOSITE direction while
+    a setup is still pending (EMA5 never touched), the pending setup is
+    thrown away outright — no trade from it, ever.
+
+The swap's own re-entry (when the 2-candle+ADX-confirmed reversal fires)
+is completely UNCHANGED by this — it still opens immediately, at
+whatever price, the instant the swap executes. Reasoning discussed with
+the user: the swap already carries its own "is this real" confirmation
+(2 candles + ADX); adding a pullback-wait on top of that could leave the
+bot flat with no position right after closing the old one, missing the
+very reversal the swap exists to catch, if price never pulls back to
+EMA5. The user confirmed keeping the swap immediate rather than gating it
+too, after seeing that trade-off explained with numbers.
+
+**Pending-reversal stop-loss tightening, added 2026-08-24 (NOT YET
+DEPLOYED — built, awaiting explicit user go-ahead).** User's concern: the
+2-candle+ADX debounce is good at avoiding whipsaw flips, but during the
+wait for the second candle, the HELD position keeps carrying its full
+original stop-loss risk even though the first opposing candle is already
+real evidence something may be going wrong. Solution, built after
+tracing real 2026-08-24 data (both a case where this helps — two quick
+stop-loss losses that would have been roughly halved — and a case where
+it wouldn't have hurt — a trade with two false-alarm warnings that still
+recovered and won, where price never got close to where a tightened stop
+would sit):
+
+  - The instant the FIRST opposing candle arms `pending_reversal_direction`
+    (logged as `swap_pending`), the held position's stop-loss is
+    immediately tightened to HALF the account's normal stop distance
+    (e.g. $7.50 instead of $15 on demo1_m3, $2.50 instead of $5 on
+    demo1_m1) — computed fresh from the position's own entry price via
+    `_compute_stop_loss(direction, entry_price, distance_usd)`'s new
+    optional `distance_usd` parameter (defaults to the full
+    `config.stop_loss_usd` everywhere else it's called — entries, and
+    reconcile_on_startup's self-heal path — only the swap_pending branch
+    passes the halved value).
+  - If the swap then fires (2nd candle + ADX both pass): moot — the old
+    position closes at market regardless of its stop-loss value, and the
+    NEW position opens with its own fresh, full-size stop.
+  - If the swap is blocked by ADX (2nd candle confirms, ADX too weak):
+    the tightened stop STAYS tightened for the rest of that position's
+    life — explicit user decision — two candles opposing the trade in a
+    row is a real warning sign even without ADX confirming, so the extra
+    protection is kept rather than restored to full.
+  - If no second opposing candle ever arrives and the market goes back in
+    the position's favor: the tightened stop just sits there unused
+    unless price happens to dip into it first — not explicitly
+    traded-off against restoring to full in that specific case, since it
+    never came up in the real examples checked; worth watching for.
+  - `on_tick()`'s stop-loss-hit log line now reports the ACTUAL distance
+    that fired (`abs(entry_price - stop_loss)`), not always the base
+    `config.stop_loss_usd` — it would otherwise misleadingly say e.g.
+    "$5.00 stop-loss hit" even when the tightened $2.50 stop is what
+    actually triggered.
+
+**ADX-momentum entry filter — added 2026-08-24/25, REMOVED 2026-08-27.**
+Required ADX to be RISING versus the previous candle on every flat entry
+(not a fixed threshold like 25 — that was explicitly rejected, an
+earlier fixed-threshold design had blocked the vast majority of real
+signals). Built after tracing two real losses where ADX was already
+falling before entry and a violent single-candle spike hit the stop
+before any EMA reversal could register.
+
+Removed after real evidence outgrew the two losses that motivated it:
+`scripts/simulate_blocked_adx_signals.py` automatically traced every one
+of the 41 real signals this filter blocked across its two days live
+(cross-checked against 4 hand-traced signals first, exact match on all
+4) — 27 would-be wins (~+$810) vs. 14 would-be losses (~-$720), net
+**~+$90 that the filter cost, not saved**. It was blocking more good
+trades than bad ones. Explicit user decision to remove
+("i think both 1m and 3m no need that... it makes miss changes").
+`self.prev_adx` and its tracking were removed too, not just disabled —
+no longer read anywhere. Every flat entry now takes any confirmed
+EMA13/21 cross again, exactly as before 2026-08-24, gated only by the
+$5 gap + EMA5-pullback rule below.
+
+Does NOT affect the swap/reversal path — that still keeps its own
+unchanged 2-candle + fixed-25-threshold ADX gate, plus the
+pending-reversal stop-tightening above (both still live, both
+unaffected by this removal).
+"""
+from __future__ import annotations
+
+import logging
+import math
+import time
+from dataclasses import dataclass
+
+import MetaTrader5 as mt5
+import pandas as pd
+
+from bot.config import AppConfig
+from bot.execution.trade_executor import TradeExecutor
+from bot.logging_setup.logger import log_decision
+from bot.mt5_connector import MT5Connector
+from bot.risk.position_sizing import calculate_lots
+from bot.sessions import is_within_session
+from bot.strategy.cross_detector import CrossState, Direction
+from bot.strategy.state_machine import POSITION_CLOSE_GRACE_PERIOD_SECONDS, TradeState
+from bot.strategy.state_machine_dual_cross import ClosedTrade, DualPosition, OpenedTrade
+
+logger = logging.getLogger("bot.strategy.state_machine_dual_cross_confirmed_swap_adx_entryfilter")
+
+
+def _classify(ema13: float, ema21: float) -> CrossState | None:
+    if ema13 > ema21:
+        return CrossState.ABOVE
+    if ema13 < ema21:
+        return CrossState.BELOW
+    return None  # exactly equal — indeterminate, treated as no signal
+
+
+@dataclass
+class PendingSetup:
+    """A flat-entry setup whose gap was too wide to enter immediately —
+    waiting for a pullback to EMA5. Only ever exists while self.position
+    is None (see module docstring — never interacts with the swap path)."""
+    direction: Direction
+    reason: str
+    cross_candle_time: pd.Timestamp | None
+    gap: float
+
+
+class DualCrossConfirmedSwapAdxEntryFilterEngine:
+    def __init__(self, config: AppConfig, connector: MT5Connector, executor: TradeExecutor):
+        if config.stop_loss_usd is None:
+            raise ValueError(
+                "strategy_variant=dual_cross_confirmed_swap_adx_entryfilter requires stop_loss_usd to be set."
+            )
+        if config.swap_adx_filter is None:
+            raise ValueError(
+                "strategy_variant=dual_cross_confirmed_swap_adx_entryfilter requires a "
+                "'swap_adx_filter:' config section."
+            )
+        if config.gap_threshold_usd is None:
+            raise ValueError(
+                "strategy_variant=dual_cross_confirmed_swap_adx_entryfilter requires gap_threshold_usd to be set "
+                "(the $5 gap + EMA5-pullback rule on flat entries)."
+            )
+        self.config = config
+        self.connector = connector
+        self.executor = executor
+
+        self.state = TradeState.IDLE
+        self.position: DualPosition | None = None
+        self.pending: PendingSetup | None = None
+        self.prev_ema13: float | None = None
+        self.prev_ema21: float | None = None
+        self.current_ema5: float | None = None
+        self.current_candle_time: pd.Timestamp | None = None
+        # Armed by a confirmed opposite cross while a position is held;
+        # only survives exactly one more candle — see module docstring.
+        self.pending_reversal_direction: Direction | None = None
+
+    def _active_sessions(self) -> list:
+        return self.config.sessions["dual_cross_confirmed_swap_adx_entryfilter"]
+
+    def _compute_stop_loss(self, direction: Direction, entry_price: float, distance_usd: float | None = None) -> float:
+        distance = distance_usd if distance_usd is not None else self.config.stop_loss_usd
+        return (
+            entry_price - distance if direction == Direction.BUY
+            else entry_price + distance
+        )
+
+    def _closed_in_favor(self, direction: Direction, candle) -> bool:
+        """The EXPERIMENTAL entry filter this variant exists to test (see
+        module docstring): does the confirming candle's own open->close
+        direction agree with the trade -- a green/up candle for a BUY, a
+        red/down candle for a SELL? Same definition as
+        scripts/analyze_entry_quality.py's "closed_in_favor" metric, for
+        direct comparability with the real-data research behind this.
+        Used at BOTH entry points (flat and swap-reversal)."""
+        if direction == Direction.BUY:
+            return float(candle["close"]) > float(candle["open"])
+        return float(candle["close"]) < float(candle["open"])
+
+    def _reject_manual_positions(self) -> None:
+        if not self.config.execution.reject_manual_trades:
+            return
+        shadow = self.config.execution.mode == "shadow"
+        for position in self.executor.get_all_positions():
+            if position.magic == self.config.execution.magic_number or position.magic in self.config.execution.sibling_magic_numbers:
+                continue
+            try:
+                self.executor.close_position(position.ticket)
+            except Exception:
+                logger.exception(
+                    "Failed to close manual/foreign position ticket=%s — will retry next tick",
+                    position.ticket,
+                )
+                continue
+            log_decision(
+                self.config.symbol,
+                "manual_trade_rejected",
+                f"{'[SHADOW] would close' if shadow else 'closed'} foreign position "
+                f"(magic={position.magic}) not opened by this bot",
+                ticket=position.ticket,
+                direction="BUY" if position.type == mt5.ORDER_TYPE_BUY else "SELL",
+                volume=position.volume,
+                price=position.price_open,
+                magic=position.magic,
+            )
+
+    def reconcile_on_startup(self) -> None:
+        self._reject_manual_positions()
+        broker_position = self.executor.get_open_position()
+        if broker_position is not None:
+            direction = Direction.BUY if broker_position.type == mt5.ORDER_TYPE_BUY else Direction.SELL
+            self.position = DualPosition(
+                direction=direction, ticket=broker_position.ticket, entry_price=broker_position.price_open,
+                take_profit=broker_position.tp, stop_loss=self._compute_stop_loss(direction, broker_position.price_open),
+                cross_candle_time=None, is_concurrent_entry=False, validated=True,
+            )
+            log_decision(
+                self.config.symbol, "position_reconciled",
+                f"Adopted existing {direction.value} position on startup (self-healed)",
+                ticket=broker_position.ticket, entry=broker_position.price_open, tp=broker_position.tp,
+            )
+        self._update_state()
+
+    def _update_state(self) -> None:
+        self.state = TradeState.IN_POSITION if self.position is not None else TradeState.IDLE
+
+    def _maybe_enter_or_pend(
+        self, direction: Direction, price_now: float, ema13_now: float, base_reason: str,
+        cross_candle_time_override: pd.Timestamp | None,
+    ) -> OpenedTrade | None:
+        """Flat-entry-only gap check (see module docstring) — NEVER called
+        from the swap path, which always enters immediately via _enter()
+        directly."""
+        gap = abs(price_now - ema13_now)
+        if gap < self.config.gap_threshold_usd:
+            return self._enter(
+                direction,
+                reason=f"{base_reason}, gap={gap:.2f} < ${self.config.gap_threshold_usd:.2f} threshold -> immediate entry",
+                cross_candle_time_override=cross_candle_time_override,
+            )
+        else:
+            self.pending = PendingSetup(
+                direction=direction,
+                reason=f"{base_reason}, gap={gap:.2f} >= ${self.config.gap_threshold_usd:.2f} threshold",
+                cross_candle_time=cross_candle_time_override,
+                gap=gap,
+            )
+            log_decision(
+                self.config.symbol, "setup_pending",
+                f"{direction.value} {self.pending.reason} -> waiting for EMA5 touch",
+            )
+            return None
+
+    def on_new_candle(self, df_with_emas: pd.DataFrame) -> list[OpenedTrade | ClosedTrade]:
+        events: list[OpenedTrade | ClosedTrade] = []
+        last_closed = df_with_emas.iloc[-2]
+        last_closed_time = last_closed.name
+        ema5 = float(last_closed["ema5"])
+        ema13 = float(last_closed["ema13"])
+        ema21 = float(last_closed["ema21"])
+        exit_price = float(last_closed["close"])
+
+        # Candle-based breakeven check (2026-08-31 addition, real incident):
+        # the tick-based check in on_tick() only samples price once per
+        # tick_poll_interval_seconds (typically 1s) -- a real trade's tick
+        # history showed the live bid crossing the trigger for well under a
+        # second (~40ms) and being missed entirely by that single snapshot.
+        # This catches it retroactively using data already fetched for
+        # cross detection (no extra API calls): if the JUST-CLOSED candle's
+        # favorable extreme (high for BUY, low for SELL) reached the
+        # trigger at any point during that period, arm breakeven now even
+        # though the live tick poll missed the exact moment. Runs BEFORE
+        # the swap/reversal logic below so an already-armed breakeven stop
+        # (== entry price, strictly better than any tightened distance)
+        # doesn't get overwritten by the pending-reversal tightening
+        # further down -- see that branch's own guard.
+        if (
+            self.position is not None
+            and self.config.breakeven_trigger_usd is not None
+            and not self.position.breakeven_armed
+        ):
+            if self.position.direction == Direction.BUY:
+                candle_favorable = float(last_closed["high"]) - self.position.entry_price
+            else:
+                candle_favorable = self.position.entry_price - float(last_closed["low"])
+            if candle_favorable >= self.config.breakeven_trigger_usd:
+                self.position.breakeven_armed = True
+                self.position.stop_loss = self.position.entry_price
+                log_decision(
+                    self.config.symbol, "breakeven_armed",
+                    f"Candle {last_closed_time} range reached ${candle_favorable:.2f} (>= "
+                    f"${self.config.breakeven_trigger_usd:.2f} trigger) -> stop-loss moved to entry "
+                    f"{self.position.entry_price:.2f} (caught via candle high/low, not the live tick poll)",
+                )
+
+        # No own-candle-validation step here at all — every position opens
+        # already validated (see module docstring), so there is nothing to
+        # check on the candle following entry.
+
+        # Reversal — requires 2 consecutive candles when a position is
+        # held, then an ADX gate on top of that. Fresh entries from flat
+        # are untouched (no pending concept applies there at all).
+        if self.prev_ema13 is not None and self.prev_ema21 is not None:
+            prev_state = _classify(self.prev_ema13, self.prev_ema21)
+            new_state = _classify(ema13, ema21)
+            is_confirmed_cross = prev_state is not None and new_state is not None and prev_state != new_state
+
+            if self.position is not None:
+                held_state = CrossState.ABOVE if self.position.direction == Direction.BUY else CrossState.BELOW
+                if new_state is not None and new_state != held_state:
+                    direction = Direction.BUY if new_state == CrossState.ABOVE else Direction.SELL
+                    if self.pending_reversal_direction == direction:
+                        # 2-candle confirmation just passed -> ADX gate.
+                        adx_value = last_closed["adx"]
+                        adx_ok = not math.isnan(adx_value) and adx_value >= self.config.swap_adx_filter.adx_threshold
+                        if adx_ok:
+                            events.append(self._close_position(
+                                category="swapped_confirmed_reversal",
+                                reason=(
+                                    f"{direction.value} cross confirmed TWO candles in a row (this candle: "
+                                    f"ema13={ema13:.2f}, ema21={ema21:.2f}, adx={adx_value:.1f} >= "
+                                    f"{self.config.swap_adx_filter.adx_threshold:.1f}) -> closing the opposite "
+                                    f"{self.position.direction.value} now, regardless of P/L"
+                                ),
+                                exit_price=exit_price,
+                            ))
+                            self.pending_reversal_direction = None
+                            if not is_within_session(self._active_sessions()):
+                                log_decision(
+                                    self.config.symbol, "cross_ignored_outside_session",
+                                    f"{direction.value} confirmed cross (2-candle) at {last_closed_time}, no session open",
+                                )
+                            elif not self._closed_in_favor(direction, last_closed):
+                                log_decision(
+                                    self.config.symbol, "entry_filtered_against_candle",
+                                    f"{direction.value} confirmed cross (2-candle reversal) at {last_closed_time}, but "
+                                    f"the confirming candle closed AGAINST the trade (open={last_closed['open']:.2f}, "
+                                    f"close={last_closed['close']:.2f}) -> entry skipped (experimental filter), "
+                                    f"staying flat",
+                                )
+                            else:
+                                opened = self._enter(
+                                    direction,
+                                    reason=(
+                                        f"close-confirmed (2-candle reversal): candle still shows {direction.value} "
+                                        f"(ema13={ema13:.2f}, ema21={ema21:.2f}), confirmed again after the prior "
+                                        f"candle's first signal, closed in favor (open={last_closed['open']:.2f}, "
+                                        f"close={last_closed['close']:.2f})"
+                                    ),
+                                    cross_candle_time_override=last_closed_time,
+                                )
+                                if opened is not None:
+                                    events.append(opened)
+                        else:
+                            log_decision(
+                                self.config.symbol, "swap_blocked_low_adx",
+                                f"{direction.value} cross confirmed TWO candles in a row (ema13={ema13:.2f}, "
+                                f"ema21={ema21:.2f}) but adx="
+                                f"{'nan' if math.isnan(adx_value) else f'{adx_value:.1f}'} < "
+                                f"{self.config.swap_adx_filter.adx_threshold:.1f} -> swap BLOCKED, "
+                                f"{self.position.direction.value} position keeps running with its stop-loss "
+                                f"still tightened from the pending-reversal warning (stays tightened, not "
+                                f"restored -- two opposing candles in a row is a real warning sign even "
+                                f"without ADX confirming)",
+                            )
+                            self.pending_reversal_direction = None
+                    else:
+                        self.pending_reversal_direction = direction
+                        # Tighten the HELD position's stop-loss to half its
+                        # normal distance the instant the first opposing
+                        # candle appears -- real evidence the trade might be
+                        # going wrong, even before the 2-candle+ADX bar is
+                        # cleared. If the swap later fires, this is moot
+                        # (a fresh position with its own full stop opens).
+                        # If it's blocked by ADX, the tightened stop STAYS
+                        # (explicit user decision 2026-08-24) -- two candles
+                        # opposing the trade in a row is a real warning sign
+                        # even without ADX confirming. Traced against real
+                        # 2026-08-24 data before building: on two real
+                        # losing trades this would have roughly halved the
+                        # loss; on a trade with two false-alarm warnings
+                        # that still won, price never got remotely close to
+                        # where the tightened stop would sit, so it
+                        # wouldn't have caused an early false exit either.
+                        #
+                        # SKIPPED if breakeven already armed: a breakeven
+                        # stop sits exactly at entry (guaranteed >= $0
+                        # outcome), which is strictly better than any
+                        # tightened-but-still-losing distance -- moving it
+                        # here would undo real protection the trade already
+                        # earned (2026-08-31 fix, found while investigating
+                        # why a real trade's breakeven never armed).
+                        if self.position.breakeven_armed:
+                            log_decision(
+                                self.config.symbol, "swap_pending_breakeven_kept",
+                                f"{direction.value} candle close (ema13={ema13:.2f}, ema21={ema21:.2f}) opposes "
+                                f"held {self.position.direction.value} position but not swapped yet -> stop-loss "
+                                f"stays at breakeven-armed entry price {self.position.stop_loss:.2f}, NOT "
+                                f"tightened to a worse level",
+                            )
+                        else:
+                            tightened_distance = self.config.stop_loss_usd / 2
+                            old_stop_loss = self.position.stop_loss
+                            self.position.stop_loss = self._compute_stop_loss(
+                                self.position.direction, self.position.entry_price, tightened_distance,
+                            )
+                            log_decision(
+                                self.config.symbol, "swap_pending",
+                                f"{direction.value} candle close (ema13={ema13:.2f}, "
+                                f"ema21={ema21:.2f}) opposes held {self.position.direction.value} position but "
+                                f"not swapped yet -> waiting for next candle to confirm before acting; "
+                                f"stop-loss tightened to ${tightened_distance:.2f} (was ${self.config.stop_loss_usd:.2f}) "
+                                f"at {self.position.stop_loss:.2f} (was {old_stop_loss:.2f})",
+                            )
+                else:
+                    if self.pending_reversal_direction is not None:
+                        log_decision(
+                            self.config.symbol, "pending_cancelled",
+                            f"Pending {self.pending_reversal_direction.value} reversal not reconfirmed "
+                            f"this candle -> cancelled, {self.position.direction.value} position keeps running",
+                        )
+                    self.pending_reversal_direction = None
+            else:
+                # Flat -> the ONLY entry path this engine has: a genuine,
+                # already-closed-candle EMA13/21 cross, now gated by the
+                # $5 gap + EMA5-pullback rule (see module docstring). No
+                # tick-based tolerance path exists at all in this engine.
+                self.pending_reversal_direction = None
+                direction = (Direction.BUY if new_state == CrossState.ABOVE else Direction.SELL) if is_confirmed_cross else None
+                if is_confirmed_cross:
+                    # Rule 1: a genuine opposite confirmed cross cancels
+                    # any still-pending setup outright, before considering
+                    # this new cross at all.
+                    if self.pending is not None and self.pending.direction != direction:
+                        log_decision(
+                            self.config.symbol, "pending_cancelled",
+                            f"{direction.value} cross confirmed at candle close -> cancelling pending "
+                            f"{self.pending.direction.value} setup (EMA5 never touched, gap was {self.pending.gap:.2f})",
+                        )
+                        self.pending = None
+
+                    if not is_within_session(self._active_sessions()):
+                        log_decision(
+                            self.config.symbol, "cross_ignored_outside_session",
+                            f"{direction.value} confirmed cross at {last_closed_time}, no session open",
+                        )
+                    elif not self._closed_in_favor(direction, last_closed):
+                        # THE experimental filter this variant exists to
+                        # test -- see module docstring and
+                        # scripts/analyze_entry_quality.py. Deliberately
+                        # NOT the same mistake as the old ADX-momentum
+                        # filter (which blocked more good trades than bad
+                        # ones): that one is why this variant lives on its
+                        # own dedicated demo3 account instead of going
+                        # straight onto demo1/demo2.
+                        log_decision(
+                            self.config.symbol, "entry_filtered_against_candle",
+                            f"{direction.value} confirmed cross at {last_closed_time}, but the confirming candle "
+                            f"closed AGAINST the trade (open={last_closed['open']:.2f}, close={last_closed['close']:.2f}) "
+                            f"-> entry skipped (experimental filter), staying flat",
+                        )
+                    else:
+                        # ADX-momentum entry filter (required ADX rising
+                        # vs the previous candle) was tried 2026-08-24/25
+                        # and REMOVED 2026-08-27 -- explicit user decision,
+                        # backed by real data: automated trace of all 41
+                        # real signals it blocked across its 2 days live
+                        # (scripts/simulate_blocked_adx_signals.py,
+                        # cross-checked against 4 hand-traced signals,
+                        # exact match) showed 27 would-be wins (~+$810) vs
+                        # 14 would-be losses (~-$720) -- net ~+$90 LOST by
+                        # having the filter, not saved. It was blocking
+                        # more good trades than bad ones. See
+                        # [[project_dual_cross_and_cross_confirmed]] for
+                        # the full history if this is ever revisited.
+                        opened = self._maybe_enter_or_pend(
+                            direction, exit_price, ema13,
+                            base_reason=(
+                                f"close-confirmed: candle closed with a genuine "
+                                f"{prev_state.value}->{new_state.value} cross (ema13={ema13:.2f}, "
+                                f"ema21={ema21:.2f})"
+                            ),
+                            cross_candle_time_override=last_closed_time,
+                        )
+                        if opened is not None:
+                            events.append(opened)
+
+        self.prev_ema13 = ema13
+        self.prev_ema21 = ema21
+        self.current_ema5 = ema5
+        self.current_candle_time = df_with_emas.index[-1]
+        self._update_state()
+        return events
+
+    def _check_ema5_touch(self, tick) -> OpenedTrade | None:
+        """The only entry-related check on_tick() does: has price pulled
+        back to touch EMA5 for a still-pending flat-entry setup? Never
+        interacts with the swap path (self.pending only ever exists while
+        self.position is None — see PendingSetup's docstring)."""
+        if self.pending is None or self.position is not None or self.current_ema5 is None:
+            return None
+        pending = self.pending
+        touched = (
+            (pending.direction == Direction.BUY and tick.bid <= self.current_ema5)
+            or (pending.direction == Direction.SELL and tick.bid >= self.current_ema5)
+        )
+        if not touched:
+            return None
+        if not is_within_session(self._active_sessions()):
+            log_decision(
+                self.config.symbol, "pending_touch_outside_session",
+                f"EMA5 touch reached for pending {pending.direction.value} setup, but no session open",
+            )
+            self.pending = None
+            return None
+        opened = self._enter(
+            pending.direction,
+            reason=f"EMA5 touch at {tick.bid:.2f} for pending {pending.direction.value} setup ({pending.reason})",
+            cross_candle_time_override=pending.cross_candle_time,
+        )
+        self.pending = None
+        return opened
+
+    def on_tick(self, tick) -> list[OpenedTrade | ClosedTrade]:
+        # The only entry logic here is the EMA5-touch check for a pending
+        # flat-entry setup below — everything else (fresh close-confirmed
+        # entries, swap re-entries) happens in on_new_candle(). Otherwise
+        # this just checks an EXISTING position for the $15 stop-loss or a
+        # broker-side TP/close, every tick.
+        events: list[OpenedTrade | ClosedTrade] = []
+        self._reject_manual_positions()
+
+        live_tickets: set | None = None
+        if self.config.execution.mode != "shadow" and self.position is not None:
+            live_tickets = {p.ticket for p in self.executor.get_open_positions()}
+
+        if self.position is not None:
+            position = self.position
+            if time.monotonic() - position.opened_monotonic >= POSITION_CLOSE_GRACE_PERIOD_SECONDS:
+                # Breakeven-stop (config.breakeven_trigger_usd, only set on
+                # accounts that want it -- explicit user request 2026-08-31,
+                # M1 only: once floating profit reaches this many dollars,
+                # move the stop-loss to the entry price ONE-WAY (never
+                # un-arms) so the trade can never turn into a real loss
+                # once this close to take-profit. Checked BEFORE the
+                # stop_hit check below so the same tick can act on the
+                # freshly-moved stop, same ordering as the pending-reversal
+                # tightening in on_new_candle().
+                if self.config.breakeven_trigger_usd is not None and not position.breakeven_armed:
+                    favorable = (
+                        tick.bid - position.entry_price if position.direction == Direction.BUY
+                        else position.entry_price - tick.bid
+                    )
+                    if favorable >= self.config.breakeven_trigger_usd:
+                        position.breakeven_armed = True
+                        position.stop_loss = position.entry_price
+                        log_decision(
+                            self.config.symbol, "breakeven_armed",
+                            f"Floating profit reached ${favorable:.2f} (>= ${self.config.breakeven_trigger_usd:.2f} "
+                            f"trigger) -> stop-loss moved to entry {position.entry_price:.2f}",
+                        )
+
+                stop_hit = (
+                    (position.direction == Direction.BUY and tick.bid <= position.stop_loss)
+                    or (position.direction == Direction.SELL and tick.bid >= position.stop_loss)
+                )
+                if stop_hit:
+                    # Report the ACTUAL distance that fired, not always the
+                    # base config value -- position.stop_loss may have been
+                    # tightened to half by a pending-reversal warning (see
+                    # the swap_pending branch in on_new_candle()), and the
+                    # log must reflect what really happened, not the
+                    # account's normal stop size.
+                    actual_distance = abs(position.entry_price - position.stop_loss)
+                    # Distinct category when the stop that fired was the
+                    # breakeven-armed one (stop_loss == entry_price) -- a
+                    # $0 exit is a very different real outcome from a
+                    # genuine stop-loss hit, and conflating them would
+                    # mislead every category-breakdown analysis this
+                    # project relies on (see generate_analytics_json.py/
+                    # full_strategy_analysis.py's item2_categories).
+                    if position.breakeven_armed and abs(position.stop_loss - position.entry_price) < 1e-9:
+                        events.append(self._close_position(
+                            category="breakeven",
+                            reason=f"Breakeven-stop hit at {position.stop_loss:.2f} (armed at "
+                                   f"+${self.config.breakeven_trigger_usd:.2f} floating profit, price reversed to entry)",
+                            exit_price=position.stop_loss,
+                        ))
+                    else:
+                        events.append(self._close_position(
+                            category="stop_loss",
+                            reason=f"${actual_distance:.2f} stop-loss hit at {position.stop_loss:.2f}",
+                            exit_price=position.stop_loss,
+                        ))
+                else:
+                    if self.config.execution.mode == "shadow":
+                        tp_hit = (
+                            (position.direction == Direction.BUY and tick.bid >= position.take_profit)
+                            or (position.direction == Direction.SELL and tick.bid <= position.take_profit)
+                        )
+                        if tp_hit:
+                            events.append(self._record_broker_closed(
+                                reason=f"[SHADOW] would have hit TP at {position.take_profit:.2f}",
+                                exit_price=position.take_profit,
+                            ))
+                    else:
+                        if position.ticket not in live_tickets:
+                            events.append(self._record_broker_closed(
+                                reason="position no longer open on broker (TP fill or external close)",
+                                exit_price=position.take_profit,
+                            ))
+
+        pending_opened = self._check_ema5_touch(tick)
+        if pending_opened is not None:
+            events.append(pending_opened)
+
+        self._update_state()
+        return events
+
+    def _enter(
+        self,
+        direction: Direction,
+        reason: str,
+        cross_candle_time_override: pd.Timestamp | None = None,
+    ) -> OpenedTrade | None:
+        balance = self.connector.account_info().balance
+        lots = calculate_lots(balance, self.config.position_sizing)
+        result = self.executor.open_market_order(direction, lots, self.config.take_profit_usd)
+
+        cross_candle_time = (
+            cross_candle_time_override if cross_candle_time_override is not None else self.current_candle_time
+        )
+        self.position = DualPosition(
+            direction=direction, ticket=result.ticket, entry_price=result.price,
+            take_profit=result.take_profit, stop_loss=self._compute_stop_loss(direction, result.price),
+            cross_candle_time=cross_candle_time, is_concurrent_entry=False, validated=True,
+        )
+
+        log_decision(
+            self.config.symbol, "trade_entered", reason,
+            direction=direction.value, lots=lots, entry=result.price, tp=result.take_profit,
+            stop_loss=self.position.stop_loss, balance=balance, pre_validated=True,
+        )
+
+        return OpenedTrade(
+            direction=direction, ticket=result.ticket, entry_price=result.price,
+            take_profit=result.take_profit, stop_loss=self.position.stop_loss,
+            cross_candle_time=cross_candle_time, is_concurrent_entry=False, is_fallback_entry=True,
+        )
+
+    def _close_position(self, category: str, reason: str, exit_price: float) -> ClosedTrade:
+        position = self.position
+        self.position = None
+        self.executor.close_position(position.ticket)
+        log_decision(
+            self.config.symbol, "trade_exited", reason,
+            direction=position.direction.value, entry=position.entry_price, ticket=position.ticket, category=category,
+        )
+        return ClosedTrade(
+            direction=position.direction, ticket=position.ticket, entry_price=position.entry_price,
+            exit_price=exit_price, category=category, reason=reason,
+        )
+
+    def _record_broker_closed(self, reason: str, exit_price: float) -> ClosedTrade:
+        position = self.position
+        self.position = None
+        log_decision(
+            self.config.symbol, "trade_closed_tp", reason,
+            direction=position.direction.value, ticket=position.ticket,
+        )
+        return ClosedTrade(
+            direction=position.direction, ticket=position.ticket, entry_price=position.entry_price,
+            exit_price=exit_price, category="take_profit", reason=reason,
+        )

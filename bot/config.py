@@ -424,6 +424,22 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
                 f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
             )
 
+    if strategy_variant == "dual_cross_confirmed_swap_adx_entryfilter":
+        # Same requirements as dual_cross_confirmed_swap_adx -- this is
+        # that engine plus one extra entry filter, see
+        # bot/strategy/state_machine_dual_cross_confirmed_swap_adx_entryfilter.py's
+        # module docstring.
+        if swap_adx_filter is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_confirmed_swap_adx_entryfilter' but no "
+                f"'swap_adx_filter:' section is present."
+            )
+        if raw.get("stop_loss_usd") is None:
+            raise ValueError(
+                f"{settings_path}: strategy_variant is 'dual_cross_confirmed_swap_adx_entryfilter' but "
+                f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
+            )
+
     if strategy_variant == "dual_cross_confirmed_swap":
         # Deliberately does NOT require swap_adx_filter or
         # dual_cross_tight_exit — this variant has no tick-based entry, no
