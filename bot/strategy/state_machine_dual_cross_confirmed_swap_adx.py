@@ -495,6 +495,20 @@ class DualCrossConfirmedSwapAdxEngine:
                             self.position.stop_loss = self._compute_stop_loss(
                                 self.position.direction, self.position.entry_price, tightened_distance,
                             )
+                            # SHADOW-ONLY, 2026-09-01: the earliest real-time
+                            # moment this risk becomes visible at all -- log
+                            # what an IMMEDIATE swap (demo2's design) would
+                            # have executed at RIGHT NOW, so a later trade-by-
+                            # trade comparison (scripts/simulate_swap_debounce_cost.py)
+                            # doesn't have to reconstruct it after the fact.
+                            # Does not change any real behavior -- the
+                            # position keeps running exactly as before.
+                            shadow_immediate_swap_price = exit_price
+                            shadow_immediate_swap_pl_per_unit = (
+                                (shadow_immediate_swap_price - self.position.entry_price)
+                                if self.position.direction == Direction.BUY
+                                else (self.position.entry_price - shadow_immediate_swap_price)
+                            )
                             log_decision(
                                 self.config.symbol, "swap_pending",
                                 f"{direction.value} candle close (ema13={ema13:.2f}, "
@@ -502,6 +516,8 @@ class DualCrossConfirmedSwapAdxEngine:
                                 f"not swapped yet -> waiting for next candle to confirm before acting; "
                                 f"stop-loss tightened to ${tightened_distance:.2f} (was ${self.config.stop_loss_usd:.2f}) "
                                 f"at {self.position.stop_loss:.2f} (was {old_stop_loss:.2f})",
+                                shadow_immediate_swap_price=shadow_immediate_swap_price,
+                                shadow_immediate_swap_pl_per_unit=round(shadow_immediate_swap_pl_per_unit, 2),
                             )
                 else:
                     if self.pending_reversal_direction is not None:
