@@ -114,20 +114,10 @@ def main() -> None:
             favor = closed_in_favor(t["direction"], row)
             low_vol, vol_actual, vol_threshold = low_volume(df, candle_time)
 
-            would_enter = favor and not low_vol
-            if favor and not low_vol:
-                reason = "PASS"
-            elif not favor and low_vol:
-                reason = "color+volume"
-            elif not favor:
-                reason = "color"
-            else:
-                reason = "volume"
-
             rows.append({
                 "time": entry_utc, "direction": t["direction"], "profit": t["profit"],
                 "favor": favor, "low_vol": low_vol, "vol_actual": vol_actual,
-                "vol_threshold": vol_threshold, "would_enter": would_enter, "reason": reason,
+                "vol_threshold": vol_threshold,
             })
 
         if not rows:
@@ -136,27 +126,28 @@ def main() -> None:
 
         actual_total = sum(r["profit"] for r in rows)
         actual_wins = sum(1 for r in rows if r["profit"] > 0)
-        kept = [r for r in rows if r["would_enter"]]
-        skipped = [r for r in rows if not r["would_enter"]]
-        kept_total = sum(r["profit"] for r in kept)
-        kept_wins = sum(1 for r in kept if r["profit"] > 0)
-        skipped_total = sum(r["profit"] for r in skipped)
-        skipped_wins = sum(1 for r in skipped if r["profit"] > 0)
 
         print(f"{'=' * 70}\n{account}: {len(rows)} real trades matched, since {args.since}\n{'=' * 70}")
-        print(f"ACTUAL (no filter):     {len(rows)} trades, {actual_wins} wins "
-              f"({100 * actual_wins / len(rows):.1f}%), total P/L ${actual_total:+.2f}")
-        print(f"WOULD ENTER (filtered): {len(kept)} trades, {kept_wins} wins "
-              f"({100 * kept_wins / len(kept) if kept else 0:.1f}%), total P/L ${kept_total:+.2f}")
-        print(f"WOULD SKIP:             {len(skipped)} trades, {skipped_wins} wins "
-              f"({100 * skipped_wins / len(skipped) if skipped else 0:.1f}%), total P/L ${skipped_total:+.2f}")
-        print(f"  -- by reason: color-only={sum(1 for r in skipped if r['reason'] == 'color')}, "
-              f"volume-only={sum(1 for r in skipped if r['reason'] == 'volume')}, "
-              f"both={sum(1 for r in skipped if r['reason'] == 'color+volume')}")
-        diff = kept_total - actual_total
-        print(f"\n*** HYPOTHETICAL RESULT: ${kept_total:+.2f} vs actual ${actual_total:+.2f} "
-              f"-> the filter would have {'ADDED' if diff > 0 else 'COST'} ${abs(diff):.2f} "
-              f"(by skipping {len(skipped)} of {len(rows)} real trades) ***\n")
+        print(f"ACTUAL (no filter):  {len(rows)} trades, {actual_wins} wins "
+              f"({100 * actual_wins / len(rows):.1f}%), total P/L ${actual_total:+.2f}\n")
+
+        variants = [
+            ("Color-only",  lambda r: r["favor"]),
+            ("Volume-only", lambda r: not r["low_vol"]),
+            ("Combined (both required)", lambda r: r["favor"] and not r["low_vol"]),
+        ]
+        for label, keep_fn in variants:
+            kept = [r for r in rows if keep_fn(r)]
+            skipped = [r for r in rows if not keep_fn(r)]
+            kept_total = sum(r["profit"] for r in kept)
+            kept_wins = sum(1 for r in kept if r["profit"] > 0)
+            diff = kept_total - actual_total
+            print(f"  {label}:")
+            print(f"    Would enter: {len(kept)} trades, {kept_wins} wins "
+                  f"({100 * kept_wins / len(kept) if kept else 0:.1f}%), total P/L ${kept_total:+.2f}")
+            print(f"    Would skip:  {len(skipped)} trades, total P/L ${sum(r['profit'] for r in skipped):+.2f}")
+            print(f"    -> {'ADDED' if diff > 0 else 'COST'} ${abs(diff):.2f} vs actual "
+                  f"(skipped {len(skipped)} of {len(rows)} trades, {100 * len(skipped) / len(rows):.0f}%)\n")
 
 
 if __name__ == "__main__":
