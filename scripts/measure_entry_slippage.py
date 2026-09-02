@@ -157,13 +157,20 @@ def main() -> None:
 
         print(f"{'=' * 70}\n{account}: {n} real entries matched, since {args.since}\n{'=' * 70}")
         print(f"  Avg slippage: ${avg_slippage:+.3f}/price-unit (positive = fill worse than theoretical close)")
-        print(f"  Avg detection+execution lag: {avg_lag:+.2f}s (candle-close to real fill log)")
+        print(f"  Avg detection+execution lag: {avg_lag:+.2f}s (candle-close to real fill log) "
+              f"[UNVERIFIED -- large negative values seen in practice, likely a candle-matching issue "
+              f"on debounce/swap entries; do not trust this figure without further investigation, "
+              f"the $ slippage numbers above/below do not depend on it]")
         print(f"  Worse-than-close fills: {len(worse)} ({100*len(worse)/n:.0f}%), best/worst: "
               f"${max_worse:+.2f}")
         print(f"  Better-than-close fills: {len(better)} ({100*len(better)/n:.0f}%), best: ${max_better:+.2f}")
         print(f"  Exact match: {exact}")
-        print(f"  TOTAL real $ cost from slippage this window: ${total_cost:+.2f} "
-              f"(negative = net cost, positive = net benefit)\n")
+        # Same sign convention as avg_slippage above (dollar_cost = slippage
+        # * lots * 100, sign preserved): positive = net cost, negative = net
+        # benefit. (Fixed 2026-09-02 -- first version of this script printed
+        # this label backwards.)
+        print(f"  TOTAL real $ impact from slippage this window: ${total_cost:+.2f} "
+              f"(positive = net cost, negative = net benefit)\n")
 
 
 if __name__ == "__main__":
