@@ -228,6 +228,15 @@ class DualCrossConfirmedSwapAdxEngine:
             else entry_price + distance
         )
 
+    def _breakeven_stop_price(self, direction: Direction, entry_price: float) -> float:
+        """Where the stop goes once breakeven arms -- exactly the entry
+        price by default, or entry +/- config.breakeven_lock_usd if set
+        (locks in a small guaranteed profit instead of exactly $0 on a
+        reversal). Explicit user decision 2026-09-02, M1 accounts only
+        (see settings.demo1_m1.yaml / settings.demo2_m1.yaml)."""
+        lock = self.config.breakeven_lock_usd or 0.0
+        return entry_price + lock if direction == Direction.BUY else entry_price - lock
+
     def _reject_manual_positions(self) -> None:
         if not self.config.execution.reject_manual_trades:
             return
@@ -384,12 +393,13 @@ class DualCrossConfirmedSwapAdxEngine:
                 candle_favorable = self.position.entry_price - float(last_closed["low"])
             if candle_favorable >= self.config.breakeven_trigger_usd:
                 self.position.breakeven_armed = True
-                self.position.stop_loss = self.position.entry_price
+                self.position.stop_loss = self._breakeven_stop_price(self.position.direction, self.position.entry_price)
+                lock_note = f", locking in ${self.config.breakeven_lock_usd:.2f} profit" if self.config.breakeven_lock_usd else ""
                 log_decision(
                     self.config.symbol, "breakeven_armed",
                     f"Candle {last_closed_time} range reached ${candle_favorable:.2f} (>= "
-                    f"${self.config.breakeven_trigger_usd:.2f} trigger) -> stop-loss moved to entry "
-                    f"{self.position.entry_price:.2f} (caught via candle high/low, not the live tick poll)",
+                    f"${self.config.breakeven_trigger_usd:.2f} trigger) -> stop-loss moved to "
+                    f"{self.position.stop_loss:.2f}{lock_note} (caught via candle high/low, not the live tick poll)",
                 )
 
         # No own-candle-validation step here at all — every position opens
@@ -646,11 +656,12 @@ class DualCrossConfirmedSwapAdxEngine:
                     )
                     if favorable >= self.config.breakeven_trigger_usd:
                         position.breakeven_armed = True
-                        position.stop_loss = position.entry_price
+                        position.stop_loss = self._breakeven_stop_price(position.direction, position.entry_price)
+                        lock_note = f", locking in ${self.config.breakeven_lock_usd:.2f} profit" if self.config.breakeven_lock_usd else ""
                         log_decision(
                             self.config.symbol, "breakeven_armed",
                             f"Floating profit reached ${favorable:.2f} (>= ${self.config.breakeven_trigger_usd:.2f} "
-                            f"trigger) -> stop-loss moved to entry {position.entry_price:.2f}",
+                            f"trigger) -> stop-loss moved to {position.stop_loss:.2f}{lock_note}",
                         )
 
                 stop_hit = (
@@ -666,17 +677,27 @@ class DualCrossConfirmedSwapAdxEngine:
                     # account's normal stop size.
                     actual_distance = abs(position.entry_price - position.stop_loss)
                     # Distinct category when the stop that fired was the
-                    # breakeven-armed one (stop_loss == entry_price) -- a
-                    # $0 exit is a very different real outcome from a
-                    # genuine stop-loss hit, and conflating them would
-                    # mislead every category-breakdown analysis this
-                    # project relies on (see generate_analytics_json.py/
+                    # breakeven-armed one -- a near-$0 (or, with
+                    # breakeven_lock_usd set, a small guaranteed-profit)
+                    # exit is a very different real outcome from a genuine
+                    # stop-loss hit, and conflating them would mislead
+                    # every category-breakdown analysis this project
+                    # relies on (see generate_analytics_json.py/
                     # full_strategy_analysis.py's item2_categories).
-                    if position.breakeven_armed and abs(position.stop_loss - position.entry_price) < 1e-9:
+                    # Checking the armed flag alone (not stop_loss ==
+                    # entry_price) is correct now that breakeven_lock_usd
+                    # can move the stop away from exact entry -- once
+                    # armed, on_new_candle()'s swap_pending guard ensures
+                    # nothing else ever moves this stop again.
+                    if position.breakeven_armed:
+                        lock_note = (
+                            f", locked ${self.config.breakeven_lock_usd:.2f} profit"
+                            if self.config.breakeven_lock_usd else ", reversed to entry"
+                        )
                         events.append(self._close_position(
                             category="breakeven",
                             reason=f"Breakeven-stop hit at {position.stop_loss:.2f} (armed at "
-                                   f"+${self.config.breakeven_trigger_usd:.2f} floating profit, price reversed to entry)",
+                                   f"+${self.config.breakeven_trigger_usd:.2f} floating profit{lock_note})",
                             exit_price=position.stop_loss,
                         ))
                     else:

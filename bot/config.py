@@ -248,6 +248,15 @@ class AppConfig:
     # exits. None (default) = off, matching historical behavior. Checked
     # every tick, bot-managed, not broker-side — see docs/STRATEGY.md #10.
     breakeven_trigger_usd: float | None = None
+    # Optional: once breakeven arms, lock in this many dollars of PROFIT
+    # instead of moving the stop to exactly the entry price. E.g. 0.5 with
+    # breakeven_trigger_usd=4.5 means: once floating profit reaches $4.50,
+    # move the stop to entry+0.5 (BUY) / entry-0.5 (SELL) rather than
+    # entry+0 -- a reversal then closes with a small guaranteed profit
+    # instead of exactly $0. Only meaningful if breakeven_trigger_usd is
+    # also set; None/0 (default) = pure breakeven (original behavior,
+    # unchanged). Explicit user decision 2026-09-02, M1 accounts only.
+    breakeven_lock_usd: float | None = None
     # Optional early-entry threshold: while idle (no open position, no
     # pending setup) and the previous candle's real EMA13/21 are known, a
     # provisional EMA13/21 is recomputed on every tick using the CURRENT
@@ -478,6 +487,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         kill_switch=KillSwitchConfig(**raw["kill_switch"]),
         stop_loss_usd=raw.get("stop_loss_usd"),
         breakeven_trigger_usd=raw.get("breakeven_trigger_usd"),
+        breakeven_lock_usd=raw.get("breakeven_lock_usd"),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
         dual_cross=dual_cross,
         dual_cross_confirmed_entry=dual_cross_confirmed_entry,
