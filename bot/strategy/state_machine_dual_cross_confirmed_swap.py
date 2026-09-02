@@ -175,9 +175,50 @@ class DualCrossConfirmedSwapEngine:
     def _update_state(self) -> None:
         self.state = TradeState.IN_POSITION if self.position is not None else TradeState.IDLE
 
+    def _shadow_filter_info(self, direction: Direction, candle, df_with_emas: pd.DataFrame) -> dict:
+        """SHADOW-ONLY, 2026-09-02: ported from the sibling ADX engine
+        (state_machine_dual_cross_confirmed_swap_adx.py) so demo2 also
+        accumulates forward evidence for the same entry-quality research —
+        computes (but never acts on) what the candle-color / tick-volume /
+        time-of-day filters would have said about this REAL entry, attached
+        to the trade_entered log line. Does NOT change trading behavior at
+        all. See [[project_demo3_entryfilter_research]]. Note: the
+        swap-debounce shadow field the ADX engine also logs
+        (shadow_immediate_swap_price/pl_per_unit) does NOT apply here —
+        this engine already swaps immediately, there is no debounce to
+        shadow-compare against."""
+        if direction == Direction.BUY:
+            closed_in_favor = float(candle["close"]) > float(candle["open"])
+        else:
+            closed_in_favor = float(candle["close"]) < float(candle["open"])
+
+        volumes = df_with_emas["tick_volume"].iloc[:-1]
+        vol_threshold = float(volumes.quantile(1 / 3))
+        vol_actual = float(candle["tick_volume"])
+        low_volume = vol_actual < vol_threshold
+
+        # Candle's own index is already raw broker/app time -- no
+        # conversion needed (see bot/data/market_data.get_ohlc).
+        app_hour = candle.name.hour
+        in_excluded_window = 8 <= app_hour < 12
+
+        return {
+            # bool()/float() here matter -- comparisons against a pandas
+            # .quantile() result are numpy.bool_/numpy.float64, which
+            # json.dumps() (used by log_decision) cannot serialize and
+            # would crash real logging in production.
+            "shadow_closed_in_favor": bool(closed_in_favor),
+            "shadow_low_volume": bool(low_volume),
+            "shadow_tick_volume": vol_actual,
+            "shadow_app_hour": int(app_hour),
+            "shadow_in_excluded_window": bool(in_excluded_window),
+            "shadow_volume_threshold": round(vol_threshold, 1),
+        }
+
     def _maybe_enter_or_pend(
         self, direction: Direction, price_now: float, ema13_now: float, base_reason: str,
         cross_candle_time_override: pd.Timestamp | None,
+        shadow_filter_info: dict | None = None,
     ) -> OpenedTrade | None:
         """Flat-entry-only gap check (see module docstring) — NEVER called
         from the swap path, which always enters immediately via _enter()
@@ -188,6 +229,7 @@ class DualCrossConfirmedSwapEngine:
                 direction,
                 reason=f"{base_reason}, gap={gap:.2f} < ${self.config.gap_threshold_usd:.2f} threshold -> immediate entry",
                 cross_candle_time_override=cross_candle_time_override,
+                shadow_filter_info=shadow_filter_info,
             )
         else:
             self.pending = PendingSetup(
@@ -280,6 +322,7 @@ class DualCrossConfirmedSwapEngine:
                                 f"ema21={ema21:.2f})"
                             ),
                             cross_candle_time_override=last_closed_time,
+                            shadow_filter_info=self._shadow_filter_info(direction, last_closed, df_with_emas),
                         )
                         if opened is not None:
                             events.append(opened)
@@ -315,6 +358,7 @@ class DualCrossConfirmedSwapEngine:
                                 f"ema21={ema21:.2f})"
                             ),
                             cross_candle_time_override=last_closed_time,
+                            shadow_filter_info=self._shadow_filter_info(direction, last_closed, df_with_emas),
                         )
                         if opened is not None:
                             events.append(opened)
@@ -453,6 +497,7 @@ class DualCrossConfirmedSwapEngine:
         direction: Direction,
         reason: str,
         cross_candle_time_override: pd.Timestamp | None = None,
+        shadow_filter_info: dict | None = None,
     ) -> OpenedTrade | None:
         balance = self.connector.account_info().balance
         lots = calculate_lots(balance, self.config.position_sizing)
@@ -471,6 +516,7 @@ class DualCrossConfirmedSwapEngine:
             self.config.symbol, "trade_entered", reason,
             direction=direction.value, lots=lots, entry=result.price, tp=result.take_profit,
             stop_loss=self.position.stop_loss, balance=balance, pre_validated=True,
+            **(shadow_filter_info or {}),
         )
 
         return OpenedTrade(
