@@ -180,10 +180,10 @@ class DualCrossConfirmedSwapEngine:
         (state_machine_dual_cross_confirmed_swap_adx.py) so demo2 also
         accumulates forward evidence for the same entry-quality research —
         computes (but never acts on) what the candle-color / tick-volume /
-        time-of-day filters would have said about this REAL entry, attached
-        to the trade_entered log line. Does NOT change trading behavior at
-        all. See [[project_demo3_entryfilter_research]]. Note: the
-        swap-debounce shadow field the ADX engine also logs
+        time-of-day / trend filters would have said about this REAL entry,
+        attached to the trade_entered log line. Does NOT change trading
+        behavior at all. See [[project_demo3_entryfilter_research]]. Note:
+        the swap-debounce shadow field the ADX engine also logs
         (shadow_immediate_swap_price/pl_per_unit) does NOT apply here —
         this engine already swaps immediately, there is no debounce to
         shadow-compare against."""
@@ -202,6 +202,27 @@ class DualCrossConfirmedSwapEngine:
         app_hour = candle.name.hour
         in_excluded_window = 8 <= app_hour < 12
 
+        # Higher-timeframe trend filter, added 2026-09-02 after
+        # scripts/analyze_trend_filter.py's walk-forward-consistent result
+        # on demo2_m3 (EMA50: +$137.64 first half, +$127.02 second half,
+        # only 18% of trades skipped -- the best cost/benefit ratio found
+        # so far). Computed self-contained from df_with_emas["close"]
+        # (already-fetched candle history, no new config/pipeline needed)
+        # -- causal by construction (ewm() at position -2 only depends on
+        # rows before it), same reasoning as compute_emas() itself. NOT
+        # yet a real rule anywhere -- demo1_m1/demo2_m1 walk-forward
+        # results were inconsistent/negative, so this is being logged
+        # everywhere but only expected to matter on the M3 legs.
+        close_price = float(candle["close"])
+        ema50_at_candle = float(df_with_emas["close"].ewm(span=50, adjust=False).mean().iloc[-2])
+        ema100_at_candle = float(df_with_emas["close"].ewm(span=100, adjust=False).mean().iloc[-2])
+        if direction == Direction.BUY:
+            ema50_trend_agree = close_price > ema50_at_candle
+            ema100_trend_agree = close_price > ema100_at_candle
+        else:
+            ema50_trend_agree = close_price < ema50_at_candle
+            ema100_trend_agree = close_price < ema100_at_candle
+
         return {
             # bool()/float() here matter -- comparisons against a pandas
             # .quantile() result are numpy.bool_/numpy.float64, which
@@ -213,6 +234,8 @@ class DualCrossConfirmedSwapEngine:
             "shadow_app_hour": int(app_hour),
             "shadow_in_excluded_window": bool(in_excluded_window),
             "shadow_volume_threshold": round(vol_threshold, 1),
+            "shadow_ema50_trend_agree": bool(ema50_trend_agree),
+            "shadow_ema100_trend_agree": bool(ema100_trend_agree),
         }
 
     def _maybe_enter_or_pend(

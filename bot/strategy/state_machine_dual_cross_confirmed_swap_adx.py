@@ -317,6 +317,27 @@ class DualCrossConfirmedSwapAdxEngine:
         app_hour = candle.name.hour
         in_excluded_window = 8 <= app_hour < 12
 
+        # Higher-timeframe trend filter, added 2026-09-02 after
+        # scripts/analyze_trend_filter.py's walk-forward-consistent result
+        # on the M3 legs (demo1_m3 EMA100: +$57.54 then +$369.96 across
+        # the two halves; demo2_m3 EMA50: +$137.64/+$127.02, best cost/
+        # benefit ratio found). demo1_m1's own walk-forward result was
+        # inconsistent (sign flip / near-zero first half) -- not a proven
+        # edge on M1, logging here anyway for symmetry/future recheck.
+        # Computed self-contained from df_with_emas["close"] (already-
+        # fetched candle history, no new config/pipeline needed) -- causal
+        # by construction (ewm() at position -2 only depends on rows
+        # before it), same reasoning as compute_emas() itself.
+        close_price = float(candle["close"])
+        ema50_at_candle = float(df_with_emas["close"].ewm(span=50, adjust=False).mean().iloc[-2])
+        ema100_at_candle = float(df_with_emas["close"].ewm(span=100, adjust=False).mean().iloc[-2])
+        if direction == Direction.BUY:
+            ema50_trend_agree = close_price > ema50_at_candle
+            ema100_trend_agree = close_price > ema100_at_candle
+        else:
+            ema50_trend_agree = close_price < ema50_at_candle
+            ema100_trend_agree = close_price < ema100_at_candle
+
         return {
             # bool()/float() here matter -- comparisons against a pandas
             # .quantile() result are numpy.bool_/numpy.float64, which
@@ -328,6 +349,8 @@ class DualCrossConfirmedSwapAdxEngine:
             "shadow_app_hour": int(app_hour),
             "shadow_in_excluded_window": bool(in_excluded_window),
             "shadow_volume_threshold": round(vol_threshold, 1),
+            "shadow_ema50_trend_agree": bool(ema50_trend_agree),
+            "shadow_ema100_trend_agree": bool(ema100_trend_agree),
         }
 
     def _maybe_enter_or_pend(
