@@ -10,6 +10,7 @@ trade data.
 
     python scripts/compare_today.py
     python scripts/compare_today.py --pair-a demo1_m1:M1,demo1_m3:M3 --pair-b demo2_m1:M1,demo2_m3:M3
+    python scripts/compare_today.py --date 2026-09-02   # any past trading day, same 03:30-to-03:30 boundary
 
 Read-only: only pulls real closed-trade history, never touches live/demo
 trading.
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import datetime, timezone
+from datetime import date as date_cls, datetime, timezone
 from pathlib import Path
 from statistics import mean
 
@@ -41,6 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--pair-a", default="demo1_m1:M1,demo1_m3:M3")
     parser.add_argument("--pair-b", default="demo2_m1:M1,demo2_m3:M3")
+    parser.add_argument("--date", default=None, help="YYYY-MM-DD trading day to compare (default: today)")
     return parser.parse_args()
 
 
@@ -80,15 +82,15 @@ def main() -> None:
     legs_a = parse_pair(args.pair_a)
     legs_b = parse_pair(args.pair_b)
 
-    today = trading_day(datetime.now(timezone.utc))
-    print(f"Today's trading day (03:30-to-03:30 Sri Lanka time): {today.isoformat()}\n")
+    day = date_cls.fromisoformat(args.date) if args.date else trading_day(datetime.now(timezone.utc))
+    print(f"Trading day (03:30-to-03:30 Sri Lanka time): {day.isoformat()}\n")
 
     print(f"{'=' * 70}\nGathering {args.pair_a}...\n{'=' * 70}")
-    records_a, by_leg_a = today_records(legs_a, today)
+    records_a, by_leg_a = today_records(legs_a, day)
     print(f"\n{'=' * 70}\nGathering {args.pair_b}...\n{'=' * 70}")
-    records_b, by_leg_b = today_records(legs_b, today)
+    records_b, by_leg_b = today_records(legs_b, day)
 
-    print(f"\n{'=' * 70}\nTODAY'S COMPARISON — {today.isoformat()}\n{'=' * 70}")
+    print(f"\n{'=' * 70}\nCOMPARISON — {day.isoformat()}\n{'=' * 70}")
     summarize(args.pair_a, records_a, by_leg_a)
     summarize(args.pair_b, records_b, by_leg_b)
 
@@ -97,9 +99,9 @@ def main() -> None:
     if records_a or records_b:
         leader = args.pair_a if pl_a > pl_b else (args.pair_b if pl_b > pl_a else None)
         if leader:
-            print(f"Ahead today (by P/L): {leader}  (${abs(pl_a - pl_b):.2f} difference)")
+            print(f"Ahead on {day.isoformat()} (by P/L): {leader}  (${abs(pl_a - pl_b):.2f} difference)")
         else:
-            print("Tied on P/L today.")
+            print(f"Tied on P/L on {day.isoformat()}.")
     print(f"{'=' * 70}")
 
 
