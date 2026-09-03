@@ -124,6 +124,7 @@ def main() -> None:
             print(f"{account}: no matched trades in this window.\n")
             continue
 
+        rows.sort(key=lambda r: r["time"])
         actual_total = sum(r["profit"] for r in rows)
         actual_wins = sum(1 for r in rows if r["profit"] > 0)
 
@@ -136,18 +137,37 @@ def main() -> None:
             ("Volume-only", lambda r: not r["low_vol"]),
             ("Combined (both required)", lambda r: r["favor"] and not r["low_vol"]),
         ]
-        for label, keep_fn in variants:
-            kept = [r for r in rows if keep_fn(r)]
-            skipped = [r for r in rows if not keep_fn(r)]
+
+        def slice_report(indent: str, label: str, subset: list[dict], keep_fn) -> None:
+            if not subset:
+                print(f"{indent}{label}: no trades in this slice.")
+                return
+            sub_actual = sum(r["profit"] for r in subset)
+            kept = [r for r in subset if keep_fn(r)]
+            skipped = [r for r in subset if not keep_fn(r)]
             kept_total = sum(r["profit"] for r in kept)
             kept_wins = sum(1 for r in kept if r["profit"] > 0)
-            diff = kept_total - actual_total
+            diff = kept_total - sub_actual
+            print(f"{indent}{label}: enter {len(kept)}/{len(subset)} "
+                  f"({100 * kept_wins / len(kept) if kept else 0:.1f}% win), "
+                  f"P/L ${kept_total:+.2f} vs actual ${sub_actual:+.2f} "
+                  f"-> {'ADDED' if diff > 0 else 'COST'} ${abs(diff):.2f} "
+                  f"(skipped {100 * len(skipped) / len(subset):.0f}%)")
+
+        # Walk-forward split, added 2026-09-03: a filter only counts as
+        # real if BOTH halves agree independently -- full-sample-only
+        # results have twice been misleading in this project (demo1's
+        # color filter looked strong pooled then reversed per-timeframe;
+        # the EMA-separation filter looked strong in buckets but was
+        # unusable trade-by-trade). Same discipline as
+        # scripts/analyze_trend_filter.py.
+        mid = len(rows) // 2
+        for label, keep_fn in variants:
             print(f"  {label}:")
-            print(f"    Would enter: {len(kept)} trades, {kept_wins} wins "
-                  f"({100 * kept_wins / len(kept) if kept else 0:.1f}%), total P/L ${kept_total:+.2f}")
-            print(f"    Would skip:  {len(skipped)} trades, total P/L ${sum(r['profit'] for r in skipped):+.2f}")
-            print(f"    -> {'ADDED' if diff > 0 else 'COST'} ${abs(diff):.2f} vs actual "
-                  f"(skipped {len(skipped)} of {len(rows)} trades, {100 * len(skipped) / len(rows):.0f}%)\n")
+            slice_report("    ", "Full sample ", rows, keep_fn)
+            slice_report("    ", "First half  ", rows[:mid], keep_fn)
+            slice_report("    ", "Second half ", rows[mid:], keep_fn)
+            print()
 
 
 if __name__ == "__main__":
