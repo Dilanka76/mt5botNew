@@ -68,13 +68,25 @@ def cross_price(ema13_prev: float, ema21_prev: float) -> float:
     return (ema21_prev * (1 - K21) - ema13_prev * (1 - K13)) / (K13 - K21)
 
 
-def find_confirming_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
+def find_cross_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
+    """The candle where the EMA13/21 state genuinely CHANGED into this
+    trade's direction -- NOT merely a candle where the EMAs happen to be
+    on the right side.
+
+    This distinction broke the first version of this script (2026-09-04):
+    searching for a candle in the right STATE picks up candles well into
+    an existing trend, where the two EMAs sit far apart. Feeding those
+    into cross_price() demands an enormous move to bridge them and
+    produced absurd results ($133 gaps against a $5 take-profit) and a
+    16-51% validation rate. Detecting the genuine state change -- the
+    same `above != above.shift(1)` test the live engines use -- is the
+    fix."""
+    above = df["ema13"] > df["ema21"]
+    changed = above != above.shift(1)
+    want_above = direction == "BUY"
     w = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
     for idx in reversed(w.index):
-        row = w.loc[idx]
-        if direction == "BUY" and row["ema13"] > row["ema21"]:
-            return idx
-        if direction == "SELL" and row["ema13"] < row["ema21"]:
+        if changed.loc[idx] and bool(above.loc[idx]) == want_above:
             return idx
     return None
 
@@ -98,15 +110,18 @@ def main() -> None:
         df = compute_emas(df, config.ema_periods)
 
         gaps, gaps_win, gaps_loss, in_range = [], [], [], 0
+        unmatched = 0
         for t in raw:
             entry_utc = t["entry_time"].astimezone(timezone.utc)
             if entry_utc < since:
                 continue
-            ct = find_confirming_candle(df, entry_utc, t["direction"])
+            ct = find_cross_candle(df, entry_utc, t["direction"])
             if ct is None:
+                unmatched += 1
                 continue
             pos = df.index.get_loc(ct)
             if pos < 1:
+                unmatched += 1
                 continue
             prev = df.iloc[pos - 1]
             pc = cross_price(float(prev["ema13"]), float(prev["ema21"]))
@@ -136,8 +151,11 @@ def main() -> None:
                   f"({len(gaps_win)} trades)")
             print(f"    median gap on LOSING trades:  ${statistics.median(gaps_loss):.2f}  "
                   f"({len(gaps_loss)} trades)")
-        print(f"  VALIDATION: cross price fell inside the confirming candle's range "
+        print(f"  VALIDATION: cross price fell inside the cross candle's range "
               f"{in_range}/{len(gaps)} times ({100*in_range/len(gaps):.0f}%)")
+        if unmatched:
+            print(f"  ({unmatched} trades had no genuine EMA state-change candle within 30 min "
+                  f"and were excluded)")
         print()
 
 
