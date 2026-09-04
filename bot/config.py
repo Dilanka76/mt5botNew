@@ -257,6 +257,20 @@ class AppConfig:
     # also set; None/0 (default) = pure breakeven (original behavior,
     # unchanged). Explicit user decision 2026-09-02, M1 accounts only.
     breakeven_lock_usd: float | None = None
+    # Optional entry-quality filter: skip a confirmed cross entirely
+    # unless BOTH (a) the confirming candle closed in the trade's own
+    # direction, and (b) its tick volume is NOT in the bottom third of
+    # the trailing candle window. False (default) = off, every confirmed
+    # cross enters as before. Deployed 2026-09-04 to demo1_m3 ONLY, on
+    # real forward shadow data: trades passing both checks won 82%
+    # (demo1_m3) / 77% (demo2_m3), those either check would block won 8%
+    # / 24%. The two checks overlap on only ~10% of skipped trades, so
+    # both are required rather than either alone. M3 ONLY -- on the M1
+    # legs the same checks made results WORSE in the same forward data
+    # (a 1-minute candle's colour/volume is mostly noise). Acts on
+    # exactly the values logged as shadow_closed_in_favor /
+    # shadow_low_volume, so the log and the decision can never diverge.
+    entry_filter_enabled: bool = False
     # Optional early-entry threshold: while idle (no open position, no
     # pending setup) and the previous candle's real EMA13/21 are known, a
     # provisional EMA13/21 is recomputed on every tick using the CURRENT
@@ -488,6 +502,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         stop_loss_usd=raw.get("stop_loss_usd"),
         breakeven_trigger_usd=raw.get("breakeven_trigger_usd"),
         breakeven_lock_usd=raw.get("breakeven_lock_usd"),
+        entry_filter_enabled=bool(raw.get("entry_filter_enabled", False)),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
         dual_cross=dual_cross,
         dual_cross_confirmed_entry=dual_cross_confirmed_entry,

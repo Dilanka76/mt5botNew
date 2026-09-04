@@ -353,6 +353,27 @@ class DualCrossConfirmedSwapAdxEngine:
             "shadow_ema100_trend_agree": bool(ema100_trend_agree),
         }
 
+    def _entry_filter_reason(self, shadow_info: dict) -> str | None:
+        """Real entry filter (config.entry_filter_enabled, demo1_m3 only
+        as of 2026-09-04 -- see bot/config.py for the evidence). Returns
+        None if the entry may proceed, or a human-readable reason if it
+        should be skipped.
+
+        Deliberately reads the SAME dict that gets shadow-logged rather
+        than recomputing, so the decision acted on and the values written
+        to decisions.jsonl can never diverge."""
+        if not self.config.entry_filter_enabled:
+            return None
+        reasons = []
+        if not shadow_info.get("shadow_closed_in_favor", True):
+            reasons.append("confirming candle closed AGAINST the trade direction")
+        if shadow_info.get("shadow_low_volume", False):
+            reasons.append(
+                f"tick volume {shadow_info.get('shadow_tick_volume', 0):.0f} in the bottom third "
+                f"(threshold {shadow_info.get('shadow_volume_threshold', 0):.0f})"
+            )
+        return " + ".join(reasons) if reasons else None
+
     def _maybe_enter_or_pend(
         self, direction: Direction, price_now: float, ema13_now: float, base_reason: str,
         cross_candle_time_override: pd.Timestamp | None,
@@ -463,18 +484,27 @@ class DualCrossConfirmedSwapAdxEngine:
                                     f"{direction.value} confirmed cross (2-candle) at {last_closed_time}, no session open",
                                 )
                             else:
-                                opened = self._enter(
-                                    direction,
-                                    reason=(
-                                        f"close-confirmed (2-candle reversal): candle still shows {direction.value} "
-                                        f"(ema13={ema13:.2f}, ema21={ema21:.2f}), confirmed again after the prior "
-                                        f"candle's first signal"
-                                    ),
-                                    cross_candle_time_override=last_closed_time,
-                                    shadow_filter_info=self._shadow_filter_info(direction, last_closed, df_with_emas),
-                                )
-                                if opened is not None:
-                                    events.append(opened)
+                                shadow_info = self._shadow_filter_info(direction, last_closed, df_with_emas)
+                                filter_reason = self._entry_filter_reason(shadow_info)
+                                if filter_reason is not None:
+                                    log_decision(
+                                        self.config.symbol, "entry_filtered",
+                                        f"{direction.value} swap re-entry SKIPPED by entry filter: {filter_reason}",
+                                        **shadow_info,
+                                    )
+                                else:
+                                    opened = self._enter(
+                                        direction,
+                                        reason=(
+                                            f"close-confirmed (2-candle reversal): candle still shows {direction.value} "
+                                            f"(ema13={ema13:.2f}, ema21={ema21:.2f}), confirmed again after the prior "
+                                            f"candle's first signal"
+                                        ),
+                                        cross_candle_time_override=last_closed_time,
+                                        shadow_filter_info=shadow_info,
+                                    )
+                                    if opened is not None:
+                                        events.append(opened)
                         else:
                             log_decision(
                                 self.config.symbol, "swap_blocked_low_adx",
@@ -598,18 +628,28 @@ class DualCrossConfirmedSwapAdxEngine:
                         # more good trades than bad ones. See
                         # [[project_dual_cross_and_cross_confirmed]] for
                         # the full history if this is ever revisited.
-                        opened = self._maybe_enter_or_pend(
-                            direction, exit_price, ema13,
-                            base_reason=(
-                                f"close-confirmed: candle closed with a genuine "
-                                f"{prev_state.value}->{new_state.value} cross (ema13={ema13:.2f}, "
-                                f"ema21={ema21:.2f})"
-                            ),
-                            cross_candle_time_override=last_closed_time,
-                            shadow_filter_info=self._shadow_filter_info(direction, last_closed, df_with_emas),
-                        )
-                        if opened is not None:
-                            events.append(opened)
+                        shadow_info = self._shadow_filter_info(direction, last_closed, df_with_emas)
+                        filter_reason = self._entry_filter_reason(shadow_info)
+                        if filter_reason is not None:
+                            log_decision(
+                                self.config.symbol, "entry_filtered",
+                                f"{direction.value} entry SKIPPED by entry filter: {filter_reason} "
+                                f"(cross was genuine: ema13={ema13:.2f}, ema21={ema21:.2f})",
+                                **shadow_info,
+                            )
+                        else:
+                            opened = self._maybe_enter_or_pend(
+                                direction, exit_price, ema13,
+                                base_reason=(
+                                    f"close-confirmed: candle closed with a genuine "
+                                    f"{prev_state.value}->{new_state.value} cross (ema13={ema13:.2f}, "
+                                    f"ema21={ema21:.2f})"
+                                ),
+                                cross_candle_time_override=last_closed_time,
+                                shadow_filter_info=shadow_info,
+                            )
+                            if opened is not None:
+                                events.append(opened)
 
         self.prev_ema13 = ema13
         self.prev_ema21 = ema21
