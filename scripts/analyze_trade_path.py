@@ -93,7 +93,12 @@ def main() -> None:
             exit_utc = t["exit_time"].astimezone(timezone.utc)
             if entry_utc < since:
                 continue
-            window = df[(df.index >= entry_utc - timedelta(minutes=5)) & (df.index <= exit_utc)]
+            # Window starts AT entry, never before. An earlier version used a
+            # 5-minute "safety buffer" before entry_utc, which measured price
+            # movement from before the trade existed and produced impossible
+            # results -- winners showing $10 drawdowns against a $5 stop
+            # (2026-09-04). Candles at or after entry_utc only.
+            window = df[(df.index >= entry_utc) & (df.index <= exit_utc)]
             if window.empty:
                 skipped += 1
                 continue
@@ -142,6 +147,16 @@ def main() -> None:
                 print(f"      ever dipped -${lvl:.2f}: {share_at_least(win_mae_price, lvl)}")
             worst = max(win_mae_price)
             print(f"    worst drawdown on a trade that still won: ${worst:.2f}")
+            # Hard sanity check: a winning trade cannot have gone further
+            # against us than its own stop distance -- it would have been
+            # closed as a loss first. If this trips, the measurement is
+            # wrong, not the market (this exact check caught a real bug on
+            # 2026-09-04 where the window started before entry).
+            impossible = [m for m in win_mae_price if m > config.stop_loss_usd + 0.5]
+            if impossible:
+                print(f"    *** WARNING: {len(impossible)} winners show a drawdown deeper than the "
+                      f"${config.stop_loss_usd:.2f} stop (worst ${max(impossible):.2f}). "
+                      f"That is impossible -- DO NOT TRUST THESE NUMBERS. ***")
         if skipped:
             print(f"  ({skipped} trades skipped -- no candle data in window)")
         print()
