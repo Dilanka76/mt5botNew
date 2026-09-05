@@ -51,6 +51,14 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--accounts", default="demo1_m1,demo1_m3,demo2_m1,demo2_m3")
     p.add_argument("--since", required=True, help='"YYYY-MM-DD HH:MM:SS", true UTC')
+    p.add_argument(
+        "--offset-hours", type=float, default=None,
+        help="Broker-vs-UTC offset in hours, supplied DELIBERATELY instead of measuring it live. "
+             "Only needed when the market is CLOSED (weekends), where mt5_utc_offset() correctly "
+             "refuses to measure -- the newest tick is stale and its apparent offset is really its "
+             "age (see project_stale_tick_offset_bug). This broker runs UTC+3, so pass 3. Never "
+             "guess: if the value is wrong every trade timestamp shifts silently.",
+    )
     return p.parse_args()
 
 
@@ -81,6 +89,9 @@ def main() -> None:
     print("Session times -- broker (UTC+3) and Sri Lanka (UTC+5:30):")
     for name, s, e in SESSIONS:
         print(f"  {name:<20} broker {s:02d}:00-{e:02d}:00    Sri Lanka {colombo_label(s, e)}")
+    if args.offset_hours is not None:
+        print(f"\n  NOTE: broker offset SUPPLIED MANUALLY as +{args.offset_hours}h, not measured "
+              f"(market closed).\n        All trade timestamps depend on this being correct.")
     print()
 
     grand: dict[str, list[float]] = {name: [] for name, _, _ in SESSIONS}
@@ -91,7 +102,8 @@ def main() -> None:
         connector = MT5Connector(config.mt5)
         connector.connect()
         try:
-            offset = mt5_utc_offset(connector, config.symbol)
+            offset = (timedelta(hours=args.offset_hours) if args.offset_hours is not None
+                      else mt5_utc_offset(connector, config.symbol))
             raw = get_closed_trades_range(config.symbol, config.execution.magic_number, since, now, offset)
         finally:
             connector.disconnect()
