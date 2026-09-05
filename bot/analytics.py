@@ -19,6 +19,13 @@ COLOMBO = ZoneInfo("Asia/Colombo")
 LOOKBACK_DAYS = 5  # how far before a report date to search for a trade's ENTRY deal, in case it opened earlier
 
 
+class StaleTickError(RuntimeError):
+    """The newest MT5 tick is too old to measure the broker time offset
+    from -- almost always because the market is closed. Raised instead of
+    returning a wrong offset, which would silently corrupt every reported
+    trade time. See mt5_utc_offset()."""
+
+
 def mt5_utc_offset(connector, symbol: str) -> timedelta:
     """Measures, RIGHT NOW, how far MT5's own reported time is from true
     UTC — confirmed 2026-08-19 to be a real, exact offset (MT5 tick.time
@@ -32,11 +39,53 @@ def mt5_utc_offset(connector, symbol: str) -> timedelta:
     datetime.fromtimestamp(x, tz=timezone.utc)) to get true UTC, or by
     ADDING it to a true-UTC query boundary before passing to
     mt5.history_deals_get()/history_orders_get() (which expect MT5's own
-    time convention, not true UTC)."""
+    time convention, not true UTC).
+
+    STALE-TICK GUARD (added 2026-09-05 after a real incident). This
+    measurement only works while ticks are actually flowing: it assumes
+    the newest tick IS "now" in broker time. With the market closed the
+    newest tick is Friday's last one, so the subtraction returns the
+    AGE OF THAT STALE TICK instead of the broker's timezone offset. Run
+    on a Saturday it returned -7.66h instead of the true +3h, silently
+    shifting every reported trade time by 10.66 hours -- which is how it
+    was found, from trades appearing in a loss report at times that did
+    not match decisions.jsonl.
+
+    A broker's server time is a timezone, so a genuine offset is always
+    a multiple of 15 minutes; a live measurement lands within a second
+    or two of one. Anything further off means the tick is stale, and we
+    raise rather than return a wrong number -- silently wrong report
+    times cost more than a failed report. The returned value is snapped
+    to the exact quarter-hour, removing the sub-second measurement noise
+    the old version carried through.
+
+    Residual limitation, deliberately accepted: if the market happened
+    to close an exact multiple of 15 minutes ago, the staleness check
+    cannot tell. Nothing cheap distinguishes that case, and it is far
+    narrower than the bug it replaces."""
     tick = connector.get_tick(symbol)
     mt5_now = datetime.fromtimestamp(tick.time, tz=timezone.utc)
     true_now = datetime.now(timezone.utc)
-    return mt5_now - true_now
+    raw = mt5_now - true_now
+
+    quarter = timedelta(minutes=15)
+    nearest = round(raw / quarter) * quarter
+    drift = abs(raw - nearest)
+    if drift > timedelta(seconds=120):
+        raise StaleTickError(
+            f"Cannot measure the MT5 time offset for {symbol}: the newest tick is stale.\n"
+            f"  newest tick (read as UTC): {mt5_now.isoformat()}\n"
+            f"  true UTC now             : {true_now.isoformat()}\n"
+            f"  raw difference           : {raw} "
+            f"({raw.total_seconds()/3600:+.2f}h)\n"
+            f"  nearest valid offset     : {nearest} -- off by {drift}, far more than a live "
+            f"tick's 1-2 seconds.\n"
+            f"A real broker offset is always a whole quarter-hour. This almost always means the "
+            f"market is CLOSED (weekend or holiday) and the newest tick is left over from the "
+            f"last session. Re-run when the market is open. Refusing to return a wrong offset -- "
+            f"it would silently shift every reported trade time."
+        )
+    return nearest
 
 
 def trade_profit(exit_deal, entry_deal) -> float:
