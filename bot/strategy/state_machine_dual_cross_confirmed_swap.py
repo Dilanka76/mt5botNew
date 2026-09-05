@@ -67,6 +67,10 @@ from bot.strategy.state_machine_dual_cross import ClosedTrade, DualPosition, Ope
 
 logger = logging.getLogger("bot.strategy.state_machine_dual_cross_confirmed_swap")
 
+# Candles used for the shadow Efficiency Ratio (Kaufman). 20 is the
+# standard default and what the research used.
+ER_LOOKBACK = 20
+
 
 def _classify(ema13: float, ema21: float) -> CrossState | None:
     if ema13 > ema21:
@@ -223,6 +227,51 @@ class DualCrossConfirmedSwapEngine:
             ema50_trend_agree = close_price < ema50_at_candle
             ema100_trend_agree = close_price < ema100_at_candle
 
+
+        # Kaufman Efficiency Ratio, added 2026-09-05. STANDARD indicator
+        # (the core of his Adaptive Moving Average), not invented here:
+        # net directional move over the last 20 candles divided by the
+        # total distance travelled. Near 1 = clean trend, near 0 = chop.
+        # Scale-free 0..1, so a fixed threshold means the same thing in
+        # all conditions -- unlike tick volume, which needs a rolling
+        # percentile.
+        #
+        # SHADOW ONLY. Historical evidence is the strongest this project
+        # has produced -- scripts/analyze_er_vs_adx.py, using a measure
+        # immune to the losing-period artifact, found high ER beat low ER
+        # in BOTH halves on BOTH M3 accounts (demo1_m3 +$23.16 vs -$11.90
+        # per trade; demo2_m3 +$16.57 vs -$12.76) and REVERSED on both M1
+        # accounts. But it is all historical: three filters have already
+        # behaved differently live than in backtest (colour, volume, and
+        # the EMA50/100 trend filter, which looked walk-forward-consistent
+        # and then hurt on all four accounts). So this logs only.
+        #
+        # Also confirmed NOT redundant with the ADX demo1 already
+        # computes -- correlation just +0.20 to +0.31.
+        #
+        # Two definitions, because the standard one is blind to what
+        # happens INSIDE a candle (a bar that spikes $6 up, crashes $12
+        # down and closes flat reads as calm). Stops are hit
+        # intra-candle, so the true-range version may predict better.
+        # Both causal: computed on closed candles up to index -2 only.
+        er_window = df_with_emas.iloc[-(ER_LOOKBACK + 2):-1]
+        er_close_only = er_true_range = None
+        if len(er_window) >= ER_LOOKBACK + 1:
+            er_closes = er_window["close"]
+            er_net = abs(float(er_closes.iloc[-1]) - float(er_closes.iloc[0]))
+            er_total_close = float(er_closes.diff().abs().sum())
+            er_prev_close = er_closes.shift(1)
+            er_tr = pd.concat([
+                er_window["high"] - er_window["low"],
+                (er_window["high"] - er_prev_close).abs(),
+                (er_window["low"] - er_prev_close).abs(),
+            ], axis=1).max(axis=1)
+            er_total_tr = float(er_tr.iloc[1:].sum())
+            if er_total_close > 0:
+                er_close_only = er_net / er_total_close
+            if er_total_tr > 0:
+                er_true_range = er_net / er_total_tr
+
         return {
             # bool()/float() here matter -- comparisons against a pandas
             # .quantile() result are numpy.bool_/numpy.float64, which
@@ -234,6 +283,8 @@ class DualCrossConfirmedSwapEngine:
             "shadow_app_hour": int(app_hour),
             "shadow_in_excluded_window": bool(in_excluded_window),
             "shadow_volume_threshold": round(vol_threshold, 1),
+            "shadow_er_close": round(er_close_only, 4) if er_close_only is not None else None,
+            "shadow_er_truerange": round(er_true_range, 4) if er_true_range is not None else None,
             "shadow_ema50_trend_agree": bool(ema50_trend_agree),
             "shadow_ema100_trend_agree": bool(ema100_trend_agree),
         }
