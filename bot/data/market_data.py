@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 import MetaTrader5 as mt5
@@ -39,6 +39,7 @@ def get_ohlc(connector: MT5Connector, symbol: str, timeframe_str: str, count: in
 
 def get_ohlc_range(
     connector: MT5Connector, symbol: str, timeframe_str: str, date_from: datetime, date_to: datetime,
+    offset: timedelta | None = None,
 ) -> pd.DataFrame:
     """Fetch every candle for `symbol` between `date_from` and `date_to`
     (inclusive, both must be UTC-aware) — for backtesting, where get_ohlc's
@@ -62,10 +63,20 @@ def get_ohlc_range(
     shifted into MT5's convention before fetching, and the returned
     timestamps are shifted back to true UTC before being returned, so
     every caller of this function always deals in true UTC only.
+
+    `offset` is measured live by default. Pass it explicitly ONLY when
+    the market is closed (weekends), where mt5_utc_offset() correctly
+    refuses to measure — the newest tick is stale and its apparent offset
+    is really its age (see bot.analytics.StaleTickError and
+    [[project_stale_tick_offset_bug]]). Analysis scripts expose this as
+    `--offset-hours`. Never pass a guess: a wrong offset silently shifts
+    every candle timestamp, which is exactly the bug class the live
+    measurement exists to prevent.
     """
     connector.ensure_symbol(symbol)
     timeframe = connector.resolve_timeframe(timeframe_str)
-    offset = mt5_utc_offset(connector, symbol)
+    if offset is None:
+        offset = mt5_utc_offset(connector, symbol)
 
     chunks: list[pd.DataFrame] = []
     chunk_start = date_from + offset

@@ -148,7 +148,8 @@ def main() -> None:
             offset = (timedelta(hours=args.offset_hours) if args.offset_hours is not None
                       else mt5_utc_offset(connector, config.symbol))
             raw = get_closed_trades_range(config.symbol, config.execution.magic_number, since, now, offset)
-            df = get_ohlc_range(connector, config.symbol, config.timeframe, since - timedelta(days=5), now)
+            df = get_ohlc_range(connector, config.symbol, config.timeframe, since - timedelta(days=5), now,
+                                offset=offset)
         finally:
             connector.disconnect()
         df = compute_emas(df, config.ema_periods)
