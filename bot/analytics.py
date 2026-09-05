@@ -19,6 +19,15 @@ COLOMBO = ZoneInfo("Asia/Colombo")
 LOOKBACK_DAYS = 5  # how far before a report date to search for a trade's ENTRY deal, in case it opened earlier
 
 
+# Plausible range for this broker's server-time offset. It has been UTC+3
+# throughout this project; a DST change shifts a server clock by exactly
+# one hour. Anything outside this means the measurement is bad (almost
+# always a stale tick from a closed market) -- or the broker genuinely
+# moved, which is worth a human's attention rather than silent acceptance.
+PLAUSIBLE_OFFSET_MIN = timedelta(hours=1)
+PLAUSIBLE_OFFSET_MAX = timedelta(hours=4)
+
+
 class StaleTickError(RuntimeError):
     """The newest MT5 tick is too old to measure the broker time offset
     from -- almost always because the market is closed. Raised instead of
@@ -71,6 +80,36 @@ def mt5_utc_offset(connector, symbol: str) -> timedelta:
     quarter = timedelta(minutes=15)
     nearest = round(raw / quarter) * quarter
     drift = abs(raw - nearest)
+
+    # PLAUSIBILITY CHECK -- the quarter-hour test alone is NOT enough. A
+    # stale tick's apparent offset sweeps continuously as the clock
+    # advances, so every 15 minutes it passes within seconds of a
+    # quarter-hour value and looks valid. That hole was hit within
+    # minutes of shipping the first version of this guard: a Saturday
+    # run returned -7:45:00, which is not even a real timezone, and
+    # produced a report whose times were all wrong by a clean-looking
+    # amount. Shape alone proves nothing; the value must also be
+    # possible. This broker has been UTC+3 for the life of this project
+    # and a DST shift moves a server clock by exactly one hour, so
+    # anything outside this window means a stale tick -- or a genuine
+    # broker change, which should stop a human rather than be absorbed
+    # silently.
+    if not (PLAUSIBLE_OFFSET_MIN <= nearest <= PLAUSIBLE_OFFSET_MAX):
+        raise StaleTickError(
+            f"Implausible MT5 time offset for {symbol}: {nearest} "
+            f"({nearest.total_seconds()/3600:+.2f}h).\n"
+            f"  newest tick (read as UTC): {mt5_now.isoformat()}\n"
+            f"  true UTC now             : {true_now.isoformat()}\n"
+            f"  raw difference           : {raw} ({raw.total_seconds()/3600:+.2f}h)\n"
+            f"Expected between {PLAUSIBLE_OFFSET_MIN} and {PLAUSIBLE_OFFSET_MAX} "
+            f"(this broker runs UTC+3; DST moves a server clock by one hour at most).\n"
+            f"This almost always means the market is CLOSED and the newest tick is left over "
+            f"from the last session -- its apparent 'offset' is really the tick's age. Re-run "
+            f"when the market is open.\n"
+            f"If the broker has genuinely changed its server timezone, update "
+            f"PLAUSIBLE_OFFSET_MIN/MAX in bot/analytics.py deliberately, after confirming it."
+        )
+
     if drift > timedelta(seconds=120):
         raise StaleTickError(
             f"Cannot measure the MT5 time offset for {symbol}: the newest tick is stale.\n"
