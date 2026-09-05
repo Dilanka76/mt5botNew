@@ -41,6 +41,8 @@ EXCLUDED_WINDOW = (8, 12)  # broker/app-time hours, worst window per 2026-09-01 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--accounts", default="demo1_m1,demo1_m3,demo2_m1,demo2_m3")
+    parser.add_argument("--date", default=None,
+                        help="YYYY-MM-DD Colombo calendar day to report (default: today)")
     return parser.parse_args()
 
 
@@ -96,11 +98,18 @@ def main() -> None:
     args = parse_args()
     accounts = [validate_account_name(a) for a in args.accounts.split(",")]
 
-    today_colombo = datetime.now(COLOMBO).date()
+    if args.date:
+        today_colombo = datetime.strptime(args.date, "%Y-%m-%d").date()
+    else:
+        today_colombo = datetime.now(COLOMBO).date()
     day_start = datetime.combine(today_colombo, datetime.min.time(), tzinfo=COLOMBO).astimezone(timezone.utc)
-    day_end = datetime.now(timezone.utc)
+    # For a past day, stop at that day's own end rather than "now".
+    day_end = min(
+        datetime.combine(today_colombo, datetime.max.time(), tzinfo=COLOMBO).astimezone(timezone.utc),
+        datetime.now(timezone.utc),
+    )
 
-    print(f"Today (Colombo calendar day): {today_colombo.isoformat()}\n")
+    print(f"Colombo calendar day: {today_colombo.isoformat()}\n")
 
     grand_total = 0.0
     grand_loss_total = 0.0
