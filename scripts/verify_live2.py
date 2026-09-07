@@ -87,6 +87,12 @@ def main() -> None:
             a, b = src_flat.get(key, "<missing>"), tgt_flat.get(key, "<missing>")
             if a == b:
                 continue
+            # A key absent on one side and explicitly null on the other is
+            # the SAME setting -- both mean "off". Flagging that as a
+            # difference is noise, and noise in a pre-flight check is how
+            # a real difference gets skimmed past.
+            if {a, b} <= {"<missing>", None}:
+                continue
             leaf = key.split(".")[-1]
             if leaf in EXPECTED_DIFFS:
                 print(f"  expected diff  {key}: {a} -> {b}")
@@ -143,9 +149,30 @@ def main() -> None:
                 if info.trade_mode == 0:
                     print("    <-- this terminal is on a DEMO account, not a live one")
                     problems.append(f"{target}: connected terminal is a demo account")
-            print(f"  symbol {config.symbol}: {'found' if symbol else 'NOT FOUND <-- check the broker suffix'}")
-            if symbol is None:
+            if symbol is not None:
+                print(f"  symbol {config.symbol}: found")
+            else:
+                print(f"  symbol {config.symbol}: NOT FOUND on this account")
                 problems.append(f"{target}: symbol {config.symbol} not available")
+                # Live accounts routinely use a different suffix from demo
+                # (XAUUSD, XAUUSD.r, XAUUSDm ...). Guessing is how you end
+                # up trading the wrong instrument, so list the real ones.
+                try:
+                    connector.connect()
+                    try:
+                        candidates = [s.name for s in (mt5.symbols_get() or []) if "XAU" in s.name.upper()]
+                    finally:
+                        connector.disconnect()
+                    if candidates:
+                        print("    gold symbols this account DOES offer:")
+                        for name in sorted(candidates):
+                            print(f"      {name}")
+                        print("    Put the right one in BOTH live2 configs' `symbol:` field.")
+                    else:
+                        print("    No XAU symbol found at all -- the account may not have gold")
+                        print("    enabled, or Market Watch may need 'Show All' in the terminal.")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"    (could not list symbols: {exc})")
         except Exception as exc:  # noqa: BLE001
             print(f"  MT5 CONNECTION FAILED: {exc}")
             problems.append(f"{target}: cannot connect ({exc})")
