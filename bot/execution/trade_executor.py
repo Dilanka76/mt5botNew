@@ -131,6 +131,58 @@ class TradeExecutor:
         )
         return OrderResult(ticket=result.order, price=price, take_profit=take_profit)
 
+    def set_sltp(self, ticket: int | None, stop_loss: float | None, take_profit: float | None) -> bool:
+        """Sets a REAL broker-side stop-loss and/or take-profit on an open
+        position. Pass 0.0 to clear one; None to leave it unchanged.
+
+        Until this was added (2026-09-07) nothing in this project ever
+        placed a broker-side stop -- open_market_order sends only "tp", and
+        every stop-loss is enforced in software by the engine's polling
+        loop, which closes at market when it notices the level was passed.
+        That is fine while the bot is alive and worthless if it is not.
+
+        The TP-runner rule needs this: it removes the broker take-profit so
+        a winner can keep running, which would otherwise leave the position
+        with NO broker-side order at all -- no target and no stop -- for as
+        long as it runs. Setting a real stop at the locked profit means the
+        broker closes the trade in profit even if the bot dies, which is
+        strictly safer than how every trade behaves today.
+
+        Returns True on success. A failure here is NOT raised: the software
+        stop is still running and still protects the position, so a
+        rejected modify must not take down the trading loop. It is logged
+        loudly instead.
+        """
+        if self.config.mode == "shadow":
+            logger.info("[SHADOW] Would set ticket=%s sl=%s tp=%s", ticket, stop_loss, take_profit)
+            return True
+
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            logger.warning("set_sltp: ticket %s not found (already closed?)", ticket)
+            return False
+        position = positions[0]
+
+        request = {
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": position.symbol,
+            "position": ticket,
+            "sl": position.sl if stop_loss is None else stop_loss,
+            "tp": position.tp if take_profit is None else take_profit,
+        }
+
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            logger.error(
+                "set_sltp failed (software stop still active): ticket=%s sl=%s tp=%s result=%s "
+                "mt5.last_error()=%s",
+                ticket, stop_loss, take_profit, result, mt5.last_error(),
+            )
+            return False
+
+        logger.info("set_sltp: ticket=%s sl=%s tp=%s", ticket, request["sl"], request["tp"])
+        return True
+
     def close_position(self, ticket: int | None) -> None:
         """Force-closes the position at market. Used for the opposite-EMA-cross exit."""
         if self.config.mode == "shadow":

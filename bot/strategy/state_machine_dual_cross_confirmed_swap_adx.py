@@ -221,6 +221,15 @@ class DualCrossConfirmedSwapAdxEngine:
         # Armed by a confirmed opposite cross while a position is held;
         # only survives exactly one more candle — see module docstring.
         self.pending_reversal_direction: Direction | None = None
+        # TP-runner state (config.tp_runner_trail_usd). Keyed by the
+        # position's opened_monotonic rather than its ticket, because the
+        # ticket is None in shadow mode and every position would then share
+        # one key and inherit the previous trade's state.
+        self.runner_key: float | None = None
+        self.runner_tp_removed = False
+        self.runner_locked = False
+        self.runner_best = 0.0
+        self.runner_broker_stop: float | None = None
 
     def _active_sessions(self) -> list:
         return self.config.sessions["dual_cross_confirmed_swap_adx"]
@@ -778,6 +787,12 @@ class DualCrossConfirmedSwapAdxEngine:
                             f"trigger) -> stop-loss moved to {position.stop_loss:.2f}{lock_note}",
                         )
 
+                # TP-runner (config.tp_runner_trail_usd). Runs AFTER the
+                # breakeven block and BEFORE stop_hit, so a stop it moves
+                # this tick is acted on this tick -- the same ordering the
+                # breakeven and the pending-reversal tightening already use.
+                self._manage_tp_runner(position, tick)
+
                 stop_hit = (
                     (position.direction == Direction.BUY and tick.bid <= position.stop_loss)
                     or (position.direction == Direction.SELL and tick.bid >= position.stop_loss)
@@ -844,6 +859,99 @@ class DualCrossConfirmedSwapAdxEngine:
 
         self._update_state()
         return events
+
+    # Minimum improvement before the REAL broker stop is re-sent. The
+    # software stop (position.stop_loss) still moves continuously, so the
+    # actual exit matches the simulation exactly; this only throttles how
+    # often the broker copy is rewritten, which is a network call each
+    # time. A $10 run with a $2 trail would otherwise mean hundreds of
+    # modify calls on a 1-second polling loop.
+    BROKER_STOP_MIN_STEP_USD = 0.10
+
+    def _manage_tp_runner(self, position, tick) -> None:
+        """Let a trade that reached take-profit keep running behind a
+        ratcheting stop. See config.tp_runner_trail_usd for the evidence.
+
+        Three stages, all one-way:
+          1. ARM  -- shortly BEFORE price reaches take-profit, remove the
+             broker take-profit. It has to go first: a limit order sitting
+             at the broker fills in microseconds and no polling loop can
+             beat it. If this is late the trade simply closes at TP exactly
+             as it does today, which is a safe failure.
+          2. LOCK -- at take-profit, move the stop to the take-profit level
+             and place it as a REAL broker-side stop. From here the trade
+             cannot give the profit back, and it stays protected even if
+             the bot dies -- which is more than any other trade here gets,
+             since every other stop in this project is software-only.
+          3. TRAIL -- follow the best price at tp_runner_trail_usd behind,
+             upward only.
+
+        The opposite-cross exit is untouched and still closes the trade.
+        """
+        trail = self.config.tp_runner_trail_usd
+        if trail is None:
+            return
+
+        if self.runner_key != position.opened_monotonic:
+            self.runner_key = position.opened_monotonic
+            self.runner_tp_removed = False
+            self.runner_locked = False
+            self.runner_best = 0.0
+            self.runner_broker_stop = None
+
+        is_buy = position.direction == Direction.BUY
+        tp = self.config.take_profit_usd
+        favorable = (tick.bid - position.entry_price) if is_buy else (position.entry_price - tick.bid)
+
+        def price_at(profit: float) -> float:
+            return position.entry_price + profit if is_buy else position.entry_price - profit
+
+        # 1. ARM -- drop the broker take-profit before price reaches it.
+        if not self.runner_tp_removed and favorable >= tp - self.config.tp_runner_arm_before_usd:
+            # Marked done regardless of the result: a failed modify must not
+            # be retried on every tick, and if it failed the broker TP is
+            # still in place and the trade closes as it always has.
+            ok = self.executor.set_sltp(position.ticket, stop_loss=None, take_profit=0.0)
+            self.runner_tp_removed = True
+            log_decision(
+                self.config.symbol, "tp_runner_armed",
+                f"Floating profit ${favorable:.2f} approaching the ${tp:.2f} target -> broker "
+                f"take-profit {'removed' if ok else 'REMOVAL FAILED (trade will close at TP as usual)'}",
+            )
+
+        # 2. LOCK -- at the target, stop moves to the target and goes to the broker.
+        if self.runner_tp_removed and not self.runner_locked and favorable >= tp:
+            self.runner_locked = True
+            self.runner_best = favorable
+            position.stop_loss = price_at(tp)
+            self.runner_broker_stop = position.stop_loss
+            ok = self.executor.set_sltp(position.ticket, stop_loss=position.stop_loss, take_profit=None)
+            log_decision(
+                self.config.symbol, "tp_runner_locked",
+                f"Reached the ${tp:.2f} target -> trade kept open, stop locked at "
+                f"{position.stop_loss:.2f} (${tp:.2f} profit secured, trailing ${trail:.2f} behind)"
+                f"{'' if ok else ' -- broker stop REJECTED, software stop still active'}",
+            )
+
+        # 3. TRAIL -- upward only, never below the locked level.
+        if self.runner_locked and favorable > self.runner_best:
+            self.runner_best = favorable
+            candidate_profit = self.runner_best - trail
+            if candidate_profit > tp:
+                candidate = price_at(candidate_profit)
+                improved = candidate > position.stop_loss if is_buy else candidate < position.stop_loss
+                if improved:
+                    position.stop_loss = candidate
+                    step = (abs(candidate - self.runner_broker_stop)
+                            if self.runner_broker_stop is not None else None)
+                    if step is None or step >= self.BROKER_STOP_MIN_STEP_USD:
+                        if self.executor.set_sltp(position.ticket, stop_loss=candidate, take_profit=None):
+                            self.runner_broker_stop = candidate
+                    log_decision(
+                        self.config.symbol, "tp_runner_trailed",
+                        f"New best ${self.runner_best:.2f} -> stop trailed to {candidate:.2f} "
+                        f"(${candidate_profit:.2f} profit locked)",
+                    )
 
     def _enter(
         self,

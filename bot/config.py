@@ -270,6 +270,36 @@ class AppConfig:
     # (a 1-minute candle's colour/volume is mostly noise). Acts on
     # exactly the values logged as shadow_closed_in_favor /
     # shadow_low_volume, so the log and the decision can never diverge.
+    # --- TP-runner (2026-09-07) -------------------------------------
+    # When set, a trade reaching take_profit_usd is NOT closed. The broker
+    # take-profit is removed shortly before price arrives, a REAL
+    # broker-side stop is placed at the take-profit level (locking that
+    # profit even if the bot dies), and from then on the stop follows the
+    # best price seen at tp_runner_trail_usd behind it, ratcheting up only.
+    # The opposite-cross exit is unchanged and still closes the trade.
+    #
+    # Evidence (scripts/simulate_tp_runner.py, real trades since
+    # 2026-08-25, correct candles): lock-at-TP + $2.00 trail was positive
+    # on all four accounts in BOTH walk-forward halves -- demo1_m1
+    # +$469.74, demo2_m1 +$318.00, demo1_m3 +$289.80, demo2_m3 +$338.88.
+    # It was the only idea tested that week to pass a pre-registered bar;
+    # the colour+volume filter, the Efficiency Ratio and the M3 breakeven
+    # all failed it. Roughly 9 of 10 trades end at exactly the old TP and
+    # are unaffected; the occasional runner produces the whole gain.
+    #
+    # NOT modelled by that simulation, so treat the figure as an upper
+    # bound: slippage on the stop (the broker take-profit it replaces is a
+    # limit order that cannot fill worse than its price, a market-triggered
+    # stop can), and entries missed while a runner is still open.
+    # None = off.
+    tp_runner_trail_usd: float | None = None
+    # How far before take_profit_usd the broker take-profit is removed. It
+    # must go BEFORE price arrives -- a limit order sitting at the broker
+    # fills in microseconds and no polling loop can beat it. Too small and
+    # a fast move reaches TP first (harmless: the trade simply closes as it
+    # does today); too large and the position spends longer relying on the
+    # stop below. 
+    tp_runner_arm_before_usd: float = 0.20
     entry_filter_enabled: bool = False
     # Optional early-entry threshold: while idle (no open position, no
     # pending setup) and the previous candle's real EMA13/21 are known, a
@@ -503,6 +533,8 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         breakeven_trigger_usd=raw.get("breakeven_trigger_usd"),
         breakeven_lock_usd=raw.get("breakeven_lock_usd"),
         entry_filter_enabled=bool(raw.get("entry_filter_enabled", False)),
+        tp_runner_trail_usd=raw.get("tp_runner_trail_usd"),
+        tp_runner_arm_before_usd=float(raw.get("tp_runner_arm_before_usd", 0.20)),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
         dual_cross=dual_cross,
         dual_cross_confirmed_entry=dual_cross_confirmed_entry,
