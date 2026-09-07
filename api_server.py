@@ -17,14 +17,15 @@ with it rather than expecting the tunnel to strip it):
     GET  /apiconnect/{account}/status     that account's status (see below)
     POST /apiconnect/{account}/start      launch that account's main.py if not running
     POST /apiconnect/{account}/stop       activate that account's kill switch
-    POST /apiconnect/stop-all             activate every configured DEMO account's
-                                           kill switch in one call (master "all
-                                           off") — real-money (live_execute)
-                                           accounts are deliberately excluded,
-                                           see note on the endpoint
-    POST /apiconnect/start-all            start every configured DEMO account in
-                                           one call (master "all on") — same
-                                           live_execute exclusion as stop-all
+    POST /apiconnect/stop-all             activate EVERY account's kill switch
+                                           in one call (master "all off"),
+                                           real-money accounts INCLUDED
+    POST /apiconnect/start-all            start EVERY account in one call
+                                           (master "all on"), real-money
+                                           accounts INCLUDED — one tap starts
+                                           live trading with no per-account
+                                           confirmation (user's explicit
+                                           choice 2026-09-07)
     GET  /apiconnect/{account}/analytics  daily/hourly P/L breakdown + win
                                            rate, computed live from that
                                            account's local trade ledger
@@ -405,42 +406,50 @@ def stop(config: AppConfig = Depends(get_account_config)):
 
 @router.post("/stop-all", dependencies=[Depends(verify_api_key)])
 def stop_all():
-    """Master 'all off' — activates every configured DEMO account's kill
-    switch in one call, independent of per-account UI state.
+    """Master 'all off' — activates EVERY configured account's kill switch
+    in one call, real-money accounts included.
 
-    UPDATED 2026-09-01, explicit user decision: real-money accounts
-    (execution.mode == live_execute) are now deliberately EXCLUDED from
-    the mobile app's single master toggle -- the user wants that one
-    tap/switch to only ever touch demo accounts. A live account still has
-    its own per-account /stop endpoint if it's ever genuinely needed;
-    this master toggle just never reaches it anymore."""
+    HISTORY, because this has now been decided twice:
+      2026-09-01 real-money accounts (execution.mode == live_execute) were
+        EXCLUDED, so one tap could only ever touch demo accounts.
+      2026-09-07 the user asked for live accounts to behave exactly like
+        demo ones in the master toggle, and was shown the asymmetry below
+        before choosing. Excluding them is no longer done.
+
+    Stopping everything is the SAFE direction of this toggle -- the worst
+    case of an accidental tap is that trading halts. The dangerous
+    direction is /start-all, which now also reaches live accounts.
+
+    Each result carries "is_live" so the caller can show plainly which
+    real-money accounts were affected."""
     results = []
     for account, kill_switch in app.state.kill_switches.items():
-        if app.state.configs[account].execution.mode == "live_execute":
-            continue
+        is_live = app.state.configs[account].execution.mode == "live_execute"
         was_active = kill_switch.is_active()
         if not was_active:
             kill_switch.activate(reason="Stopped via API (stop-all)")
-        results.append({"account": account, "was_already_stopped": was_active})
+        results.append({"account": account, "was_already_stopped": was_active, "is_live": is_live})
     return {"ok": True, "accounts": results}
 
 
 @router.post("/start-all", dependencies=[Depends(verify_api_key)])
 def start_all():
-    """Master 'all on' — deactivates every configured DEMO account's kill
-    switch and launches its main.py if not already running, in one call.
+    """Master 'all on' — deactivates EVERY configured account's kill switch
+    and launches its main.py if not already running, real money included.
 
-    UPDATED 2026-09-01, explicit user decision: real-money accounts
-    (execution.mode == live_execute) are now deliberately EXCLUDED from
-    this master toggle, same as stop_all above -- previously this
-    started every account including live-money ones with no per-account
-    confirmation, which was a deliberate original design choice the user
-    has now explicitly asked to change. A live account still has its own
-    per-account /start endpoint if genuinely needed."""
+    HISTORY: excluded real-money accounts on 2026-09-01, re-included on
+    2026-09-07 at the user's explicit request after being shown the risk
+    below.
+
+    THIS IS THE DANGEROUS DIRECTION OF THE MASTER TOGGLE. One tap now
+    STARTS real-money trading with no per-account confirmation -- on an
+    account that may have been stopped deliberately, possibly during
+    news, possibly while nobody is watching. /stop-all is the safe
+    direction; this one is not. Each result carries "is_live" so the
+    caller can show plainly which real-money accounts it just started."""
     results = []
     for account, kill_switch in app.state.kill_switches.items():
-        if app.state.configs[account].execution.mode == "live_execute":
-            continue
+        is_live = app.state.configs[account].execution.mode == "live_execute"
         was_active = kill_switch.is_active()
         if was_active:
             kill_switch.deactivate()
@@ -452,6 +461,7 @@ def start_all():
 
         results.append({
             "account": account,
+            "is_live": is_live,
             "kill_switch_was_active": was_active,
             "main_process_was_already_running": proc is not None,
             "launched_pid": launched_pid,
