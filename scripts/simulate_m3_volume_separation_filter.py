@@ -41,6 +41,7 @@ from bot.config import validate_account_name, load_config
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
+from bot.strategy.cross_lookup import find_cross_candle
 
 CANDLES_TO_FETCH = 500  # matches the live engine's rolling-window size
 
@@ -52,15 +53,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def find_confirming_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    window = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(window.index):
-        row = window.loc[idx]
-        if direction == "BUY" and row["ema13"] > row["ema21"]:
-            return idx
-        if direction == "SELL" and row["ema13"] < row["ema21"]:
-            return idx
-    return None
 
 
 def rolling_flags(df: pd.DataFrame, candle_time: pd.Timestamp) -> tuple[bool, bool]:
@@ -122,7 +114,7 @@ def main() -> None:
             entry_utc = t["entry_time"].astimezone(timezone.utc)
             if entry_utc < since:
                 continue
-            candle_time = find_confirming_candle(df, entry_utc, t["direction"])
+            candle_time = find_cross_candle(df, entry_utc, t["direction"])
             if candle_time is None:
                 continue
             high_volume, wide_gap = rolling_flags(df, candle_time)

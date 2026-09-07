@@ -49,6 +49,7 @@ from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
+from bot.strategy.cross_lookup import find_cross_candle
 
 PERCENTILES = [0.33, 0.50, 0.67]  # keep entries whose separation is above this percentile of prior crosses
 MIN_PRIOR_CROSSES = 20  # need this many prior crosses before the rolling threshold is meaningful
@@ -73,15 +74,6 @@ def cross_candle_separations(df: pd.DataFrame) -> pd.Series:
     return sep[changed]
 
 
-def find_confirming_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    w = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(w.index):
-        row = w.loc[idx]
-        if direction == "BUY" and row["ema13"] > row["ema21"]:
-            return idx
-        if direction == "SELL" and row["ema13"] < row["ema21"]:
-            return idx
-    return None
 
 
 def report(label: str, rows: list[dict], keep_fn) -> None:
@@ -124,7 +116,7 @@ def main() -> None:
             entry_utc = t["entry_time"].astimezone(timezone.utc)
             if entry_utc < since:
                 continue
-            ct = find_confirming_candle(df, entry_utc, t["direction"])
+            ct = find_cross_candle(df, entry_utc, t["direction"])
             if ct is None:
                 continue
             sep = abs(float(df.loc[ct, "ema13"]) - float(df.loc[ct, "ema21"]))

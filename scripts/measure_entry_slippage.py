@@ -51,6 +51,7 @@ from bot.config import validate_account_name, load_config
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
+from bot.strategy.cross_lookup import find_cross_candle
 
 TIMEFRAME_MINUTES = {"M1": 1, "M3": 3, "M5": 5, "M15": 15, "M30": 30}
 
@@ -62,15 +63,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def find_confirming_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    window = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(window.index):
-        row = window.loc[idx]
-        if direction == "BUY" and row["ema13"] > row["ema21"]:
-            return idx
-        if direction == "SELL" and row["ema13"] < row["ema21"]:
-            return idx
-    return None
 
 
 def read_entries(account: str, since: datetime) -> list[dict]:
@@ -119,7 +111,7 @@ def main() -> None:
 
         rows = []
         for e in entries:
-            candle_time = find_confirming_candle(df, e["timestamp"], e["direction"])
+            candle_time = find_cross_candle(df, e["timestamp"], e["direction"])
             if candle_time is None:
                 continue
             theoretical = float(df.loc[candle_time, "close"])

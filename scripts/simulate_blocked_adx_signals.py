@@ -54,6 +54,7 @@ from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
 from bot.risk.position_sizing import calculate_lots
+from bot.strategy.cross_lookup import find_cross_candle
 
 REASON_RE = re.compile(
     r"^(BUY|SELL) cross confirmed \(ema13=([\d.]+), ema21=([\d.]+)\)"
@@ -97,16 +98,6 @@ def load_blocked_signals(account: str, since: datetime, to: datetime) -> list[di
     return signals
 
 
-def find_confirming_candle(df: pd.DataFrame, signal: dict) -> pd.Timestamp | None:
-    """Match a blocked signal to its exact candle by comparing logged
-    ema13/ema21 (rounded to 2dp in the log) against the computed
-    dataframe, within a +/- 15 minute window of the log timestamp."""
-    window = df[(df.index >= signal["ts"] - timedelta(minutes=15)) & (df.index <= signal["ts"] + timedelta(minutes=1))]
-    for idx in reversed(window.index):
-        row = window.loc[idx]
-        if abs(row["ema13"] - signal["ema13"]) < 0.02 and abs(row["ema21"] - signal["ema21"]) < 0.02:
-            return idx
-    return None
 
 
 def simulate(df: pd.DataFrame, candle_time: pd.Timestamp, direction: str, gap_threshold: float,
@@ -181,7 +172,7 @@ def main() -> None:
         lots = calculate_lots(balance, config.position_sizing)
 
         for sig in signals:
-            candle_time = find_confirming_candle(df, sig)
+            candle_time = find_cross_candle(df, sig)
             label = f"{sig['ts'].isoformat()}  {sig['direction']}"
             if candle_time is None:
                 print(f"  {label}: could not match to a candle (skipped)")

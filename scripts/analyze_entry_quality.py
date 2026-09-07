@@ -61,6 +61,7 @@ from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
+from bot.strategy.cross_lookup import find_cross_candle
 
 GAP_RE = re.compile(r"gap=(-?\d+\.?\d*)")
 ENTRY_PAIR_WINDOW_SECONDS = 300
@@ -103,19 +104,6 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return true_range.rolling(period).mean().shift(1)
 
 
-def find_confirming_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    """The confirming candle is the last CLOSED candle before/at the
-    entry-related timestamp whose EMA13/21 relationship matches the
-    trade's direction (BUY -> ema13>ema21, SELL -> ema13<ema21) --
-    scans backward from `near` within a reasonable window."""
-    window = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(window.index):
-        row = window.loc[idx]
-        if direction == "BUY" and row["ema13"] > row["ema21"]:
-            return idx
-        if direction == "SELL" and row["ema13"] < row["ema21"]:
-            return idx
-    return None
 
 
 def bucket(value: float, edges: list[float], labels: list[str]) -> str:
@@ -183,7 +171,7 @@ def main() -> None:
                 if m:
                     gap = float(m.group(1))
 
-            candle_time = find_confirming_candle(df, entry_utc, t["direction"])
+            candle_time = find_cross_candle(df, entry_utc, t["direction"])
             if candle_time is None:
                 continue
             row = df.loc[candle_time]

@@ -43,6 +43,7 @@ import pandas as pd
 from bot.data.market_data import get_ohlc_range  # noqa: E402
 from bot.indicators.ema import compute_emas  # noqa: E402
 from bot.mt5_connector import MT5Connector  # noqa: E402
+from bot.strategy.cross_lookup import find_cross_candle
 from full_strategy_analysis import GAP_CHANGE_CUTOVER_UTC, _gap_threshold_at  # noqa: E402
 from generate_live_test_report import gather_account_data, load_config  # noqa: E402
 
@@ -57,15 +58,6 @@ def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return true_range.rolling(period).mean().shift(1)
 
 
-def find_confirming_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    window = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(window.index):
-        row = window.loc[idx]
-        if direction == "BUY" and row["ema13"] > row["ema21"]:
-            return idx
-        if direction == "SELL" and row["ema13"] < row["ema21"]:
-            return idx
-    return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -114,7 +106,7 @@ def main() -> None:
 
         for r in records:
             entry_utc = r["entry_time"].astimezone(timezone.utc)
-            candle_time = find_confirming_candle(df, entry_utc, r["direction"])
+            candle_time = find_cross_candle(df, entry_utc, r["direction"])
             if candle_time is None or pd.isna(atr_series.loc[candle_time]):
                 r["_atr"] = None
                 r["_gap_atr_ratio"] = None

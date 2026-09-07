@@ -32,6 +32,7 @@ from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
+from bot.strategy.cross_lookup import find_cross_candle
 
 COLOMBO = ZoneInfo("Asia/Colombo")
 APP_TZ = timezone(timedelta(hours=3))
@@ -73,15 +74,6 @@ def find_exit_decision(decisions: list[dict], ticket: int) -> dict | None:
     return None
 
 
-def find_confirming_candle(df: pd.DataFrame, near: datetime, direction: str):
-    window = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(window.index):
-        row = window.loc[idx]
-        if direction == "BUY" and row["ema13"] > row["ema21"]:
-            return idx
-        if direction == "SELL" and row["ema13"] < row["ema21"]:
-            return idx
-    return None
 
 
 def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -151,7 +143,7 @@ def main() -> None:
         for t in sorted(losses, key=lambda x: x["entry_time"]):
             exit_decision = find_exit_decision(decisions, t.get("position_id") or "")
             entry_utc = t["entry_time"].astimezone(timezone.utc)
-            candle_time = find_confirming_candle(df, entry_utc, t["direction"])
+            candle_time = find_cross_candle(df, entry_utc, t["direction"])
             entry_local = t["entry_time"].astimezone(COLOMBO).strftime("%H:%M:%S")
 
             print(f"  [{entry_local} Colombo] {t['direction']} entry={t['entry_price']:.2f} exit={t['exit_price']:.2f} "

@@ -66,6 +66,7 @@ from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
 from bot.risk.position_sizing import calculate_lots
+from bot.strategy.cross_lookup import find_cross_candle
 
 GAP_RE = re.compile(r"gap=(-?\d+\.?\d*)")
 ENTRY_PAIR_WINDOW_SECONDS = 300
@@ -98,15 +99,6 @@ def read_decisions(account: str) -> list[dict]:
     return entries
 
 
-def find_confirming_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    window = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(window.index):
-        row = window.loc[idx]
-        if direction == "BUY" and row["ema13"] > row["ema21"]:
-            return idx
-        if direction == "SELL" and row["ema13"] < row["ema21"]:
-            return idx
-    return None
 
 
 def simulate_forced_pullback(df: pd.DataFrame, candle_time: pd.Timestamp, direction: str,
@@ -206,7 +198,7 @@ def main() -> None:
             if gap >= config.gap_threshold_usd:
                 continue
 
-            candle_time = find_confirming_candle(df, entry_utc, t["direction"])
+            candle_time = find_cross_candle(df, entry_utc, t["direction"])
             if candle_time is None:
                 continue
 

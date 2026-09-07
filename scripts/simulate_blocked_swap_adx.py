@@ -57,6 +57,7 @@ from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
 from bot.risk.position_sizing import calculate_lots
+from bot.strategy.cross_lookup import find_cross_candle
 
 REASON_RE = re.compile(
     r"^(BUY|SELL) cross confirmed TWO candles in a row \(ema13=([\d.]+), ema21=([\d.]+)\) but adx=(nan|[\d.]+) < ([\d.]+)"
@@ -111,13 +112,6 @@ def load_blocked_swaps(account: str, since: datetime, to: datetime, min_adx: flo
     return signals
 
 
-def find_confirming_candle(df: pd.DataFrame, signal: dict) -> pd.Timestamp | None:
-    window = df[(df.index >= signal["ts"] - timedelta(minutes=15)) & (df.index <= signal["ts"] + timedelta(minutes=1))]
-    for idx in reversed(window.index):
-        row = window.loc[idx]
-        if abs(row["ema13"] - signal["ema13"]) < 0.02 and abs(row["ema21"] - signal["ema21"]) < 0.02:
-            return idx
-    return None
 
 
 def simulate(df: pd.DataFrame, candle_time: pd.Timestamp, direction: str,
@@ -176,7 +170,7 @@ def main() -> None:
         lots = calculate_lots(balance, config.position_sizing)
 
         for sig in signals:
-            candle_time = find_confirming_candle(df, sig)
+            candle_time = find_cross_candle(df, sig)
             label = f"{sig['ts'].isoformat()}  {sig['direction']}  real_adx={sig['adx']:.1f}"
             if candle_time is None:
                 print(f"  {label}: could not match to a candle (skipped)")

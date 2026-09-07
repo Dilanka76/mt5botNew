@@ -51,6 +51,7 @@ from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
+from bot.strategy.cross_lookup import find_cross_candle
 
 ALL_ACCOUNTS = ["demo1_m1", "demo1_m3", "demo2_m1", "demo2_m3"]
 M3_ACCOUNTS = ["demo1_m3", "demo2_m3"]
@@ -119,15 +120,6 @@ def efficiency_ratio(df: pd.DataFrame, candle_time: pd.Timestamp, lookback: int 
     return net / total
 
 
-def find_confirming_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    w = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(w.index):
-        row = w.loc[idx]
-        if direction == "BUY" and row["ema13"] > row["ema21"]:
-            return idx
-        if direction == "SELL" and row["ema13"] < row["ema21"]:
-            return idx
-    return None
 
 
 def summarize(label: str, profits: list[float]) -> str:
@@ -210,7 +202,7 @@ def main() -> None:
             entry_utc = t["entry_time"].astimezone(timezone.utc)
             if entry_utc < since:
                 continue
-            ct = find_confirming_candle(df, entry_utc, t["direction"])
+            ct = find_cross_candle(df, entry_utc, t["direction"])
             if ct is None:
                 continue
             er = efficiency_ratio(df, ct)
