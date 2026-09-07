@@ -82,6 +82,46 @@ def read_entries(account: str, start: datetime, end: datetime) -> list[dict]:
     return rows
 
 
+MATCH_WINDOW_SECONDS = 180
+PRICE_TOLERANCE = 1.0
+
+
+def match_entries_to_trades(entries: list[dict], trades: list[dict]) -> None:
+    """Pair each logged trade_entered with its real MT5 trade.
+
+    trade_entered does NOT log a ticket (see the engine's _enter()), so
+    there is no id to join on. Match instead on direction plus entry
+    time -- log_decision writes its timestamp immediately after
+    order_send() returns, so the two are seconds apart -- and require
+    the entry price to agree as a sanity check. Matching is one-to-one:
+    each real trade can claim at most one logged entry, so two entries
+    seconds apart cannot both bind to the same trade.
+
+    Sets e["_profit"] to the realised P/L, or None when nothing matched
+    (a still-open position, or a trade that closed after the window).
+    """
+    used: set[int] = set()
+    for e in entries:
+        best, best_gap = None, None
+        for i, t in enumerate(trades):
+            if i in used:
+                continue
+            if str(t.get("direction")) != str(e.get("direction")):
+                continue
+            gap = abs((t["entry_time"].astimezone(timezone.utc) - e["_ts"]).total_seconds())
+            if gap > MATCH_WINDOW_SECONDS:
+                continue
+            if abs(float(t["entry_price"]) - float(e.get("entry", 0))) > PRICE_TOLERANCE:
+                continue
+            if best_gap is None or gap < best_gap:
+                best, best_gap = i, gap
+        if best is None:
+            e["_profit"] = None
+        else:
+            used.add(best)
+            e["_profit"] = trades[best]["profit"]
+
+
 def summarise(label: str, rows: list[dict], key: str) -> None:
     """For each threshold: how many of today's entries ER would have
     stopped, and what those specific trades actually did."""
@@ -126,14 +166,18 @@ def main() -> None:
         finally:
             connector.disconnect()
 
-        by_ticket = {str(t.get("position_id")): t for t in trades}
-        for e in entries:
-            t = by_ticket.get(str(e.get("ticket")))
-            e["_profit"] = t["profit"] if t else None
+        match_entries_to_trades(entries, trades)
 
         print("=" * 86)
-        print(f"{account} ({config.timeframe}): {len(entries)} entries today, "
-              f"{sum(1 for e in entries if e['_profit'] is not None)} with a closed outcome")
+        matched = sum(1 for e in entries if e["_profit"] is not None)
+        print(f"{account} ({config.timeframe}): {len(entries)} logged entries today, "
+              f"{len(trades)} closed trades in MT5, {matched} paired")
+        if entries and matched < len(entries) - 1:
+            # One unpaired entry is normal (the position still open). More
+            # than that means the pairing itself is failing -- say so loudly
+            # rather than quietly reporting them as "open".
+            print(f"  WARNING: {len(entries) - matched} entries did not pair with an MT5 trade. "
+                  f"Treat the threshold table below as incomplete.")
         print("=" * 86)
         if not entries:
             print("  No entries today.\n")
