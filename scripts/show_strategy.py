@@ -15,17 +15,74 @@ Read-only: opens no MT5 connection and touches no trading state.
 from __future__ import annotations
 
 import argparse
+import ast
+import pathlib
 import sys
 
 sys.path.insert(0, ".")
 
-from bot.config import discover_configured_accounts, load_config, validate_account_name
+from bot.config import PROJECT_ROOT, discover_configured_accounts, load_config, validate_account_name
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--accounts", default="demo1_m1,demo1_m3")
     return p.parse_args()
+
+
+def _engine_module_for(variant: str) -> pathlib.Path | None:
+    """Resolve strategy_variant -> the engine module main.py would run.
+
+    Parses main.py's STRATEGY_ENGINES with ast rather than importing it,
+    because importing main pulls in MetaTrader5, which has Windows-only
+    wheels and cannot load on a dev Mac.
+    """
+    try:
+        tree = ast.parse((PROJECT_ROOT / "main.py").read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return None
+
+    class_name = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "STRATEGY_ENGINES" for t in node.targets
+        ) and isinstance(node.value, ast.Dict):
+            for k, v in zip(node.value.keys, node.value.values):
+                if isinstance(k, ast.Constant) and k.value == variant and isinstance(v, ast.Name):
+                    class_name = v.id
+    if class_name is None:
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            if any(a.name == class_name for a in node.names):
+                path = PROJECT_ROOT / (node.module.replace(".", "/") + ".py")
+                return path if path.is_file() else None
+    return None
+
+
+def _fields_read_by(module_path: pathlib.Path | None) -> set[str] | None:
+    """Config attribute names the engine actually reads in CODE.
+
+    Uses ast so that a field merely NAMED in a docstring does not count --
+    these docstrings discuss settings they no longer use, which is exactly
+    the confusion this guards against.
+    """
+    if module_path is None:
+        return None
+    try:
+        tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return None
+    return {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+
+
+def note(field: str, reads: set[str] | None) -> str:
+    """Flag settings the running engine ignores -- a configured value that
+    no engine reads is dead, and reporting it as active is misleading."""
+    if reads is None or field in reads:
+        return ""
+    return "   <-- IGNORED by this engine (dead setting)"
 
 
 def money(v: float | None) -> str:
@@ -42,6 +99,7 @@ def main() -> None:
             print(f"{account}: no config on this machine (configured here: {sorted(known)})\n")
             continue
         c = load_config(account)
+        reads = _fields_read_by(_engine_module_for(c.strategy_variant))
 
         print("=" * 78)
         print(f"{account}   {c.symbol} {c.timeframe}   engine: {c.strategy_variant}")
@@ -60,11 +118,14 @@ def main() -> None:
         # gap < threshold -> immediate; gap >= threshold -> wait for an EMA5
         # touch. A threshold far above any real gap means "always immediate".
         print(f"    gap_threshold_usd  : {money(c.gap_threshold_usd)}  "
-              f"(gap < this = enter immediately; gap >= this = wait for an EMA5 pullback)")
+              f"(gap < this = enter immediately; gap >= this = wait for an EMA5 pullback)"
+              f"{note('gap_threshold_usd', reads)}")
         print(f"    Entry filter       : {'ON' if c.entry_filter_enabled else 'OFF'} "
-              f"(candle colour + tick volume)")
+              f"(candle colour + tick volume)"
+              f"{note('entry_filter_enabled', reads)}")
         early = c.early_entry_threshold_usd
-        print(f"    Early entry        : {'OFF' if early is None else money(early)}")
+        print(f"    Early entry        : {'OFF' if early is None else money(early)}"
+              f"{note('early_entry_threshold_usd', reads)}")
 
         print("  EXIT")
         print(f"    Take profit        : {money(c.take_profit_usd)}  (broker-side)")
@@ -74,7 +135,8 @@ def main() -> None:
             print(f"    Breakeven          : OFF")
         else:
             print(f"    Breakeven          : arms at {money(be_trig)} favourable, "
-                  f"then stop moves to entry{'' if not be_lock else f' + {money(be_lock)} locked profit'}")
+                  f"then stop moves to entry{'' if not be_lock else f' + {money(be_lock)} locked profit'}"
+                  f"{note('breakeven_trigger_usd', reads)}")
 
         print("  REVERSAL / SWAP")
         if c.swap_adx_filter is None:
