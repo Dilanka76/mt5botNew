@@ -47,7 +47,16 @@ from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.mt5_connector import MT5Connector
 
-TRIGGERS = [2.0, 2.5, 3.0, 3.5, 4.0]
+# Extended 2026-09-07: the original run only tested triggers well BELOW
+# each account's take-profit, and concluded a breakeven rule would cost
+# M3 $400-770 -- winners there routinely dip $2+ on the way up, so an
+# early trigger keeps knocking out trades that would have recovered.
+# A trigger just under TP is a different question: a trade already at
+# $5.50 of a $6.00 target is not dipping on its way up, it is nearly
+# done. That region was never measured, and it is the one gap left in
+# M3's protection ladder -- a demo1_m3 trade can reach $5.90 and still
+# lose the full $10.
+TRIGGERS = [2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5]
 LOCK = 0.5  # dollars of profit locked in, matching breakeven_lock_usd on M1
 USD_PER_LOT_PER_DOLLAR = 100.0  # XAUUSD
 
