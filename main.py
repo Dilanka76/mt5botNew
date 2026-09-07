@@ -187,10 +187,14 @@ def run() -> None:
 
     logger.info(
         "Bot started: account=%s symbol=%s timeframe=%s mode=%s strategy_variant=%s state=%s "
-        "reject_manual_trades=%s stop_loss_usd=%s breakeven_trigger_usd=%s early_entry_threshold_usd=%s",
+        "reject_manual_trades=%s stop_loss_usd=%s take_profit_usd=%s breakeven_trigger_usd=%s "
+        "breakeven_lock_usd=%s early_entry_threshold_usd=%s entry_filter_enabled=%s "
+        "tp_runner_trail_usd=%s tp_runner_arm_before_usd=%s",
         args.account, config.symbol, config.timeframe, config.execution.mode, config.strategy_variant, engine.state.value,
-        config.execution.reject_manual_trades, config.stop_loss_usd, config.breakeven_trigger_usd,
-        config.early_entry_threshold_usd,
+        config.execution.reject_manual_trades, config.stop_loss_usd, config.take_profit_usd,
+        config.breakeven_trigger_usd, config.breakeven_lock_usd,
+        config.early_entry_threshold_usd, config.entry_filter_enabled,
+        config.tp_runner_trail_usd, config.tp_runner_arm_before_usd,
     )
 
     last_closed_candle_time = None
