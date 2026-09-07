@@ -106,9 +106,21 @@ def tp_exit_tickets(account: str) -> set[int]:
 
 
 def simulate(df: pd.DataFrame, start_after: datetime, direction: str, entry: float,
-             lock: float, trail: float | None, max_candles: int) -> tuple[str, float] | None:
+             lock: float, trail: float | None, max_candles: int,
+             step: float | None = None) -> tuple[str, float] | None:
     """Replay candles after the TP moment. Returns (how_it_ended,
-    profit_in_price_dollars), or None if still open at the horizon."""
+    profit_in_price_dollars), or None if still open at the horizon.
+
+    Two ways of following price up, mutually exclusive:
+      trail G : continuous -- the stop sits G behind the best price seen
+                and is updated on every new high.
+      step  S : stepped (the user's "$1 to $1" form) -- the stop jumps up
+                in S-sized increments as the best price advances, so it
+                moves a few times per trade instead of continuously. The
+                gap therefore varies between 0 and S rather than being
+                fixed. Fewer broker modify calls, which matters on a
+                1-second polling loop.
+    """
     future = df[df.index > start_after]
     if future.empty:
         return None
@@ -137,6 +149,8 @@ def simulate(df: pd.DataFrame, start_after: datetime, direction: str, entry: flo
             best = fav_profit
             if trail is not None:
                 stop = max(stop, best - trail)
+            if step is not None and best > lock:
+                stop = max(stop, lock + (int((best - lock) / step) * step))
 
         # The opposite-cross exit is unchanged from the live rule.
         if bool(changed.loc[idx]) and bool(above.loc[idx]) != is_buy:
@@ -188,19 +202,24 @@ def main() -> None:
             print("  No take-profit exits in this window.\n")
             continue
 
-        variants: list[tuple[str, float, float | None]] = [
-            (f"lock ${tp - 0.50:.2f}, no trail   ", tp - 0.50, None),
-            (f"lock ${tp - 0.50:.2f} + trail $0.50", tp - 0.50, 0.50),
-            (f"lock ${tp - 0.50:.2f} + trail $1.00", tp - 0.50, 1.00),
-            (f"lock ${tp:.2f} + trail $1.00", tp, 1.00),
-            (f"lock ${tp:.2f} + trail $2.00", tp, 2.00),
+        variants: list[tuple[str, float, float | None, float | None]] = [
+            (f"lock ${tp - 0.50:.2f}, no trail        ", tp - 0.50, None, None),
+            (f"lock ${tp - 0.50:.2f} + trail $0.50    ", tp - 0.50, 0.50, None),
+            (f"lock ${tp - 0.50:.2f} + trail $1.00    ", tp - 0.50, 1.00, None),
+            (f"lock ${tp:.2f} + trail $2.00    ", tp, 2.00, None),
+            # The user's stepped form, 2026-09-07: move the stop up $1 for
+            # every $1 gained, then $2, then $3 -- fewer modify calls than
+            # a continuous trail, and a wider effective gap.
+            (f"lock ${tp - 0.50:.2f} + $1 steps      ", tp - 0.50, None, 1.00),
+            (f"lock ${tp - 0.50:.2f} + $2 steps      ", tp - 0.50, None, 2.00),
+            (f"lock ${tp - 0.50:.2f} + $3 steps      ", tp - 0.50, None, 3.00),
         ]
 
-        for label, lock, trail in variants:
+        for label, lock, trail, step in variants:
             rows, unresolved, endings = [], 0, {}
             for t in winners:
                 out = simulate(df, t["exit_time"].astimezone(timezone.utc), t["direction"],
-                               float(t["entry_price"]), lock, trail, args.max_candles)
+                               float(t["entry_price"]), lock, trail, args.max_candles, step)
                 if out is None:
                     unresolved += 1
                     continue

@@ -98,6 +98,29 @@ def main() -> None:
     check("SELL mirrored, trails to 5.50",
           simulate(df, before, "SELL", 100.0, 4.50, 0.50, 50), ("trailed out", 5.50))
 
+    # Stepped trail (the user's "$1 to $1" form): the stop jumps up a
+    # whole $1 only once the best price has gained a full $1 past the
+    # lock, so it lags a continuous trail and gives price more room.
+    # Best reaches +6.00, i.e. 1.50 past the 4.50 lock -> one full step ->
+    # stop = 5.50. The pullback to +5.40 then takes it out there.
+    df = frame([(106.0, 104.6, 105.0, *UP), (105.6, 105.4, 105.5, *UP)])
+    check("$1 steps: one full step taken, exits at 5.50",
+          simulate(df, before, "BUY", 100.0, 4.50, None, 50, 1.00), ("trailed out", 5.50))
+
+    # With $3 steps the same +1.50 of gain is not a full step, so the stop
+    # never leaves the lock. A third candle is needed for it to actually
+    # fall back that far -- with only the two above the trade is still
+    # open and correctly returns None.
+    df3 = frame([(106.0, 104.6, 105.0, *UP), (105.6, 105.4, 105.5, *UP),
+                 (105.5, 104.0, 104.1, *UP)])
+    check("$3 steps: gain under one step, stop stays at the lock",
+          simulate(df3, before, "BUY", 100.0, 4.50, None, 50, 3.00), ("stopped at lock", 4.50))
+
+    # A step must not move the stop ABOVE the best price seen.
+    df = frame([(107.4, 105.0, 107.0, *UP), (107.0, 104.0, 104.2, *UP)])
+    check("$1 steps never overshoot the best price",
+          simulate(df, before, "BUY", 100.0, 4.50, None, 50, 1.00), ("trailed out", 6.50))
+
     # Still running at the horizon -> excluded, not guessed. Each candle
     # must climb faster than the trail, otherwise the stop legitimately
     # catches up and the trade resolves (the first version of this test
