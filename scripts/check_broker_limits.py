@@ -52,6 +52,7 @@ def main() -> None:
     try:
         info = mt5.symbol_info(config.symbol)
         tick = mt5.symbol_info_tick(config.symbol)
+        acct = mt5.account_info()
     finally:
         connector.disconnect()
 
@@ -72,6 +73,29 @@ def main() -> None:
     if tick is not None:
         print(f"  current bid/ask     : {tick.bid} / {tick.ask}   spread ${tick.ask - tick.bid:.2f}")
     print(f"  volume min/step/max : {info.volume_min} / {info.volume_step} / {info.volume_max}")
+
+    # Margin mode decides whether the split design is even possible: on a
+    # NETTING account two same-direction orders merge into a single
+    # position with one stop and one target, so the "half banked at a
+    # guaranteed limit fill, half left running" structure cannot exist.
+    print()
+    if acct is None:
+        print("  MARGIN MODE      : account_info() returned None -- could not determine.")
+    else:
+        hedging = acct.margin_mode == mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING
+        print(f"  MARGIN MODE      : {'HEDGING' if hedging else 'NETTING'} "
+              f"(raw margin_mode={acct.margin_mode})")
+        if hedging:
+            print("    -> Two same-direction orders stay as SEPARATE positions, each with its")
+            print("       own stop and target. The split design works as intended: half can")
+            print("       hold a real broker take-profit (a guaranteed limit fill) while the")
+            print("       other half runs on a trailing stop.")
+        else:
+            print("    -> Two same-direction orders MERGE into one position with a single")
+            print("       stop and target. The split as designed is NOT possible. The half")
+            print("       would have to be taken by partial close at market, which the bot")
+            print("       sends on its polling loop -- so it is NOT a guaranteed fill and")
+            print("       gives up exactly the crash protection the split was chosen for.")
 
     print()
     if stops_pts == 0:
