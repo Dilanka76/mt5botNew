@@ -30,7 +30,9 @@ running process is affected.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
+import subprocess
 import sys
 
 sys.path.insert(0, ".")
@@ -69,6 +71,27 @@ if ($changed) {{
   Write-Output 'NO_REPEATING_TRIGGER'
 }}
 """
+
+
+def run_ps(command: str, timeout: int = 60) -> tuple[str, str, int]:
+    """Like bot.process_utils.run_powershell, but keeps stderr. The shared
+    helper returns stdout only, which turned a real Set-ScheduledTask
+    error into a bare "NO OUTPUT" and hid the actual reason."""
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
+        return "", str(exc), -1
+    return result.stdout.strip(), result.stderr.strip(), result.returncode
+
+
+def is_admin() -> bool:
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001 - not Windows, or the call is unavailable
+        return False
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,11 +144,23 @@ def main() -> None:
         return
 
     interval = f"PT{args.minutes}M"
+    if not is_admin():
+        print("\nNOT RUNNING AS ADMINISTRATOR -- Set-ScheduledTask will almost certainly be")
+        print("refused. Close this window, reopen PowerShell with 'Run as administrator',")
+        print("cd back here and run this again. Attempting anyway so the real error shows:")
     print(f"\nSetting repeat interval to {interval} on {len(targets)} task(s)...")
+    failures = 0
     for name in targets:
-        result = run_powershell(APPLY.format(name=name, interval=interval).strip(), timeout=60)
-        status = (result or "").strip() or "NO OUTPUT (check permissions -- this needs Administrator)"
-        print(f"  {name:<28}{status}")
+        out, err, code = run_ps(APPLY.format(name=name, interval=interval).strip())
+        if out.strip() == "OK":
+            print(f"  {name:<28}OK")
+            continue
+        failures += 1
+        detail = out.strip() or err.strip().splitlines()[0] if (out.strip() or err.strip()) else f"exit code {code}"
+        print(f"  {name:<28}FAILED: {detail}")
+    if failures:
+        print(f"\n{failures} task(s) unchanged. Nothing was half-applied -- each task is set")
+        print("in a single call, so a failure leaves that task exactly as it was.")
 
     print("\nRe-run without --apply to confirm, then:")
     print("    python scripts/check_autorestart.py")
