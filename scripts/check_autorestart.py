@@ -107,12 +107,32 @@ def main() -> None:
             problems.append(f"{account}: no Task Scheduler task for main.py")
         else:
             restarts = bot_task.get("RestartCount")
+            triggers = bot_task.get("Triggers") or ""
+            repeating = "Time" in triggers
             print(f"  main.py task      : {bot_task['TaskName']}  state={bot_task.get('State')}  "
                   f"restartCount={restarts}  interval={bot_task.get('RestartInterval') or 'none'}")
-            if not restarts:
-                print("                      <-- restart-on-failure is NOT set: a crash will not")
-                print("                      be recovered automatically.")
-                problems.append(f"{account}: main.py task has no restart-on-failure")
+            print(f"                      triggers={triggers or 'unknown'}  "
+                  f"lastRun={bot_task.get('LastRunTime') or '?'}  "
+                  f"lastResult={bot_task.get('LastTaskResult')}")
+            # A REPEATING trigger is what actually recovers a dead bot here:
+            # it re-runs main.py on a schedule, and main.py's own duplicate
+            # check makes that harmless while one is already alive (it exits
+            # with code 1 -- which is why lastResult=1 is HEALTHY on a task
+            # whose bot is running, not a failure).
+            if not repeating and not restarts:
+                print("                      <-- NO repeating trigger AND no restart-on-failure:")
+                print("                      if this bot dies it will NEVER come back on its own.")
+                problems.append(f"{account}: main.py task can never recover a dead bot")
+            elif not repeating:
+                print("                      <-- no repeating trigger; recovery relies solely on")
+                print("                      restart-on-failure, which only fires if the task")
+                print("                      itself was running the process.")
+                problems.append(f"{account}: main.py task has no repeating trigger")
+            if bot_proc and bot_task.get("State") == "Ready":
+                print("                      note: the task is Ready while a bot runs -- this")
+                print("                      process is an ORPHAN (started by boot, the app, or by")
+                print("                      hand), so restart-on-failure cannot apply to it. The")
+                print("                      repeating trigger is what would recover it.")
 
         if wd_task is None:
             print("  watchdog task     : NONE <-- a HUNG bot (alive but stuck) will never be")
@@ -138,9 +158,15 @@ def main() -> None:
         for p in problems:
             print(f"  - {p}")
         print()
-        print("A bot launched by hand or by the mobile app's start endpoint is not owned by")
-        print("Task Scheduler, so killing it triggers no restart. That matches what happened")
-        print("on 2026-09-07: both demo1 legs were killed and neither came back.")
+        print("Recovery here comes from the REPEATING trigger, not restart-on-failure: the")
+        print("task re-runs main.py on a schedule and main.py's duplicate check makes that a")
+        print("no-op while one is alive (exit code 1 -- so lastResult=1 on a task whose bot is")
+        print("running is healthy). A bot started by boot, the app or by hand is an orphan the")
+        print("task does not own, so only that repeating trigger will bring it back.")
+        print()
+        print("2026-09-07 correction: demo1's bots WERE recoverable -- the trigger fires every")
+        print("30 minutes and would have restarted them. They were relaunched by hand 4 minutes")
+        print("early. The real exposure is the GAP: up to 30 minutes dead before recovery.")
     else:
         print("No problems found: every account has a restart-capable task and a live watchdog.")
 
