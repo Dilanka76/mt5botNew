@@ -36,9 +36,10 @@ import time
 
 sys.path.insert(0, ".")
 
-from bot.config import load_config, validate_account_name
+from bot.config import PROJECT_ROOT, load_config, validate_account_name
+from bot.kill_switch import KillSwitch
 from bot.mt5_connector import MT5Connector
-from bot.process_utils import find_account_process
+from bot.process_utils import find_account_process, launch_python_script
 
 MAIN_SCRIPT_MATCH = "main.py"
 WAIT_SECONDS = 15
@@ -49,6 +50,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--accounts", default="demo1_m1,demo1_m3")
     p.add_argument("--force", action="store_true",
                    help="kill even while a position is open (leaves it with NO stop until restart)")
+    p.add_argument("--start", action="store_true",
+                   help="also LAUNCH the bot after killing it, instead of waiting for Task "
+                        "Scheduler. Uses the same launcher the gateway's /start endpoint uses.")
+    p.add_argument("--start-only", action="store_true",
+                   help="do not kill anything; just launch any account that is not running")
     return p.parse_args()
 
 
@@ -64,6 +70,35 @@ def open_positions(account: str) -> list:
         connector.disconnect()
 
 
+def start_account(account: str) -> None:
+    """Launch main.py for this account, detached, via the project's own
+    launcher -- the same one api_server.py's /start endpoint uses. Never
+    launches a second copy: main.py also carries its own startup
+    duplicate check, but checking here keeps the common case clean."""
+    if find_account_process(MAIN_SCRIPT_MATCH, account) is not None:
+        print(f"  Already running -- not launching a second copy.")
+        return
+
+    config = load_config(account)
+    switch = KillSwitch(config.kill_switch, account)
+    if switch.is_active():
+        print(f"  KILL SWITCH IS ACTIVE for {account} -- main.py would halt immediately on")
+        print(f"  startup. Clearing it (this is what the gateway's /start does).")
+        switch.deactivate()
+
+    pid = launch_python_script(PROJECT_ROOT / "main.py", PROJECT_ROOT, extra_args=["--account", account])
+    if pid is None:
+        print("  LAUNCH FAILED -- start it from the mobile app instead.")
+        return
+    print(f"  Launched pid={pid}. Waiting for it to settle...")
+    for _ in range(WAIT_SECONDS):
+        time.sleep(1)
+        if find_account_process(MAIN_SCRIPT_MATCH, account) is not None:
+            print("  Confirmed running.")
+            return
+    print("  Not visible yet -- re-run verify_tp_runner_live.py in a moment.")
+
+
 def main() -> None:
     args = parse_args()
     accounts = [validate_account_name(a) for a in args.accounts.split(",")]
@@ -73,9 +108,16 @@ def main() -> None:
         print(account)
         print("=" * 74)
 
+        if args.start_only:
+            start_account(account)
+            print()
+            continue
+
         proc = find_account_process(MAIN_SCRIPT_MATCH, account)
         if proc is None:
-            print("  No running process found -- nothing to kill. It may already be stopped.")
+            print("  No running process found -- nothing to kill.")
+            if args.start:
+                start_account(account)
             print()
             continue
         print(f"  Running: pid={proc['pid']}")
@@ -117,6 +159,8 @@ def main() -> None:
                 break
         else:
             print(f"  STILL PRESENT after {WAIT_SECONDS}s -- check manually before restarting.")
+        if args.start:
+            start_account(account)
         print()
 
     print("Task Scheduler should relaunch main.py on its own; if you use the mobile app,")
