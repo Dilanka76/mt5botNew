@@ -35,7 +35,15 @@ from bot.mt5_connector import MT5Connector
 PAIRS = [("demo2_m1", "live2_m1"), ("demo2_m3", "live2_m3")]
 # The execution block is ALLOWED to differ -- everything else is not.
 EXPECTED_DIFFS = {"magic_number", "sibling_magic_numbers", "require_demo_account",
-                  "mode", "order_comment"}
+                  "mode", "order_comment",
+                  # The symbol NAME is allowed to differ -- the live account
+                  # carries XAUUSD where demo carries XAUUSDp, and the suffix
+                  # is account-specific. What must NOT differ is the CONTRACT
+                  # behind it, which is compared field by field below
+                  # (contract size, digits, point, volume steps, tick
+                  # value/size). A matching name with a different contract
+                  # would be far more dangerous than a differing name.
+                  "symbol"}
 
 
 def raw_config(account: str) -> dict | None:
