@@ -153,6 +153,45 @@ def main() -> None:
                     problems.append(f"{target}: connected terminal is a demo account")
             if symbol is not None:
                 print(f"  symbol {config.symbol}: found")
+                # "Exactly like demo2" has to include the INSTRUMENT. Position
+                # sizing, every stop/target in dollars and every figure in this
+                # project's research assume $100 per lot per $1 of price. A
+                # different contract size on the live symbol would silently
+                # rescale all of it -- a $10 stop would not be $10 of risk.
+                src_config = load_config(source)
+                src_connector = MT5Connector(src_config.mt5)
+                src_connector.connect()
+                try:
+                    src_symbol = mt5.symbol_info(src_config.symbol)
+                finally:
+                    src_connector.disconnect()
+                if src_symbol is None:
+                    print(f"    (could not read {source}'s {src_config.symbol} to compare specs)")
+                else:
+                    fields = [
+                        ("contract size", "trade_contract_size"),
+                        ("digits", "digits"),
+                        ("point", "point"),
+                        ("volume min", "volume_min"),
+                        ("volume step", "volume_step"),
+                        ("tick value", "trade_tick_value"),
+                        ("tick size", "trade_tick_size"),
+                    ]
+                    mismatched = []
+                    for label, attr in fields:
+                        a, b = getattr(src_symbol, attr), getattr(symbol, attr)
+                        if a != b:
+                            mismatched.append(f"{label} {a} -> {b}")
+                    if mismatched:
+                        print(f"    CONTRACT DIFFERS from {source}'s {src_config.symbol}:")
+                        for m in mismatched:
+                            print(f"      {m}")
+                        print("      Every dollar figure (stops, targets, lot tiers, all the")
+                        print("      research) assumes demo2's contract. Do NOT trade until")
+                        print("      this is understood.")
+                        problems.append(f"{target}: contract specs differ from {source}")
+                    else:
+                        print(f"    contract specs identical to {source}'s {src_config.symbol}")
             else:
                 print(f"  symbol {config.symbol}: NOT FOUND on this account")
                 problems.append(f"{target}: symbol {config.symbol} not available")
