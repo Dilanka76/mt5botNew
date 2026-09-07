@@ -46,10 +46,12 @@ Get-ScheduledTask | Where-Object {
   $t = $_
   $reps = @($t.Triggers | ForEach-Object { if ($_.Repetition -and $_.Repetition.Interval) { [string]$_.Repetition.Interval } else { 'none' } })
   [PSCustomObject]@{
-    TaskName = $t.TaskName
-    State    = [string]$t.State
-    Command  = (($t.Actions | ForEach-Object { $_.Arguments }) -join ' ; ')
-    Repeats  = ($reps -join ',')
+    TaskName  = $t.TaskName
+    State     = [string]$t.State
+    Command   = (($t.Actions | ForEach-Object { $_.Arguments }) -join ' ; ')
+    Repeats   = ($reps -join ',')
+    UserId    = [string]$t.Principal.UserId
+    LogonType = [string]$t.Principal.LogonType
   }
 } | ConvertTo-Json -Compress
 """
@@ -57,6 +59,10 @@ Get-ScheduledTask | Where-Object {
 APPLY = """
 $ErrorActionPreference = 'Stop'
 $task = Get-ScheduledTask -TaskName '{name}'
+# A ServiceAccount principal (SYSTEM, LOCAL SERVICE, NETWORK SERVICE) has no
+# stored password, so passing -User is enough to satisfy Set-ScheduledTask.
+# An interactive/Password principal genuinely needs the password re-supplied,
+# which belongs in the Task Scheduler GUI where the user types it themselves.
 $changed = $false
 foreach ($trig in $task.Triggers) {{
   if ($trig.Repetition -and $trig.Repetition.Interval) {{
@@ -65,7 +71,11 @@ foreach ($trig in $task.Triggers) {{
   }}
 }}
 if ($changed) {{
-  Set-ScheduledTask -TaskName '{name}' -Trigger $task.Triggers | Out-Null
+  if ($task.Principal.LogonType -eq 'ServiceAccount') {{
+    Set-ScheduledTask -TaskName '{name}' -Trigger $task.Triggers -User $task.Principal.UserId | Out-Null
+  }} else {{
+    Set-ScheduledTask -TaskName '{name}' -Trigger $task.Triggers | Out-Null
+  }}
   Write-Output 'OK'
 }} else {{
   Write-Output 'NO_REPEATING_TRIGGER'
@@ -122,14 +132,15 @@ def main() -> None:
         return
 
     wanted = {t.strip() for t in args.tasks.split(",") if t.strip()}
-    print(f"{'task':<28}{'state':<12}{'repeat interval':<18}account")
+    print(f"{'task':<28}{'state':<12}{'repeat':<16}{'runs as':<22}{'logon':<14}account")
     targets = []
     for t in found:
         name, state = t.get("TaskName", "?"), t.get("State", "?")
         repeats = t.get("Repeats", "none")
         cmd = t.get("Command") or ""
         account = cmd.split("--account")[-1].strip().split()[0] if "--account" in cmd else "?"
-        print(f"{name:<28}{state:<12}{repeats:<18}{account}")
+        print(f"{name:<28}{state:<12}{repeats:<16}{(t.get('UserId') or '?'):<22}"
+              f"{(t.get('LogonType') or '?'):<14}{account}")
         if state == "Disabled":
             continue
         if wanted and name not in wanted:
@@ -161,6 +172,15 @@ def main() -> None:
     if failures:
         print(f"\n{failures} task(s) unchanged. Nothing was half-applied -- each task is set")
         print("in a single call, so a failure leaves that task exactly as it was.")
+        print()
+        print("If the error is 'The user name or password is incorrect', the task stores")
+        print("credentials so it can run while logged out, and Windows requires the password")
+        print("again before saving ANY change to it. That password should not be typed into a")
+        print("script. Change it in the Task Scheduler GUI instead, where Windows prompts for")
+        print("it directly:")
+        print("  Task Scheduler > find the task > Properties > Triggers > Edit >")
+        print("  'Repeat task every:' -> 5 minutes, for a duration of: Indefinitely > OK")
+        print("Then re-run this script (no --apply) to confirm it now reads PT5M.")
 
     print("\nRe-run without --apply to confirm, then:")
     print("    python scripts/check_autorestart.py")
