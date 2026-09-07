@@ -270,6 +270,24 @@ class AppConfig:
     # (a 1-minute candle's colour/volume is mostly noise). Acts on
     # exactly the values logged as shadow_closed_in_favor /
     # shadow_low_volume, so the log and the decision can never diverge.
+    # --- Daily loss limit (2026-09-07) -------------------------------
+    # Once this many dollars of REALISED loss have accumulated today
+    # (Colombo calendar day, the same boundary the dashboard uses), the
+    # engine stops opening new trades until midnight. An already-open
+    # position is never touched -- it keeps its stop, take-profit and swap
+    # exit, because force-closing on a threshold turns a floating loss
+    # into a realised one at an arbitrary moment.
+    #
+    # Read as a magnitude, so 50 and -50 both mean "stop after $50 of
+    # losses": a sign slip must not silently disable the one rule whose
+    # job is to stop losses. None or 0 = off.
+    #
+    # Built for live2 (2026-09-07), which trades M1 and M3 together at
+    # ~8.7% risk per trade -- so both legs in a position at once puts
+    # roughly 17% of the account at risk, and the measured six-loss run
+    # would be a very bad day with nothing under it.
+    daily_loss_limit_usd: float | None = None
+
     # --- TP-runner (2026-09-07) -------------------------------------
     # When set, a trade reaching take_profit_usd is NOT closed. The broker
     # take-profit is removed shortly before price arrives, a REAL
@@ -533,6 +551,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         breakeven_trigger_usd=raw.get("breakeven_trigger_usd"),
         breakeven_lock_usd=raw.get("breakeven_lock_usd"),
         entry_filter_enabled=bool(raw.get("entry_filter_enabled", False)),
+        daily_loss_limit_usd=raw.get("daily_loss_limit_usd"),
         tp_runner_trail_usd=raw.get("tp_runner_trail_usd"),
         tp_runner_arm_before_usd=float(raw.get("tp_runner_arm_before_usd", 0.20)),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),

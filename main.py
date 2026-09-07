@@ -189,12 +189,13 @@ def run() -> None:
         "Bot started: account=%s symbol=%s timeframe=%s mode=%s strategy_variant=%s state=%s "
         "reject_manual_trades=%s stop_loss_usd=%s take_profit_usd=%s breakeven_trigger_usd=%s "
         "breakeven_lock_usd=%s early_entry_threshold_usd=%s entry_filter_enabled=%s "
-        "tp_runner_trail_usd=%s tp_runner_arm_before_usd=%s",
+        "tp_runner_trail_usd=%s tp_runner_arm_before_usd=%s daily_loss_limit_usd=%s",
         args.account, config.symbol, config.timeframe, config.execution.mode, config.strategy_variant, engine.state.value,
         config.execution.reject_manual_trades, config.stop_loss_usd, config.take_profit_usd,
         config.breakeven_trigger_usd, config.breakeven_lock_usd,
         config.early_entry_threshold_usd, config.entry_filter_enabled,
         config.tp_runner_trail_usd, config.tp_runner_arm_before_usd,
+        config.daily_loss_limit_usd,
     )
 
     last_closed_candle_time = None
@@ -207,6 +208,10 @@ def run() -> None:
                 break
 
             try:
+                # Fresh each iteration: a stale list from a previous pass
+                # would re-trigger the ledger sync below (or, worse, be
+                # counted twice) whenever on_new_candle() raised.
+                events: list = []
                 df = get_ohlc(connector, config.symbol, config.timeframe, config.candles_to_fetch)
                 df = compute_emas(df, config.ema_periods)
                 if config.swap_adx_filter is not None:
@@ -232,7 +237,7 @@ def run() -> None:
                     # chance. See docs/STRATEGY_DUAL_CROSS_HISTORY.md's
                     # "CRITICAL INCIDENT" section.
                     try:
-                        engine.on_new_candle(df)
+                        events = engine.on_new_candle(df) or []
                         last_closed_candle_time = latest_closed_time
                     except Exception:
                         logger.exception(
@@ -241,7 +246,26 @@ def run() -> None:
                         )
 
                 tick = connector.get_tick(config.symbol)
-                engine.on_tick(tick)
+                events = events + (engine.on_tick(tick) or [])
+
+                # A closed trade must reach the local ledger NOW, not at the
+                # next 60s heartbeat: bot/daily_loss.py reads that ledger to
+                # decide whether the daily loss limit has been hit, and a
+                # stale reading would let one more trade open after the cap
+                # was already breached. Only runs when something actually
+                # closed, so it costs nothing on a normal iteration.
+                if any(type(e).__name__ == "ClosedTrade" for e in events):
+                    try:
+                        append_new_trades(
+                            trade_ledger_path(config.logging.log_dir, args.account),
+                            connector.get_recent_closed_trades(
+                                config.symbol, config.execution.magic_number,
+                            ),
+                        )
+                    except Exception:
+                        # Never let bookkeeping take down the trading loop --
+                        # the heartbeat sync below is still the backstop.
+                        logger.exception("Immediate trade-ledger sync failed; heartbeat will retry")
 
                 now = time.time()
                 if now - last_heartbeat_at >= HEARTBEAT_INTERVAL_SECONDS:

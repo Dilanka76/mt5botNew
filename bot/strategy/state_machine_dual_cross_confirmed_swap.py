@@ -50,12 +50,14 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from dataclasses import dataclass
 
 import MetaTrader5 as mt5
 import pandas as pd
 
 from bot.config import AppConfig
+from bot.daily_loss import COLOMBO, daily_limit_reason
 from bot.execution.trade_executor import TradeExecutor
 from bot.logging_setup.logger import log_decision
 from bot.mt5_connector import MT5Connector
@@ -107,6 +109,10 @@ class DualCrossConfirmedSwapEngine:
         self.executor = executor
 
         self.state = TradeState.IDLE
+        # Set to today's Colombo date the first time the daily loss
+        # limit blocks an entry, so it is logged once a day, not once
+        # per candle for the rest of the day.
+        self._daily_limit_logged_date = None
         self.position: DualPosition | None = None
         self.pending: PendingSetup | None = None
         self.prev_ema13: float | None = None
@@ -573,6 +579,23 @@ class DualCrossConfirmedSwapEngine:
         cross_candle_time_override: pd.Timestamp | None = None,
         shadow_filter_info: dict | None = None,
     ) -> OpenedTrade | None:
+        # Daily loss limit (config.daily_loss_limit_usd). Checked HERE, in
+        # the single funnel every entry path goes through, rather than at
+        # each of the three call sites -- one guard that cannot be missed
+        # when a fourth path is added later. Blocks NEW entries only; an
+        # open position keeps its stop, take-profit and swap exit.
+        blocked = daily_limit_reason(
+            self.config.logging.log_dir, self.config.account, self.config.daily_loss_limit_usd,
+        )
+        if blocked is not None:
+            today = datetime.now(COLOMBO).date()
+            if self._daily_limit_logged_date != today:
+                # Once per day, not once per candle -- this is hit on every
+                # signal for the rest of the day.
+                self._daily_limit_logged_date = today
+                log_decision(self.config.symbol, "daily_loss_limit_hit", blocked)
+            return None
+
         balance = self.connector.account_info().balance
         lots = calculate_lots(balance, self.config.position_sizing)
         result = self.executor.open_market_order(direction, lots, self.config.take_profit_usd)
