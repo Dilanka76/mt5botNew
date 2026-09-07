@@ -91,7 +91,9 @@ def main() -> None:
             # the SAME setting -- both mean "off". Flagging that as a
             # difference is noise, and noise in a pre-flight check is how
             # a real difference gets skimmed past.
-            if {a, b} <= {"<missing>", None}:
+            # Membership test, not a set: some values here are lists
+            # (sibling_magic_numbers), which are unhashable.
+            if a in ("<missing>", None) and b in ("<missing>", None):
                 continue
             leaf = key.split(".")[-1]
             if leaf in EXPECTED_DIFFS:
