@@ -49,6 +49,7 @@ from bot.data.market_data import get_ohlc_range
 from bot.indicators.adx import compute_adx
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
+from bot.strategy.cross_lookup import find_cross_candle
 
 ADX_THRESHOLD = 25.0  # the value demo1's swap gate actually uses
 
@@ -76,15 +77,6 @@ def efficiency_ratios(df: pd.DataFrame, lookback: int) -> tuple[pd.Series, pd.Se
     return net / total_close, net / tr.rolling(lookback).sum()
 
 
-def find_cross_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    above = df["ema13"] > df["ema21"]
-    changed = above != above.shift(1)
-    want_above = direction == "BUY"
-    w = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(w.index):
-        if changed.loc[idx] and bool(above.loc[idx]) == want_above:
-            return idx
-    return None
 
 
 def avg(rows: list[dict]) -> float:

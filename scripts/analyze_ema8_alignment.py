@@ -52,6 +52,7 @@ from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
+from bot.strategy.cross_lookup import find_cross_candle
 
 FAST_SPAN = 8
 
@@ -69,16 +70,6 @@ def state_changes(above: pd.Series) -> pd.Series:
     return changed
 
 
-def find_cross_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    """Candle where EMA13/21 genuinely CHANGED state into this direction."""
-    above = df["ema13"] > df["ema21"]
-    changed = state_changes(above)
-    want = direction == "BUY"
-    w = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(w.index):
-        if changed.loc[idx] and bool(above.loc[idx]) == want:
-            return idx
-    return None
 
 
 def summarize(label: str, profits: list[float]) -> str:

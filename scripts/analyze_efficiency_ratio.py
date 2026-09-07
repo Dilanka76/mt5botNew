@@ -44,6 +44,7 @@ from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
+from bot.strategy.cross_lookup import find_cross_candle
 
 BANDS = [(0.00, 0.05), (0.05, 0.10), (0.10, 0.20), (0.20, 1.01)]
 THRESHOLDS = [0.05, 0.10, 0.15, 0.20]
@@ -80,18 +81,6 @@ def efficiency_ratios(df: pd.DataFrame, lookback: int) -> tuple[pd.Series, pd.Se
            (net / total_tr).replace([float("inf")], float("nan"))
 
 
-def find_cross_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    """The candle where the EMA13/21 state genuinely CHANGED -- not merely
-    one where the EMAs sit on the right side (that bug produced garbage
-    in measure_cross_to_entry_gap.py on 2026-09-04)."""
-    above = df["ema13"] > df["ema21"]
-    changed = above != above.shift(1)
-    want_above = direction == "BUY"
-    w = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(w.index):
-        if changed.loc[idx] and bool(above.loc[idx]) == want_above:
-            return idx
-    return None
 
 
 def bucket_table(rows: list[dict], key: str) -> None:

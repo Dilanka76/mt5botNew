@@ -50,6 +50,7 @@ from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
+from bot.strategy.cross_lookup import find_cross_candle
 
 K13 = 2.0 / (13 + 1)
 K21 = 2.0 / (21 + 1)
@@ -68,27 +69,6 @@ def cross_price(ema13_prev: float, ema21_prev: float) -> float:
     return (ema21_prev * (1 - K21) - ema13_prev * (1 - K13)) / (K13 - K21)
 
 
-def find_cross_candle(df: pd.DataFrame, near: datetime, direction: str) -> pd.Timestamp | None:
-    """The candle where the EMA13/21 state genuinely CHANGED into this
-    trade's direction -- NOT merely a candle where the EMAs happen to be
-    on the right side.
-
-    This distinction broke the first version of this script (2026-09-04):
-    searching for a candle in the right STATE picks up candles well into
-    an existing trend, where the two EMAs sit far apart. Feeding those
-    into cross_price() demands an enormous move to bridge them and
-    produced absurd results ($133 gaps against a $5 take-profit) and a
-    16-51% validation rate. Detecting the genuine state change -- the
-    same `above != above.shift(1)` test the live engines use -- is the
-    fix."""
-    above = df["ema13"] > df["ema21"]
-    changed = above != above.shift(1)
-    want_above = direction == "BUY"
-    w = df[(df.index <= near) & (df.index >= near - timedelta(minutes=30))]
-    for idx in reversed(w.index):
-        if changed.loc[idx] and bool(above.loc[idx]) == want_above:
-            return idx
-    return None
 
 
 def main() -> None:
