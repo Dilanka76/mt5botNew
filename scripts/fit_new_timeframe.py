@@ -46,8 +46,10 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -80,6 +82,9 @@ def parse_args() -> argparse.Namespace:
                    help="NOT scaled with the candle — see the module docstring")
     p.add_argument("--locks", default="0,1,2", help="tp_runner_lock_below_usd candidates")
     p.add_argument("--trails", default="0.5,0.75,1.0,1.5")
+    p.add_argument("--jobs", type=int, default=None,
+                   help="parallel worker processes (default: all cores, max 8). "
+                        "--jobs 1 forces the plain serial path if anything looks wrong.")
     p.add_argument("--balance", type=float, default=100000.0,
                    help="same starting balance for every candidate, so position sizing "
                         "cannot masquerade as edge (it did in the 2026-09-06 stop sweep)")
@@ -103,6 +108,56 @@ def split_halves(trades: list[dict], boundary: datetime) -> tuple[list[dict], li
     first = [t for t in trades if closed_at(t) < boundary]
     second = [t for t in trades if closed_at(t) >= boundary]
     return first, second
+
+
+# Each replay is completely independent of every other -- MT5 is already
+# disconnected by the time the sweep starts, so this is pure CPU work.
+# Windows spawns fresh interpreters, so the candles are shipped once per
+# worker through the initializer rather than once per task.
+_CTX: dict = {}
+
+
+def _init_worker(ctx: dict) -> None:
+    logging.getLogger("bot").setLevel(logging.WARNING)
+    _CTX.update(ctx)
+
+
+def _run_one(task: tuple[dict, object]) -> dict:
+    labels, config = task
+    r = evaluate(config, _CTX["df"], _CTX["date_from"], _CTX["boundary"],
+                 _CTX["contract_size"], _CTX["point"], _CTX["balance"])
+    r.update(labels)
+    return r
+
+
+def sweep(tasks: list[tuple[dict, object]], jobs: int, ctx: dict, label: str) -> list[dict]:
+    """Run every candidate, printing progress as each finishes. Falls back
+    to the serial path on --jobs 1, which stays the reference behaviour."""
+    total = len(tasks)
+    started = time.monotonic()
+    results: list[dict] = []
+
+    if jobs <= 1:
+        _init_worker(ctx)
+        for task in tasks:
+            results.append(_run_one(task))
+            _progress(len(results), total, started, label)
+        return results
+
+    with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker,
+                             initargs=(ctx,)) as pool:
+        for r in pool.map(_run_one, tasks):
+            results.append(r)
+            _progress(len(results), total, started, label)
+    return results
+
+
+def _progress(done: int, total: int, started: float, label: str) -> None:
+    elapsed = time.monotonic() - started
+    if done == 1 or done % 5 == 0 or done == total:
+        rate = elapsed / done
+        left = rate * (total - done)
+        print(f"    {label}: {done}/{total} done, ~{left / 60:.0f} min left", flush=True)
 
 
 def evaluate(config, df, date_from, boundary, contract_size, point, balance) -> dict:
@@ -169,28 +224,24 @@ def main() -> None:
         stops, tps = [8.0, 10.0, 12.0], [7.0, 9.0, 11.0]
         print("QUICK MODE — coarse grid, for shape and timing only. The pass/fail")
         print("verdict below is NOT final; re-run without --quick before deciding.\n")
-    total_combos = len(stops) * len(tps)
-    print(f"STAGE 1 — stop x take-profit ({total_combos} combinations, runner off)")
-    print(f"  {'#':>7}{'stop':>6}{'TP':>6}{'trades':>8}{'1st half':>11}{'2nd half':>11}"
-          f"{'total':>11}{'win%':>8}", flush=True)
-    rows = []
-    done = 0
-    started = time.monotonic()
-    for sl in stops:
-        for tp in tps:
-            cfg = replace(base, stop_loss_usd=sl, take_profit_usd=tp,
-                          breakeven_trigger_usd=max(0.5, tp - args.arm_before))
-            r = evaluate(cfg, df, date_from, boundary, contract_size, point, args.balance)
-            r.update(stop=sl, tp=tp)
-            rows.append(r)
-            done += 1
-            print(f"  {f'{done}/{total_combos}':>7}{sl:>6.1f}{tp:>6.1f}{r['n']:>8}"
-                  f"{r['first']:>11.0f}{r['second']:>11.0f}"
-                  f"{r['stats']['total_pl']:>11.0f}{r['stats']['win_rate']:>7.1f}%", flush=True)
-            if done == 1:
-                each = time.monotonic() - started
-                print(f"          ~{each:.0f}s per combination — stage 1 will take about "
-                      f"{each * total_combos / 60:.0f} minutes. Leave it running.", flush=True)
+    jobs = args.jobs or min(os.cpu_count() or 1, 8)
+    ctx = dict(df=df, date_from=date_from, boundary=boundary,
+               contract_size=contract_size, point=point, balance=args.balance)
+
+    tasks = [({"stop": sl, "tp": tp},
+              replace(base, stop_loss_usd=sl, take_profit_usd=tp,
+                      breakeven_trigger_usd=max(0.5, tp - args.arm_before)))
+             for sl in stops for tp in tps]
+    print(f"STAGE 1 — stop x take-profit ({len(tasks)} combinations, runner off, "
+          f"{jobs} parallel)", flush=True)
+    rows = sweep(tasks, jobs, ctx, "stage 1")
+
+    print(f"\n  {'stop':>6}{'TP':>6}{'trades':>8}{'1st half':>11}{'2nd half':>11}"
+          f"{'total':>11}{'win%':>8}")
+    for r in sorted(rows, key=lambda r: (r["stop"], r["tp"])):
+        print(f"  {r['stop']:>6.1f}{r['tp']:>6.1f}{r['n']:>8}"
+              f"{r['first']:>11.0f}{r['second']:>11.0f}"
+              f"{r['stats']['total_pl']:>11.0f}{r['stats']['win_rate']:>7.1f}%")
 
     ranked = sorted(rows, key=lambda r: r["first"], reverse=True)
     best = ranked[0]
@@ -214,21 +265,20 @@ def main() -> None:
     print(f"  {'runner off':>9}{'-':>8}{off['n']:>8}{off['first']:>11.0f}{off['second']:>11.0f}"
           f"{off['stats']['total_pl']:>11.0f}")
 
-    runner_rows = []
-    for lock in [float(v) for v in args.locks.split(",")]:
-        if lock >= tp:
-            continue
-        for trail in [float(v) for v in args.trails.split(",")]:
-            cfg = replace(base, stop_loss_usd=best["stop"], take_profit_usd=tp,
-                          breakeven_trigger_usd=max(0.5, tp - args.arm_before),
-                          tp_runner_trail_usd=trail,
-                          tp_runner_arm_before_usd=args.arm_before,
-                          tp_runner_lock_below_usd=lock)
-            r = evaluate(cfg, df, date_from, boundary, contract_size, point, args.balance)
-            r.update(lock=lock, trail=trail)
-            runner_rows.append(r)
-            print(f"  {tp - lock:>9.2f}{trail:>8.2f}{r['n']:>8}{r['first']:>11.0f}"
-                  f"{r['second']:>11.0f}{r['stats']['total_pl']:>11.0f}", flush=True)
+    runner_tasks = [
+        ({"lock": lock, "trail": trail},
+         replace(base, stop_loss_usd=best["stop"], take_profit_usd=tp,
+                 breakeven_trigger_usd=max(0.5, tp - args.arm_before),
+                 tp_runner_trail_usd=trail,
+                 tp_runner_arm_before_usd=args.arm_before,
+                 tp_runner_lock_below_usd=lock))
+        for lock in [float(v) for v in args.locks.split(",")] if lock < tp
+        for trail in [float(v) for v in args.trails.split(",")]
+    ]
+    runner_rows = sweep(runner_tasks, jobs, ctx, "stage 2") if runner_tasks else []
+    for r in sorted(runner_rows, key=lambda r: (r["lock"], r["trail"])):
+        print(f"  {tp - r['lock']:>9.2f}{r['trail']:>8.2f}{r['n']:>8}{r['first']:>11.0f}"
+              f"{r['second']:>11.0f}{r['stats']['total_pl']:>11.0f}")
 
     if runner_rows:
         rbest = max(runner_rows, key=lambda r: r["first"])
