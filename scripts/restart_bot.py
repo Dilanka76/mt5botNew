@@ -55,6 +55,10 @@ def parse_args() -> argparse.Namespace:
                         "Scheduler. Uses the same launcher the gateway's /start endpoint uses.")
     p.add_argument("--start-only", action="store_true",
                    help="do not kill anything; just launch any account that is not running")
+    p.add_argument("--wait-for-flat", type=int, default=0, metavar="MINUTES",
+                   help="if an account is holding a position, poll until it closes (up to this "
+                        "many minutes) instead of refusing straight away. Restarts each account "
+                        "the moment IT goes flat, rather than waiting for all of them.")
     return p.parse_args()
 
 
@@ -132,11 +136,34 @@ def main() -> None:
                 continue
             positions = []
 
+        if positions and not args.force and args.wait_for_flat:
+            for pos in positions:
+                print(f"  OPEN POSITION: ticket={pos.ticket} {pos.volume} lots profit={pos.profit:+.2f}")
+            deadline = time.time() + args.wait_for_flat * 60
+            print(f"  Waiting up to {args.wait_for_flat} min for it to close "
+                  f"(checking every 30s)...")
+            while time.time() < deadline:
+                time.sleep(30)
+                try:
+                    positions = open_positions(account)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  position check failed ({exc}); will retry")
+                    continue
+                if not positions:
+                    print("  Now flat.")
+                    break
+                print(f"    still open, P/L {positions[0].profit:+.2f}")
+            else:
+                print(f"  Still holding after {args.wait_for_flat} min -- not killing. Re-run later.")
+                print()
+                continue
+
         if positions and not args.force:
-            for p in positions:
-                print(f"  OPEN POSITION: ticket={p.ticket} {p.volume} lots profit={p.profit:+.2f}")
+            for pos in positions:
+                print(f"  OPEN POSITION: ticket={pos.ticket} {pos.volume} lots profit={pos.profit:+.2f}")
             print("  REFUSING to kill -- this position has NO broker-side stop and would be")
-            print("  left unprotected until the bot restarts. Wait for it to close, then re-run.")
+            print("  left unprotected until the bot restarts. Wait for it to close, then re-run,")
+            print("  or use --wait-for-flat N to poll until it closes.")
             print()
             continue
         if positions:
