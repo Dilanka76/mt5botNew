@@ -528,18 +528,33 @@ class DualCrossConfirmedSwapAdxEngine:
                 held_state = CrossState.ABOVE if self.position.direction == Direction.BUY else CrossState.BELOW
                 if new_state is not None and new_state != held_state:
                     direction = Direction.BUY if new_state == CrossState.ABOVE else Direction.SELL
-                    if self.pending_reversal_direction == direction:
+                    # config.swap_immediate: fire on the FIRST opposing
+                    # candle with no debounce and no ADX gate. On demo1
+                    # that gate blocked 100% of reversals (0 swaps in 209
+                    # trades), leaving the engine's main early-exit rule
+                    # switched off. The stop-tightening below is skipped
+                    # too -- it exists only to protect the position during
+                    # the 2-candle wait, and there is no wait any more.
+                    immediate = self.config.swap_immediate
+                    if immediate or self.pending_reversal_direction == direction:
                         # 2-candle confirmation just passed -> ADX gate.
                         adx_value = last_closed["adx"]
-                        adx_ok = not math.isnan(adx_value) and adx_value >= self.config.swap_adx_filter.adx_threshold
+                        adx_ok = immediate or (
+                            not math.isnan(adx_value)
+                            and adx_value >= self.config.swap_adx_filter.adx_threshold
+                        )
                         if adx_ok:
                             events.append(self._close_position(
                                 category="swapped_confirmed_reversal",
                                 reason=(
-                                    f"{direction.value} cross confirmed TWO candles in a row (this candle: "
-                                    f"ema13={ema13:.2f}, ema21={ema21:.2f}, adx={adx_value:.1f} >= "
-                                    f"{self.config.swap_adx_filter.adx_threshold:.1f}) -> closing the opposite "
-                                    f"{self.position.direction.value} now, regardless of P/L"
+                                    f"{direction.value} cross opposes the held position "
+                                    f"(ema13={ema13:.2f}, ema21={ema21:.2f})"
+                                    + (" -- swap_immediate: no debounce, no ADX gate"
+                                       if immediate else
+                                       f", confirmed TWO candles in a row, adx={adx_value:.1f} >= "
+                                       f"{self.config.swap_adx_filter.adx_threshold:.1f}")
+                                    + f" -> closing the opposite {self.position.direction.value} "
+                                      f"now, regardless of P/L"
                                 ),
                                 exit_price=exit_price,
                             ))

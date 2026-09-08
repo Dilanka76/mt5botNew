@@ -338,6 +338,21 @@ class AppConfig:
     # supply breathing room, and paying for both is waste. Loose lock ->
     # tight trail ($0.50). Lock at target -> looser trail ($2.00).
     tp_runner_lock_below_usd: float = 0.0
+
+    # Swap on the FIRST confirmed opposing candle, with no 2-candle
+    # debounce and no ADX gate. False (default) keeps both.
+    #
+    # Why this exists (user decision 2026-09-08): on demo1 the debounce +
+    # ADX(14) >= 25 gate blocked 100% of reversals -- 0 swaps in 209 real
+    # trades -- so the swap, which is the engine's main way of cutting a
+    # losing trade early, was effectively switched off. demo1 rode 100% of
+    # its losses to a full stop while demo2, which has no gate, swapped
+    # out of most. See [[project_demo1_swap_never_fires]].
+    #
+    # Note the pending-reversal stop-tightening goes away with it: that
+    # rule only exists to protect the position DURING the 2-candle wait,
+    # and there is no wait any more.
+    swap_immediate: bool = False
     entry_filter_enabled: bool = False
     # Optional early-entry threshold: while idle (no open position, no
     # pending setup) and the previous candle's real EMA13/21 are known, a
@@ -575,6 +590,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         tp_runner_trail_usd=raw.get("tp_runner_trail_usd"),
         tp_runner_arm_before_usd=float(raw.get("tp_runner_arm_before_usd", 0.20)),
         tp_runner_lock_below_usd=float(raw.get("tp_runner_lock_below_usd", 0.0)),
+        swap_immediate=bool(raw.get("swap_immediate", False)),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
         dual_cross=dual_cross,
         dual_cross_confirmed_entry=dual_cross_confirmed_entry,
