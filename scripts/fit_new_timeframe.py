@@ -314,6 +314,29 @@ def main() -> None:
         print(f"  {tp - r['lock']:>9.2f}{r['trail']:>8.2f}{r['n']:>8}{r['first']:>11.0f}"
               f"{r['second']:>11.0f}{r['stats']['total_pl']:>11.0f}")
 
+    # A runner setting that changes nothing changed nothing. Locking at
+    # +$4 versus +$6 with a $0.50 versus $1.50 trail cannot produce twelve
+    # byte-identical results unless the simulation is blind to all of it --
+    # bot/backtest/runner.py never reads tp_runner_*, and the engine's
+    # set_sltp calls do not feed back into the exits it computes itself.
+    # Reporting that as "the runner does not help" would be a false
+    # negative dressed as a finding, so say what it actually is.
+    inert = runner_rows and all(
+        (r["n"], round(r["first"], 2), round(r["second"], 2))
+        == (off["n"], round(off["first"], 2), round(off["second"], 2))
+        for r in runner_rows
+    )
+    if inert:
+        print()
+        print("  !! STAGE 2 IS MEANINGLESS — every setting returned exactly the runner-off")
+        print("     result, including locks $2 apart and trails 3x apart. This backtest does")
+        print("     not simulate the TP-runner at all; it computes exits itself and ignores")
+        print("     the engine's set_sltp calls. It is NOT evidence the runner fails.")
+        print("     The runner can only be measured on real trades (scripts/simulate_tp_runner.py),")
+        print("     so a brand-new timeframe cannot have it fitted in advance.")
+        print("     SHIP THE LEG WITH THE RUNNER OFF and decide it later on live demo trades.")
+        runner_rows = []
+
     if runner_rows:
         rbest = max(runner_rows, key=lambda r: r["first"])
         gain1 = rbest["first"] - off["first"]
@@ -335,6 +358,8 @@ def main() -> None:
     if runner_rows:
         print(f"  tp_runner_lock_below_usd : {rbest['lock']:.2f}")
         print(f"  tp_runner_trail_usd      : {rbest['trail']:.2f}")
+    else:
+        print(f"  tp_runner_trail_usd      : null   (OFF — not measurable here, see above)")
     print(f"  swap_immediate           : true")
     print("\nStill decided OUTSIDE this script: lot size (set it so stop x lots matches the")
     print("risk per trade you already accept), sessions, and the daily loss limit.")
