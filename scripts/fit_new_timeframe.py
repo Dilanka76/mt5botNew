@@ -188,6 +188,15 @@ def evaluate(config, df, date_from, boundary, contract_size, point, balance) -> 
 
 
 def main() -> None:
+    # Windows block-buffers stdout, so a long run shows nothing until the
+    # buffer fills. That made a working sweep look frozen, and pressing
+    # Ctrl-C to see whether it was alive killed it -- three times.
+    # Line buffering means every line appears the moment it is printed.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
+
     args = parse_args()
     config = load_config(args.account)
     setup_logging(config.logging, f"{args.account}-fit-{args.timeframe}")
