@@ -47,6 +47,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -70,8 +71,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--timeframe", required=True, help="the timeframe being fitted, e.g. M5")
     p.add_argument("--from", dest="date_from", required=True, help="YYYY-MM-DD, UTC")
     p.add_argument("--to", dest="date_to", required=True, help="YYYY-MM-DD, UTC")
-    p.add_argument("--stops", default="6,7,8,9,10,11,12")
+    p.add_argument("--stops", default="7,8,9,10,11,12")
     p.add_argument("--tps", default="6,7,8,9,10,11")
+    p.add_argument("--quick", action="store_true",
+                   help="coarse 3x3 grid first: same method, ~9 replays, to see the "
+                        "shape and time one run before committing to the full sweep")
     p.add_argument("--arm-before", type=float, default=1.0,
                    help="NOT scaled with the candle — see the module docstring")
     p.add_argument("--locks", default="0,1,2", help="tp_runner_lock_below_usd candidates")
@@ -82,9 +86,22 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def closed_at(trade: dict) -> datetime:
+    """bot/backtest/runner.py records close_time as an ISO string, not a
+    datetime -- it is shaped to match the real trade ledger. Parse it, and
+    treat a naive timestamp as UTC so the split cannot silently compare
+    across timezones."""
+    value = trade["close_time"]
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def split_halves(trades: list[dict], boundary: datetime) -> tuple[list[dict], list[dict]]:
-    first = [t for t in trades if t["close_time"] < boundary]
-    second = [t for t in trades if t["close_time"] >= boundary]
+    first = [t for t in trades if closed_at(t) < boundary]
+    second = [t for t in trades if closed_at(t) >= boundary]
     return first, second
 
 
@@ -148,9 +165,17 @@ def main() -> None:
     # ---- stage 1: stop x take-profit, runner off ----------------------
     stops = [float(v) for v in args.stops.split(",")]
     tps = [float(v) for v in args.tps.split(",")]
-    print(f"STAGE 1 — stop x take-profit ({len(stops) * len(tps)} combinations, runner off)")
-    print(f"  {'stop':>6}{'TP':>6}{'trades':>8}{'1st half':>11}{'2nd half':>11}{'total':>11}{'win%':>8}")
+    if args.quick:
+        stops, tps = [8.0, 10.0, 12.0], [7.0, 9.0, 11.0]
+        print("QUICK MODE — coarse grid, for shape and timing only. The pass/fail")
+        print("verdict below is NOT final; re-run without --quick before deciding.\n")
+    total_combos = len(stops) * len(tps)
+    print(f"STAGE 1 — stop x take-profit ({total_combos} combinations, runner off)")
+    print(f"  {'#':>7}{'stop':>6}{'TP':>6}{'trades':>8}{'1st half':>11}{'2nd half':>11}"
+          f"{'total':>11}{'win%':>8}", flush=True)
     rows = []
+    done = 0
+    started = time.monotonic()
     for sl in stops:
         for tp in tps:
             cfg = replace(base, stop_loss_usd=sl, take_profit_usd=tp,
@@ -158,8 +183,14 @@ def main() -> None:
             r = evaluate(cfg, df, date_from, boundary, contract_size, point, args.balance)
             r.update(stop=sl, tp=tp)
             rows.append(r)
-            print(f"  {sl:>6.1f}{tp:>6.1f}{r['n']:>8}{r['first']:>11.0f}{r['second']:>11.0f}"
-                  f"{r['stats']['total_pl']:>11.0f}{r['stats']['win_rate']:>7.1f}%")
+            done += 1
+            print(f"  {f'{done}/{total_combos}':>7}{sl:>6.1f}{tp:>6.1f}{r['n']:>8}"
+                  f"{r['first']:>11.0f}{r['second']:>11.0f}"
+                  f"{r['stats']['total_pl']:>11.0f}{r['stats']['win_rate']:>7.1f}%", flush=True)
+            if done == 1:
+                each = time.monotonic() - started
+                print(f"          ~{each:.0f}s per combination — stage 1 will take about "
+                      f"{each * total_combos / 60:.0f} minutes. Leave it running.", flush=True)
 
     ranked = sorted(rows, key=lambda r: r["first"], reverse=True)
     best = ranked[0]
@@ -197,7 +228,7 @@ def main() -> None:
             r.update(lock=lock, trail=trail)
             runner_rows.append(r)
             print(f"  {tp - lock:>9.2f}{trail:>8.2f}{r['n']:>8}{r['first']:>11.0f}"
-                  f"{r['second']:>11.0f}{r['stats']['total_pl']:>11.0f}")
+                  f"{r['second']:>11.0f}{r['stats']['total_pl']:>11.0f}", flush=True)
 
     if runner_rows:
         rbest = max(runner_rows, key=lambda r: r["first"])
