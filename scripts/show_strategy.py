@@ -130,6 +130,18 @@ def main() -> None:
         print("  EXIT")
         print(f"    Take profit        : {money(c.take_profit_usd)}  (broker-side)")
         print(f"    Stop loss          : {money(c.stop_loss_usd)}")
+        trail = c.tp_runner_trail_usd
+        if trail is None:
+            print(f"    TP-runner          : OFF (trade closes at take profit)")
+        else:
+            lock_at = c.take_profit_usd - c.tp_runner_lock_below_usd
+            print(f"    TP-runner          : ON — at the target the trade STAYS OPEN, stop locks at "
+                  f"+${lock_at:.2f}, trails ${trail:.2f} behind"
+                  f"{note('tp_runner_trail_usd', reads)}")
+        print(f"    Daily loss limit   : "
+              f"{'OFF' if not c.daily_loss_limit_usd else money(c.daily_loss_limit_usd)}"
+              f"{note('daily_loss_limit_usd', reads)}")
+
         be_trig, be_lock = c.breakeven_trigger_usd, c.breakeven_lock_usd
         if be_trig is None:
             print(f"    Breakeven          : OFF")
