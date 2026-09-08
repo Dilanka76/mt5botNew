@@ -124,7 +124,10 @@ def main() -> None:
         check(args.lock_below is not None and args.lock_below < args.take_profit,
               f"lock at +${args.take_profit - (args.lock_below or 0):.2f} is below the take-profit", failures)
     else:
-        print("  NOTE  runner OFF — the fit did not show it carrying into the second half")
+        print("  NOTE  runner OFF — and NOT because it was tested and failed.")
+        print("        bot/backtest/runner.py does not simulate tp_runner at all, so a")
+        print("        timeframe that has never traded cannot have one fitted. Turn it on")
+        print("        later from real exits via scripts/simulate_tp_runner.py.")
 
     if failures:
         print(f"\nREFUSING: {len(failures)} check(s) failed. Fix the values, do not override.")
