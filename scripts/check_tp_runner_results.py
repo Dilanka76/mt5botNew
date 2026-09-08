@@ -124,7 +124,8 @@ def main() -> None:
         trailed_tickets = {e.get("ticket") for e in events["tp_runner_trailed"] if e.get("ticket")}
         trailed_times = [e["_ts"] for e in events["tp_runner_trailed"]]
 
-        print(f"  {'locked at (Colombo)':<22}{'dir':<6}{'baseline $':>12}{'actual $':>11}{'diff $':>10}  ran?")
+        print(f"  {'locked at (Colombo)':<22}{'dir':<6}{'lock px':>10}{'exit px':>10}"
+              f"{'move $':>9}{'diff $':>10}  ran?")
         rows = []
         for e in events["tp_runner_locked"]:
             trade = find_trade(trades, e["_ts"])
@@ -133,17 +134,28 @@ def main() -> None:
                       f"(still open, or no matching closed trade yet)")
                 continue
             volume = float(trade["volume"])
+            # Compare EXIT PRICE against the LOCK PRICE, not money against
+            # money. bot.analytics.trade_profit() returns profit NET of swap
+            # and both legs' commission, while a gross take-profit baseline
+            # is not -- subtracting one from the other charged the runner
+            # for commission the old flat take-profit paid anyway, and
+            # overstated its cost. Price isolates the runner's real effect.
+            is_buy = str(trade["direction"]) == "BUY"
+            entry_price = float(trade["entry_price"])
+            exit_price = float(trade["exit_price"])
+            lock_price = entry_price + config.take_profit_usd if is_buy else entry_price - config.take_profit_usd
+            price_diff = (exit_price - lock_price) if is_buy else (lock_price - exit_price)
+            diff = price_diff * volume * USD_PER_LOT_PER_DOLLAR
             baseline = config.take_profit_usd * volume * USD_PER_LOT_PER_DOLLAR
-            actual = float(trade["profit"])
-            diff = actual - baseline
+            actual = baseline + diff  # what it earned, on the same gross basis
             entry_t = trade["entry_time"].astimezone(timezone.utc)
             exit_t = trade["exit_time"].astimezone(timezone.utc)
             ran = (trade.get("ticket") in trailed_tickets
                    or any(entry_t <= t <= exit_t for t in trailed_times))
             rows.append({"diff": diff, "ran": ran})
             print(f"  {e['_ts'].astimezone(COLOMBO):%H:%M:%S}            "
-                  f"{str(trade['direction']):<6}{baseline:>12.2f}{actual:>11.2f}{diff:>+10.2f}"
-                  f"  {'YES' if ran else 'no'}")
+                  f"{str(trade['direction']):<6}{lock_price:>10.2f}{exit_price:>10.2f}"
+                  f"{price_diff:>+9.2f}{diff:>+10.2f}  {'YES' if ran else 'no'}")
 
         if not rows:
             print("\n  No locked trade has closed yet.\n")
@@ -156,7 +168,8 @@ def main() -> None:
         grand_ran += ran
         print(f"\n  {len(rows)} locked and closed, {ran} actually ran further "
               f"({100 * ran / len(rows):.0f}%)")
-        print(f"  Net vs the old flat take-profit: ${total:+.2f}")
+        print(f"  Net vs the old flat take-profit: ${total:+.2f}   "
+          f"(price only -- commission and swap excluded, since the old behaviour paid them too)")
         print(f"  -> the runner has {'ADDED' if total > 0 else 'COST'} ${abs(total):.2f} so far\n")
 
     print("=" * 84)
