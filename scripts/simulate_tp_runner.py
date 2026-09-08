@@ -207,6 +207,15 @@ def main() -> None:
             (f"lock ${tp - 0.50:.2f} + trail $0.50    ", tp - 0.50, 0.50, None),
             (f"lock ${tp - 0.50:.2f} + trail $1.00    ", tp - 0.50, 1.00, None),
             (f"lock ${tp:.2f} + trail $2.00    ", tp, 2.00, None),
+            # The user's proposal, 2026-09-08: lock a FULL $1 below the
+            # target (M1 $4, M3 $5) so a small pullback cannot stop the
+            # trade out the instant it locks -- 6 of the first 7 real
+            # locks did exactly that. Buys more runners at the price of a
+            # $1 give-back on every trade that does not run, and unlike
+            # lock-at-target it CAN finish worse than the old flat exit.
+            (f"lock ${tp - 1.00:.2f} + trail $0.50    ", tp - 1.00, 0.50, None),
+            (f"lock ${tp - 1.00:.2f} + trail $1.00    ", tp - 1.00, 1.00, None),
+            (f"lock ${tp - 1.00:.2f} + trail $2.00    ", tp - 1.00, 2.00, None),
             # The user's stepped form, 2026-09-07: move the stop up $1 for
             # every $1 gained, then $2, then $3 -- fewer modify calls than
             # a continuous trail, and a wider effective gap.
