@@ -35,8 +35,8 @@ from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
+from bot.timeframes import TIMEFRAME_MINUTES
 
-TIMEFRAME_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
 
 
 def parse_args() -> argparse.Namespace:

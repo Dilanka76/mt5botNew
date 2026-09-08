@@ -40,13 +40,13 @@ from bot.indicators.ema import compute_emas
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
 from bot.trade_stats import (
+from bot.timeframes import TIMEFRAME_MINUTES
     compute_daily_breakdown,
     compute_day_stats,
     compute_hour_of_day_breakdown,
     compute_session_breakdown,
 )
 
-TIMEFRAME_MINUTES = {"M1": 1, "M3": 3, "M5": 5, "M15": 15, "M30": 30, "H1": 60, "H4": 240, "D1": 1440}
 
 
 def _parse_datetime_arg(value: str) -> datetime:
