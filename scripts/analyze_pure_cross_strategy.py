@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, ".")
 
@@ -56,6 +57,7 @@ from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
 
 USD_PER_LOT_PER_DOLLAR = 100.0
+COLOMBO = ZoneInfo("Asia/Colombo")
 
 
 def parse_args() -> argparse.Namespace:
@@ -128,6 +130,59 @@ def report(label: str, trades: list[dict], spread: float, lots: float, config) -
     print()
 
 
+
+def by_hour(trades: list[dict], spread: float, lots: float) -> None:
+    """Expectancy per entry hour, with the walk-forward split INSIDE each
+    hour. An hour only counts if it is positive in BOTH halves -- a whole
+    day has 24 buckets, so a few will look good by chance alone, and
+    ranking by the pooled figure would just surface the luckiest.
+
+    This is the one lever left for M1: its signal misses break-even by
+    about one percentage point of win rate, so a subset of the day that
+    is genuinely better could carry it over. See
+    feedback_m1_m3_candle_behaviour.
+    """
+    mid = len(trades) // 2
+    first_half = set(id(t) for t in trades[:mid])
+    buckets: dict[int, list[dict]] = {}
+    for t in trades:
+        buckets.setdefault(t["entry_time"].astimezone(COLOMBO).hour, []).append(t)
+
+    to_usd = lots * USD_PER_LOT_PER_DOLLAR
+    print(f"  BY ENTRY HOUR (Colombo) — an hour must be positive in BOTH halves to count")
+    print(f"    {'hour':<8}{'n':>6}{'win%':>8}{'$/trade':>10}{'1st half':>11}{'2nd half':>11}  verdict")
+    keepers = []
+    for hour in sorted(buckets):
+        rows = buckets[hour]
+        net = [t["move"] - spread for t in rows]
+        exp = sum(net) / len(net)
+        wins = sum(1 for m in net if m > 0)
+        a = [t["move"] - spread for t in rows if id(t) in first_half]
+        b = [t["move"] - spread for t in rows if id(t) not in first_half]
+        exp_a = sum(a) / len(a) if a else 0.0
+        exp_b = sum(b) / len(b) if b else 0.0
+        both = exp_a > 0 and exp_b > 0 and len(a) >= 20 and len(b) >= 20
+        if both:
+            keepers.append(hour)
+        print(f"    {hour:02d}:00   {len(rows):>6}{100 * wins / len(rows):>7.1f}%"
+              f"{exp * to_usd:>10.2f}{exp_a * to_usd:>11.2f}{exp_b * to_usd:>11.2f}"
+              f"  {'KEEP' if both else ''}")
+
+    if keepers:
+        kept = [t for t in trades if t["entry_time"].astimezone(COLOMBO).hour in keepers]
+        net = [t["move"] - spread for t in kept]
+        print(f"\n    Hours positive in both halves: "
+              f"{', '.join(f'{h:02d}:00' for h in keepers)}")
+        print(f"    Trading ONLY those hours: {len(kept)} of {len(trades)} trades, "
+              f"${sum(net) / len(net) * to_usd:+.2f}/trade, total ${sum(net) * to_usd:+.2f}")
+        print(f"    (vs all hours: ${sum(t['move'] - spread for t in trades) / len(trades) * to_usd:+.2f}"
+              f"/trade, total ${sum(t['move'] - spread for t in trades) * to_usd:+.2f})")
+    else:
+        print("\n    NO hour is positive in both halves. There is no time-of-day subset")
+        print("    that rescues this signal -- the weakness is spread across the whole day.")
+    print()
+
+
 def main() -> None:
     args = parse_args()
     now = datetime.now(timezone.utc)
@@ -154,6 +209,8 @@ def main() -> None:
         mid = len(trades) // 2
         report("First half (walk-forward)", trades[:mid], args.spread, args.lots, config)
         report("Second half", trades[mid:], args.spread, args.lots, config)
+
+        by_hour(trades, args.spread, args.lots)
 
         for d in ("BUY", "SELL"):
             report(f"{d} only", [t for t in trades if t["direction"] == d],
