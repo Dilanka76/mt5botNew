@@ -39,8 +39,8 @@ from bot.indicators.adx import compute_adx
 from bot.indicators.ema import compute_emas
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
-from bot.trade_stats import (
 from bot.timeframes import TIMEFRAME_MINUTES
+from bot.trade_stats import (
     compute_daily_breakdown,
     compute_day_stats,
     compute_hour_of_day_breakdown,
