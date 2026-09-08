@@ -51,6 +51,28 @@ def setup_logging(config: LoggingConfig, account: str) -> None:
     _decision_logger.addHandler(decision_handler)
 
 
+def disable_decision_log() -> None:
+    """Send decision records nowhere, without writing a file.
+
+    Offline replays -- backtests and parameter sweeps -- drive the real
+    engine, so they hit log_decision on every simulated trade. They have
+    no use for the output: a 36-combination sweep produces tens of
+    thousands of entries describing trades that never happened.
+
+    It matters most across processes. Worker processes must call some
+    form of setup, since log_decision raises when none has run
+    (scripts/fit_new_timeframe.py, 2026-09-09), but pointing several
+    RotatingFileHandlers in different processes at ONE path makes them
+    fight over rotation -- and on Windows a locked file during rotation
+    is an error, not a wait. Writing nothing sidesteps that entirely.
+    """
+    global _decision_logger
+    _decision_logger = logging.getLogger("bot.decisions.disabled")
+    _decision_logger.handlers.clear()
+    _decision_logger.addHandler(logging.NullHandler())
+    _decision_logger.propagate = False
+
+
 def log_decision(
     symbol: str,
     action: str,  # "trade_taken" | "trade_skipped" | "signal_skipped_risk" | "signal_skipped_kill_switch"

@@ -60,7 +60,7 @@ from bot.indicators.adx import compute_adx
 from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
-from bot.logging_setup.logger import setup_logging
+from bot.logging_setup.logger import disable_decision_log, setup_logging
 from bot.mt5_connector import MT5Connector
 from bot.timeframes import TIMEFRAME_MINUTES
 from bot.trade_stats import compute_day_stats
@@ -118,6 +118,10 @@ _CTX: dict = {}
 
 
 def _init_worker(ctx: dict) -> None:
+    # Workers are fresh interpreters on Windows: nothing the parent set up
+    # exists here. The engine calls log_decision on every simulated trade
+    # and raises if no logging has been configured at all.
+    disable_decision_log()
     logging.getLogger("bot").setLevel(logging.WARNING)
     _CTX.update(ctx)
 
