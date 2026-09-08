@@ -109,7 +109,9 @@ def build_document(doc: dict, *, timeframe: str, stop: float, take_profit: float
     doc["breakeven_trigger_usd"] = breakeven
     doc["tp_runner_arm_before_usd"] = ARM_BEFORE
     doc["tp_runner_trail_usd"] = trail
-    doc["tp_runner_lock_below_usd"] = lock_below
+    # A required float, unlike the trail: 0.0 is inert while the runner is
+    # off and means "lock at the take-profit" once it is on.
+    doc["tp_runner_lock_below_usd"] = 0.0 if lock_below is None else lock_below
     doc["swap_immediate"] = True
     doc["execution"]["magic_number"] = magic
     doc["execution"]["sibling_magic_numbers"] = list(siblings)

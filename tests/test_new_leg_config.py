@@ -73,6 +73,13 @@ def main() -> None:
           back["breakeven_trigger_usd"] <= back["take_profit_usd"] - back["tp_runner_arm_before_usd"])
     check("arm_before is not scaled with the candle", back["tp_runner_arm_before_usd"] == 1.00)
     check("runner is off when no trail was fitted", back["tp_runner_trail_usd"] is None)
+    # lock_below is a REQUIRED float in bot/config.py, unlike the trail.
+    # Emitting null for it made load_config raise TypeError and the bot
+    # refuse to start, after the file had already been written.
+    check("lock_below is a number, never null",
+          isinstance(back["tp_runner_lock_below_usd"], (int, float)))
+    check("arm_before is a number, never null",
+          isinstance(back["tp_runner_arm_before_usd"], (int, float)))
     check("swap_immediate is on", back["swap_immediate"] is True)
 
     # 3. Nesting survived -- this is exactly what the text version destroyed.

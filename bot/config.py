@@ -381,6 +381,31 @@ class AppConfig:
     swap_adx_filter: SwapAdxFilterConfig | None = None
 
 
+def _float_or_default(raw: dict, key: str, default: float) -> float:
+    """Read a required float, treating an explicit `key: null` as absent.
+
+    Writing `tp_runner_lock_below_usd: null` is the natural way to say
+    "the runner is off, this value is irrelevant", and a generated config
+    did exactly that on 2026-09-09. float(None) then raised
+
+        TypeError: float() argument must be a string or a real number
+
+    which names neither the setting nor the file, from inside load_config
+    -- so the bot simply refuses to start and the message points at
+    Python rather than at the one line to change.
+    """
+    value = raw.get(key)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{key} must be a number (got {value!r}). Fix it in the account's "
+            f"config/settings.<account>.yaml."
+        ) from None
+
+
 def load_config(account: str, settings_path: str | Path | None = None) -> AppConfig:
     """Loads the account-scoped config. `account` selects .env.<account> and
     config/settings.<account>.yaml (unless settings_path overrides the latter) —
@@ -588,8 +613,8 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         entry_filter_enabled=bool(raw.get("entry_filter_enabled", False)),
         daily_loss_limit_usd=raw.get("daily_loss_limit_usd"),
         tp_runner_trail_usd=raw.get("tp_runner_trail_usd"),
-        tp_runner_arm_before_usd=float(raw.get("tp_runner_arm_before_usd", 0.20)),
-        tp_runner_lock_below_usd=float(raw.get("tp_runner_lock_below_usd", 0.0)),
+        tp_runner_arm_before_usd=_float_or_default(raw, "tp_runner_arm_before_usd", 0.20),
+        tp_runner_lock_below_usd=_float_or_default(raw, "tp_runner_lock_below_usd", 0.0),
         swap_immediate=bool(raw.get("swap_immediate", False)),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
         dual_cross=dual_cross,
