@@ -116,7 +116,7 @@ def main() -> None:
 
         if not trades:
             print("  No closed trades in this window.")
-            per_account[account] = {"n": 0, "pl": 0.0}
+            per_account[account] = {"n": 0, "pl": 0.0, "trades": []}
             continue
 
         # ---- every trade, with the engine's own words -----------------
@@ -137,7 +137,7 @@ def main() -> None:
 
         wins = sum(1 for t in trades if t["profit"] > 0)
         total = sum(t["profit"] for t in trades)
-        per_account[account] = {"n": len(trades), "pl": total}
+        per_account[account] = {"n": len(trades), "pl": total, "trades": trades}
         print(f"\n  {len(trades)} trades, {wins} wins ({100 * wins / len(trades):.0f}%), "
               f"net ${total:+.2f}, ${total / len(trades):+.2f}/trade")
 
@@ -173,19 +173,54 @@ def main() -> None:
                      if swap_pl else ""))
 
     # ---- demo1 vs demo2 ---------------------------------------------
+    # Only trades BOTH accounts actually took can compare the rules. demo1_m1
+    # carries a session window demo2_m1 does not, so a straight per-trade
+    # average silently compares "demo1's rules" against "demo1's rules plus
+    # three extra hours of market" -- and credits the difference to the rules.
+    # Pair on entry time + direction; report the unpaired ones separately, as
+    # a session-window result, which is what they are.
     print(f"\n{'=' * 88}")
-    print("demo1 (new rules) vs demo2 (control) — PER TRADE, since lot sizes can differ")
+    print("demo1 (new rules) vs demo2 (control)")
     print("=" * 88)
     for leg in ("m1", "m3"):
         a, b = f"demo1_{leg}", f"demo2_{leg}"
-        if a in per_account and b in per_account and per_account[a]["n"] and per_account[b]["n"]:
-            pa, pb = per_account[a], per_account[b]
-            diff = pa["pl"] / pa["n"] - pb["pl"] / pb["n"]
-            print(f"  {leg.upper()}:  demo1 ${pa['pl'] / pa['n']:+.2f}/trade ({pa['n']} trades)   "
-                  f"demo2 ${pb['pl'] / pb['n']:+.2f}/trade ({pb['n']} trades)   "
-                  f"demo1 {'ahead' if diff > 0 else 'behind'} by ${abs(diff):.2f}/trade")
-    print("\nA day or two is noise. What matters over weeks is the per-trade gap and, for the")
-    print("runner, how many locked trades actually RAN.")
+        if not (per_account.get(a, {}).get("n") and per_account.get(b, {}).get("n")):
+            continue
+        ta, tb = per_account[a]["trades"], list(per_account[b]["trades"])
+        pairs, solo_a = [], []
+        for x in ta:
+            match = next((y for y in tb if y["direction"] == x["direction"]
+                          and abs((y["entry_time"] - x["entry_time"]).total_seconds()) <= 90), None)
+            if match:
+                tb.remove(match)
+                pairs.append((x, match))
+            else:
+                solo_a.append(x)
+
+        print(f"\n  {leg.upper()} — {len(pairs)} trades BOTH accounts took (the only fair comparison)")
+        if pairs:
+            print(f"    {'time':<10}{'dir':<6}{'demo1':>10}{'demo2':>10}{'diff':>10}  what made the difference")
+            for x, y in pairs:
+                d = float(x["profit"]) - float(y["profit"])
+                note = ("runner ran past target" if d > 5 else
+                        "runner locked early, control rode to TP" if d < -5 else
+                        "entry price only")
+                print(f"    {x['entry_time'].astimezone(COLOMBO):%H:%M:%S}{x['direction']:>6}"
+                      f"{x['profit']:>+10.2f}{y['profit']:>+10.2f}{d:>+10.2f}  {note}")
+            pa = sum(float(x['profit']) for x, _ in pairs)
+            pb = sum(float(y['profit']) for _, y in pairs)
+            print(f"    {'TOTAL':<16}{pa:>+10.2f}{pb:>+10.2f}{pa - pb:>+10.2f}"
+                  f"   = ${(pa - pb) / len(pairs):+.2f}/trade from the RULES")
+        if solo_a:
+            s_pl = sum(float(x["profit"]) for x in solo_a)
+            print(f"\n    {len(solo_a)} trades only {a} took (session-window difference, NOT the rules):"
+                  f" ${s_pl:+.2f}, ${s_pl / len(solo_a):+.2f}/trade")
+        if tb:
+            s_pl = sum(float(y["profit"]) for y in tb)
+            print(f"    {len(tb)} trades only {b} took: ${s_pl:+.2f}")
+
+    print("\nA day is noise. The number to watch over weeks is the paired per-trade gap,")
+    print("and for the runner, how many locked trades actually RAN.")
 
 
 if __name__ == "__main__":
