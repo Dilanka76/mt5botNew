@@ -45,6 +45,7 @@ Read-only: fetches candles once, then replays entirely offline.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,7 @@ from datetime import datetime, timedelta, timezone
 sys.path.insert(0, ".")
 
 from bot.backtest.runner import run_backtest
+from bot.indicators.adx import compute_adx
 from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
@@ -122,6 +124,14 @@ def main() -> None:
     finally:
         connector.disconnect()
     df = compute_emas(df, config.ema_periods)
+    if config.swap_adx_filter is not None:
+        # Same parity rule as main.py and scripts/backtest.py: every column
+        # an engine can read must exist here too.
+        df = compute_adx(df, period=config.swap_adx_filter.adx_period)
+
+    # 54 replays would otherwise log every simulated order -- tens of
+    # thousands of lines that bury the table this script exists to print.
+    logging.getLogger("bot").setLevel(logging.WARNING)
 
     base = replace(config, timeframe=timeframe, swap_immediate=True,
                    tp_runner_trail_usd=None)          # stage 1 runs with the runner OFF

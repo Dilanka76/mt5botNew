@@ -538,7 +538,17 @@ class DualCrossConfirmedSwapAdxEngine:
                     immediate = self.config.swap_immediate
                     if immediate or self.pending_reversal_direction == direction:
                         # 2-candle confirmation just passed -> ADX gate.
-                        adx_value = last_closed["adx"]
+                        # Read "adx" ONLY on the debounced path. Reading it
+                        # unconditionally made the column mandatory even when
+                        # swap_immediate switches the gate off entirely, so a
+                        # caller that legitimately has no ADX died with
+                        # KeyError: 'adx' (scripts/fit_new_timeframe.py,
+                        # 2026-09-09). The live loop survives only because
+                        # swap_adx_filter still happens to be set; clearing it
+                        # would have crashed the running bot. Same class of
+                        # fault as the 2026-08-21 incident that disabled a
+                        # stop-loss -- see feedback_live_backtest_data_parity.
+                        adx_value = float("nan") if immediate else last_closed["adx"]
                         adx_ok = immediate or (
                             not math.isnan(adx_value)
                             and adx_value >= self.config.swap_adx_filter.adx_threshold
