@@ -923,6 +923,8 @@ class DualCrossConfirmedSwapAdxEngine:
                 self.config.symbol, "tp_runner_armed",
                 f"Floating profit ${favorable:.2f} approaching the ${tp:.2f} target -> broker "
                 f"take-profit {'removed' if ok else 'REMOVAL FAILED (trade will close at TP as usual)'}",
+                ticket=position.ticket, direction=position.direction.value,
+                entry=position.entry_price, favorable=round(favorable, 2), removed=ok,
             )
 
         # 2. LOCK -- at the target, stop moves to the target and goes to the broker.
@@ -937,6 +939,9 @@ class DualCrossConfirmedSwapAdxEngine:
                 f"Reached the ${tp:.2f} target -> trade kept open, stop locked at "
                 f"{position.stop_loss:.2f} (${tp:.2f} profit secured, trailing ${trail:.2f} behind)"
                 f"{'' if ok else ' -- broker stop REJECTED, software stop still active'}",
+                ticket=position.ticket, direction=position.direction.value,
+                entry=position.entry_price, locked_at=round(position.stop_loss, 2),
+                baseline_usd=tp, broker_stop_ok=ok,
             )
 
         # 3. TRAIL -- upward only, never below the locked level.
@@ -957,6 +962,8 @@ class DualCrossConfirmedSwapAdxEngine:
                         self.config.symbol, "tp_runner_trailed",
                         f"New best ${self.runner_best:.2f} -> stop trailed to {candidate:.2f} "
                         f"(${candidate_profit:.2f} profit locked)",
+                        ticket=position.ticket, best_usd=round(self.runner_best, 2),
+                        locked_usd=round(candidate_profit, 2),
                     )
 
     def _enter(
