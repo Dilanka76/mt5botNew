@@ -60,6 +60,7 @@ SOURCE = "demo1_m3"          # rules and structure are copied from here
 DONOR = "demo1_m1"           # MT5 credentials come from here
 NEW = "demo1_m5"
 
+TIMEFRAME = "M5"
 M5_MEDIAN_RANGE = 4.68       # measured, scripts/timeframe_expectancy.py 2026-09-08
 ARM_BEFORE = 1.00            # fixed, not scaled — see the docstring
 
@@ -181,7 +182,7 @@ def main() -> None:
     # the header below carries the explanations instead.
     doc = build_document(
         yaml.safe_load(src_cfg.read_text(encoding="utf-8")),
-        timeframe=timeframe, stop=args.stop, take_profit=args.take_profit,
+        timeframe=TIMEFRAME, stop=args.stop, take_profit=args.take_profit,
         breakeven=breakeven, trail=args.trail, lock_below=args.lock_below,
         magic=magic, siblings=[src_magic, donor_magic], scale=scale,
     )
@@ -244,7 +245,7 @@ def main() -> None:
 
     if args.retire_m1:
         print(f"\n  retiring {DONOR} (never killed while holding a position):")
-        for leg in (f"MT5Bot-{DONOR}",):
+        for leg in (f"MT5-Bot-{DONOR}", f"MT5-Bot-Watchdog-{DONOR}"):
             r = subprocess.run(["schtasks", "/Change", "/TN", leg, "/DISABLE"],
                                capture_output=True, text=True)
             print(f"    schtasks disable {leg}: {r.stdout.strip() or r.stderr.strip()}")
