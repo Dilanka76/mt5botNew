@@ -279,14 +279,21 @@ def main() -> None:
 
     ranked = sorted(rows, key=lambda r: r["first"], reverse=True)
     best = ranked[0]
-    survivors = sum(1 for r in ranked[:5] if r["second"] > 0)
+    # "Top 5" needs five to be meaningful. With --base-stop the grid holds a
+    # single cell, and demanding 4 survivors out of 1 fired the curve-fit
+    # warning on a baseline measurement that had nothing to curve-fit.
+    sample = min(5, len(ranked))
+    survivors = sum(1 for r in ranked[:sample] if r["second"] > 0)
     print(f"\n  Chosen on first half : stop ${best['stop']:.1f} / TP ${best['tp']:.1f}"
           f"  (1st ${best['first']:+,.0f})")
     print(f"  Its second half      : ${best['second']:+,.0f}"
           f"   <- the honest number")
-    print(f"  Top-5 stability      : {survivors} of the first half's best 5 are also positive "
-          f"in the second half")
-    if survivors <= 2:
+    if sample >= 5:
+        print(f"  Top-5 stability      : {survivors} of the first half's best 5 are also "
+              f"positive in the second half")
+    else:
+        print(f"  Stability            : n/a — {sample} cell(s) in the grid, nothing to cluster")
+    if sample >= 5 and survivors <= 2:
         print("  WARNING: the good scores do not cluster. That is what fitting noise looks")
         print("           like, and none of this grid should be deployed on it.")
 
