@@ -41,6 +41,7 @@ class FakeConfig:
     take_profit_usd: float
     tp_runner_trail_usd: float | None
     tp_runner_arm_before_usd: float = 0.20
+    tp_runner_lock_below_usd: float = 0.0
     symbol: str = "XAUUSDp"
 
 
@@ -70,9 +71,10 @@ class FakeTick:
         self.bid = bid
 
 
-def make_engine(tp: float, trail: float | None, succeed: bool = True):
+def make_engine(tp: float, trail: float | None, succeed: bool = True, lock_below: float = 0.0):
     eng = object.__new__(DualCrossConfirmedSwapAdxEngine)
-    eng.config = FakeConfig(take_profit_usd=tp, tp_runner_trail_usd=trail)
+    eng.config = FakeConfig(take_profit_usd=tp, tp_runner_trail_usd=trail,
+                            tp_runner_lock_below_usd=lock_below)
     eng.executor = FakeExecutor(succeed)
     eng.runner_key = None
     eng.runner_tp_removed = False
@@ -141,6 +143,38 @@ def main() -> None:
           abs(pos.stop_loss - 4413.05) < 1e-9)
     check("but the broker stop is NOT re-sent for < $0.10",
           len(eng.executor.calls) == before)
+
+    # --- lock BELOW the target (the M3 setting) -------------------------
+    # TP $6, lock $1 below -> stop at +$5.00, trail $0.50 behind the best.
+    eng = make_engine(tp=6.0, trail=0.5, lock_below=1.0)
+    pos = FakePosition(Direction.BUY, 4400.0, 4390.0)
+    eng._manage_tp_runner(pos, FakeTick(4406.0))          # reaches the target
+    check("lock_below $1 -> stop sits at +$5.00, not +$6.00", pos.stop_loss == 4405.0)
+    check("reaching the target still guarantees a WIN", pos.stop_loss > pos.entry_price)
+
+    eng._manage_tp_runner(pos, FakeTick(4405.4))          # dip that would have ended it
+    check("the dip that would stop a lock-at-target trade does NOT stop this one",
+          pos.stop_loss == 4405.0)
+
+    eng._manage_tp_runner(pos, FakeTick(4412.0))          # best +12 -> 12-0.5 = 11.5
+    check("trail lifts to best minus $0.50", abs(pos.stop_loss - 4411.5) < 1e-9)
+    eng._manage_tp_runner(pos, FakeTick(4404.0))
+    check("trail never falls back below the lock", abs(pos.stop_loss - 4411.5) < 1e-9)
+
+    # Just past the lock, the trail must not drag the stop back DOWN.
+    eng2 = make_engine(tp=6.0, trail=0.5, lock_below=1.0)
+    pos2 = FakePosition(Direction.BUY, 4400.0, 4390.0)
+    eng2._manage_tp_runner(pos2, FakeTick(4406.0))
+    eng2._manage_tp_runner(pos2, FakeTick(4406.2))        # best 6.2, 6.2-0.5=5.7 > 5.0
+    check("small advance lifts the stop above the lock, never below",
+          pos2.stop_loss >= 4405.0)
+
+    # A nonsensical lock_below must not put the stop at break-even or worse.
+    eng3 = make_engine(tp=6.0, trail=0.5, lock_below=99.0)
+    pos3 = FakePosition(Direction.SELL, 4400.0, 4410.0)
+    eng3._manage_tp_runner(pos3, FakeTick(4394.0))
+    check("an absurd lock_below is clamped -- still a win, never break-even",
+          pos3.stop_loss < pos3.entry_price)
 
     # --- SELL mirrored -------------------------------------------------
     eng = make_engine(tp=6.0, trail=2.0)

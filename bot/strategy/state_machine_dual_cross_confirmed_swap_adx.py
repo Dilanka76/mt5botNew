@@ -931,24 +931,31 @@ class DualCrossConfirmedSwapAdxEngine:
         if self.runner_tp_removed and not self.runner_locked and favorable >= tp:
             self.runner_locked = True
             self.runner_best = favorable
-            position.stop_loss = price_at(tp)
+            # The lock may sit BELOW the target (config.tp_runner_lock_below_usd)
+            # so a dip straight after the target does not end the trade
+            # instantly. Clamped at 0 so a misconfigured value can never
+            # put the stop at or below break-even -- reaching the target
+            # must always leave a guaranteed WIN.
+            lock_level = max(0.01, tp - self.config.tp_runner_lock_below_usd)
+            position.stop_loss = price_at(lock_level)
             self.runner_broker_stop = position.stop_loss
             ok = self.executor.set_sltp(position.ticket, stop_loss=position.stop_loss, take_profit=None)
             log_decision(
                 self.config.symbol, "tp_runner_locked",
                 f"Reached the ${tp:.2f} target -> trade kept open, stop locked at "
-                f"{position.stop_loss:.2f} (${tp:.2f} profit secured, trailing ${trail:.2f} behind)"
+                f"{position.stop_loss:.2f} (${lock_level:.2f} profit secured, trailing ${trail:.2f} behind)"
                 f"{'' if ok else ' -- broker stop REJECTED, software stop still active'}",
                 ticket=position.ticket, direction=position.direction.value,
                 entry=position.entry_price, locked_at=round(position.stop_loss, 2),
-                baseline_usd=tp, broker_stop_ok=ok,
+                baseline_usd=tp, lock_usd=round(lock_level, 2), broker_stop_ok=ok,
             )
 
         # 3. TRAIL -- upward only, never below the locked level.
         if self.runner_locked and favorable > self.runner_best:
             self.runner_best = favorable
             candidate_profit = self.runner_best - trail
-            if candidate_profit > tp:
+            # Never below the locked level -- the ratchet is one-way.
+            if candidate_profit > max(0.01, tp - self.config.tp_runner_lock_below_usd):
                 candidate = price_at(candidate_profit)
                 improved = candidate > position.stop_loss if is_buy else candidate < position.stop_loss
                 if improved:

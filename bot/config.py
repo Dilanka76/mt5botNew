@@ -318,6 +318,26 @@ class AppConfig:
     # does today); too large and the position spends longer relying on the
     # stop below. 
     tp_runner_arm_before_usd: float = 0.20
+    # How far BELOW take_profit_usd the stop locks when the target is
+    # reached. 0.0 (default) locks exactly at the target, which is close
+    # to free: the trade exits where it would have closed anyway, minus a
+    # few cents of stop slippage.
+    #
+    # A positive value buys breathing room -- the trade survives the dip
+    # that follows the target instead of being stopped out instantly --
+    # at the cost of handing back that amount on every trade that does
+    # NOT run. User's proposal 2026-09-08, and it splits by timeframe:
+    #   M3 ($6 target, longer moves): locking $1 below scored +$227 better
+    #     than locking at the target, passing both walk-forward halves on
+    #     BOTH M3 accounts. The extra runners repay the give-back.
+    #   M1 ($5 target, short moves): the same $1 LOST money and failed
+    #     walk-forward on demo1_m1. Giving up $1 of a $5 target is 20% of
+    #     the trade, and M1's moves are too short to earn it back.
+    #
+    # Pair it with the trail deliberately: the lock and the trail both
+    # supply breathing room, and paying for both is waste. Loose lock ->
+    # tight trail ($0.50). Lock at target -> looser trail ($2.00).
+    tp_runner_lock_below_usd: float = 0.0
     entry_filter_enabled: bool = False
     # Optional early-entry threshold: while idle (no open position, no
     # pending setup) and the previous candle's real EMA13/21 are known, a
@@ -554,6 +574,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         daily_loss_limit_usd=raw.get("daily_loss_limit_usd"),
         tp_runner_trail_usd=raw.get("tp_runner_trail_usd"),
         tp_runner_arm_before_usd=float(raw.get("tp_runner_arm_before_usd", 0.20)),
+        tp_runner_lock_below_usd=float(raw.get("tp_runner_lock_below_usd", 0.0)),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
         dual_cross=dual_cross,
         dual_cross_confirmed_entry=dual_cross_confirmed_entry,

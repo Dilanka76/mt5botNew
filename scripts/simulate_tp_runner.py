@@ -207,6 +207,14 @@ def main() -> None:
             (f"lock ${tp - 0.50:.2f} + trail $0.50    ", tp - 0.50, 0.50, None),
             (f"lock ${tp - 0.50:.2f} + trail $1.00    ", tp - 0.50, 1.00, None),
             (f"lock ${tp:.2f} + trail $2.00    ", tp, 2.00, None),
+            # Never tested until 2026-09-08: lock AT the target (which M1
+            # prefers -- it cannot afford the give-back of a lower lock)
+            # paired with a TIGHT trail. The M3 result showed the tight
+            # trail is what banks a run, and unlike a lower lock it costs
+            # nothing on the trades that do not run. If it helps here,
+            # M1 gets the benefit without paying for it.
+            (f"lock ${tp:.2f} + trail $0.50    ", tp, 0.50, None),
+            (f"lock ${tp:.2f} + trail $1.00    ", tp, 1.00, None),
             # The user's proposal, 2026-09-08: lock a FULL $1 below the
             # target (M1 $4, M3 $5) so a small pullback cannot stop the
             # trade out the instant it locks -- 6 of the first 7 real
