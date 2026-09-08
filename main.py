@@ -52,7 +52,7 @@ from bot.indicators.ema import compute_emas
 from bot.kill_switch import KillSwitch
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
-from bot.process_utils import find_account_process
+from bot.process_utils import find_account_process, list_processes
 from bot.sessions import is_within_session
 from bot.status_writer import build_status_payload, status_file_path, write_status_atomic
 from bot.strategy.state_machine import EMAScalpEngine
@@ -132,6 +132,36 @@ def run() -> None:
 
     config = load_config(args.account)
     setup_logging(config.logging, args.account)
+
+    # The duplicate check must FAIL CLOSED. bot.process_utils.run_powershell
+    # returns "" on any failure (timeout, OSError), which makes
+    # list_processes() return [] and find_account_process() return None --
+    # indistinguishable from "no other instance is running". A bot that
+    # cannot verify it is alone must not start.
+    #
+    # This is not hypothetical: on 2026-09-08 at 09:16:17 two Task
+    # Scheduler triggers fired in the same second and BOTH demo2 legs
+    # started a second copy, each opening its own position -- four
+    # simultaneous trades on an account meant to hold two. The trigger
+    # interval had just been shortened from 30 minutes to 5, so several
+    # PowerShell process queries were competing.
+    #
+    # This process is itself a python.exe, so an EMPTY list can only mean
+    # the query failed -- we must always be able to see ourselves.
+    for attempt in range(3):
+        procs = list_processes("python.exe")
+        if procs:
+            break
+        logger.warning("Process list came back empty (attempt %d/3) -- cannot see even this "
+                       "process, so the query failed. Retrying.", attempt + 1)
+        time.sleep(2)
+    else:
+        logger.critical(
+            "Could not enumerate running processes after 3 attempts, so it is impossible to "
+            "verify that no other main.py for account '%s' is already running. Refusing to "
+            "start rather than risk a duplicate opening a second position.", args.account,
+        )
+        sys.exit(1)
 
     existing = find_account_process(THIS_SCRIPT_MATCH, args.account)
     if existing is not None:
