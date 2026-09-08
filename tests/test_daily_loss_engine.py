@@ -62,6 +62,17 @@ class FakeConnector:
         raise AssertionError("account_info() called -- the entry was NOT blocked!")
 
 
+class FakeExecutor:
+    """Answers the broker-side duplicate check added 2026-09-08.
+    `positions` non-empty means the broker already shows one."""
+
+    def __init__(self, positions=()):
+        self.positions = list(positions)
+
+    def get_open_positions(self):
+        return self.positions
+
+
 def write_ledger(tmp: Path, account: str, profits: list[float]) -> None:
     d = tmp / "logs" / account
     d.mkdir(parents=True, exist_ok=True)
@@ -100,6 +111,7 @@ def main() -> None:
             eng = object.__new__(cls)
             eng.config = FakeConfig(account=account, daily_loss_limit_usd=50.0)
             eng.connector = FakeConnector()   # raises if reached
+            eng.executor = FakeExecutor()
             eng._daily_limit_logged_date = None
             result = eng._enter(Direction.BUY, reason="test")
             check(f"{variant}: -$55 vs a $50 cap -> entry refused, broker never touched",
@@ -118,6 +130,7 @@ def main() -> None:
             eng2 = object.__new__(cls)
             eng2.config = FakeConfig(account=account, daily_loss_limit_usd=500.0)
             eng2.connector = FakeConnector()
+            eng2.executor = FakeExecutor()
             eng2._daily_limit_logged_date = None
             reached = False
             try:
@@ -130,6 +143,7 @@ def main() -> None:
             eng3 = object.__new__(cls)
             eng3.config = FakeConfig(account=account, daily_loss_limit_usd=None)
             eng3.connector = FakeConnector()
+            eng3.executor = FakeExecutor()
             eng3._daily_limit_logged_date = None
             reached = False
             try:

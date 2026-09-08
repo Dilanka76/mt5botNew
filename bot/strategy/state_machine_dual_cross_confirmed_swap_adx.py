@@ -1012,6 +1012,37 @@ class DualCrossConfirmedSwapAdxEngine:
                 log_decision(self.config.symbol, "daily_loss_limit_hit", blocked)
             return None
 
+        # Second line of defence against a DUPLICATE POSITION. The OS
+        # mutex in main.py stops a duplicate PROCESS; this stops a
+        # duplicate POSITION even if one somehow runs. On 2026-09-08 two
+        # processes on demo2_m1 each opened a SELL one second apart --
+        # 0.12 lots became 0.24 on an account meant to hold one.
+        #
+        # This engine only ever holds one position, so if it believes it
+        # is flat while the broker shows one carrying our magic number,
+        # something else opened it. Adding a second would double the risk
+        # of the trade, which on a real account is the whole danger.
+        #
+        # Failing to READ the broker does not block the entry: the mutex
+        # is the primary guard, and refusing to trade on every transient
+        # query error would be its own kind of outage. The refusal is
+        # logged loudly so a false block (e.g. a swap re-entry racing the
+        # close it just sent) would be visible rather than silent.
+        try:
+            already_open = self.executor.get_open_positions()
+        except Exception:  # noqa: BLE001 - a read failure must not kill the loop
+            already_open = []
+        if already_open:
+            log_decision(
+                self.config.symbol, "entry_blocked_existing_position",
+                f"{direction.value} entry REFUSED: this engine believes it is flat but the "
+                f"broker already shows {len(already_open)} position(s) with magic "
+                f"{self.config.execution.magic_number} "
+                f"(tickets {', '.join(str(p.ticket) for p in already_open)}). "
+                f"Opening another would double the position size. Check for a duplicate bot.",
+            )
+            return None
+
         balance = self.connector.account_info().balance
         lots = calculate_lots(balance, self.config.position_sizing)
         result = self.executor.open_market_order(direction, lots, self.config.take_profit_usd)

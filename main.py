@@ -52,6 +52,7 @@ from bot.indicators.ema import compute_emas
 from bot.kill_switch import KillSwitch
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
+from bot import single_instance
 from bot.process_utils import find_account_process, list_processes
 from bot.sessions import is_within_session
 from bot.status_writer import build_status_payload, status_file_path, write_status_atomic
@@ -132,6 +133,19 @@ def run() -> None:
 
     config = load_config(args.account)
     setup_logging(config.logging, args.account)
+
+    # FIRST line of defence: an OS mutex. Creating it is atomic, so
+    # two processes starting in the SAME SECOND cannot both win -- which
+    # the process scan below cannot prevent, and which is exactly what
+    # happened on 2026-09-08 when two Task Scheduler triggers fired at
+    # 09:16:17 and both demo2 legs started a second copy.
+    _instance_lock = single_instance.acquire(args.account)
+    if _instance_lock is None:
+        logger.critical(
+            "Another main.py already holds the single-instance lock for account '%s' "
+            "(or the lock could not be created). Refusing to start.", args.account,
+        )
+        sys.exit(1)
 
     # The duplicate check must FAIL CLOSED. bot.process_utils.run_powershell
     # returns "" on any failure (timeout, OSError), which makes
