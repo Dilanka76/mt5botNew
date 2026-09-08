@@ -44,10 +44,13 @@ never kills a bot holding an open position.
 from __future__ import annotations
 
 import argparse
+import copy
 import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import yaml
 
 sys.path.insert(0, ".")
 
@@ -70,6 +73,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lock-below", type=float, default=None, help="fitted tp_runner_lock_below_usd")
     p.add_argument("--magic", type=int, default=None, help="default: donor magic + 4")
     p.add_argument("--apply", action="store_true", help="actually write files (default: dry run)")
+    p.add_argument("--replace", action="store_true",
+                   help="overwrite an existing demo1_m5 config (e.g. one this script "
+                        "wrote badly). Never touches an account that is running.")
     p.add_argument("--retire-m1", action="store_true",
                    help="also disable demo1_m1's scheduled tasks and stop it once flat")
     return p.parse_args()
@@ -81,6 +87,35 @@ def read_yaml_value(path: Path, key: str) -> str | None:
         if stripped.startswith(f"{key}:"):
             return stripped.split(":", 1)[1].split("#")[0].strip()
     return None
+
+
+def build_document(doc: dict, *, timeframe: str, stop: float, take_profit: float,
+                   breakeven: float, trail: float | None, lock_below: float | None,
+                   magic: int, siblings: list[int], scale: float) -> dict:
+    """Return the source config edited into the new leg.
+
+    Pure and separately testable on purpose. The first version did string
+    substitution on the YAML text and appended any key it had not found to
+    the end of the file, which put nested keys at top level and produced a
+    config yaml.safe_load could not read at all -- discovered only when the
+    file was already written. Editing the parsed document cannot emit a
+    structurally invalid file.
+    """
+    doc = copy.deepcopy(doc)
+    doc["timeframe"] = timeframe
+    doc["take_profit_usd"] = round(take_profit, 2)
+    doc["stop_loss_usd"] = round(stop, 2)
+    doc["breakeven_trigger_usd"] = breakeven
+    doc["tp_runner_arm_before_usd"] = ARM_BEFORE
+    doc["tp_runner_trail_usd"] = trail
+    doc["tp_runner_lock_below_usd"] = lock_below
+    doc["swap_immediate"] = True
+    doc["execution"]["magic_number"] = magic
+    doc["execution"]["sibling_magic_numbers"] = list(siblings)
+    # Rescale the sizing ladder so risk per trade survives the bigger stop.
+    for tier in doc.get("position_sizing", []):
+        tier["lots"] = max(0.01, round(float(tier["lots"]) * scale, 2))
+    return doc
 
 
 def check(ok: bool, message: str, failures: list[str]) -> None:
@@ -137,44 +172,45 @@ def main() -> None:
     magic = args.magic or donor_magic + 4
     src_magic = int(read_yaml_value(src_cfg, "magic_number") or 900003)
 
-    text = src_cfg.read_text(encoding="utf-8")
-    header = (f"# {NEW} — M5 leg. Same rules as {SOURCE}; levels fitted by\n"
-              f"# scripts/fit_new_timeframe.py, NOT scaled by hand. Replaces {DONOR},\n"
-              f"# whose M1 signal lost money in every walk-forward cut.\n"
-              f"# Secrets live in .env.{NEW}, not here.\n")
-    text = "\n".join(l for l in text.splitlines() if not l.startswith("#"))
-    replacements = {
-        "timeframe": "M5",
-        "take_profit_usd": f"{args.take_profit:.2f}",
-        "stop_loss_usd": f"{args.stop:.2f}",
-        "breakeven_trigger_usd": f"{breakeven:.2f}   # = take_profit - arm_before, derived",
-        "tp_runner_arm_before_usd": f"{ARM_BEFORE:.2f}   # fixed: a race against the broker fill, not a candle size",
-        "tp_runner_trail_usd": "null" if args.trail is None else f"{args.trail:.2f}",
-        "tp_runner_lock_below_usd": "null" if args.lock_below is None else f"{args.lock_below:.2f}",
-        "swap_immediate": "true",
-        "magic_number": f"{magic}",
-        "sibling_magic_numbers": f"[{src_magic}, {donor_magic}]   # {SOURCE}, {DONOR} — same demo1 login",
-    }
-    out, seen = [], set()
-    for line in text.splitlines():
-        key = line.strip().split(":", 1)[0] if ":" in line else None
-        if key in replacements and key not in seen:
-            indent = line[: len(line) - len(line.lstrip())]
-            out.append(f"{indent}{key}: {replacements[key]}")
-            seen.add(key)
-        elif line.strip().startswith("- {max_balance"):
-            # scale the whole sizing ladder so risk per trade is unchanged
-            scaled = line
-            for token in line.split("lots: ")[1:]:
-                old = float(token.split("}")[0])
-                scaled = scaled.replace(f"lots: {old}", f"lots: {max(0.01, round(old * scale, 2))}")
-            out.append(scaled)
-        else:
-            out.append(line)
-    for key in replacements:
-        if key not in seen:
-            out.append(f"{key}: {replacements[key]}")
-    body = header + "\n".join(out).rstrip() + "\n"
+    # Build the config by editing the PARSED document and re-serialising it.
+    # The first version did string substitution on the YAML text and appended
+    # any key it had not found to the end of the file, which put nested keys
+    # at top level and produced a file yaml.safe_load could not read at all.
+    # Round-tripping through the parser cannot emit a structurally invalid
+    # file, which matters more here than preserving the source's comments --
+    # the header below carries the explanations instead.
+    doc = build_document(
+        yaml.safe_load(src_cfg.read_text(encoding="utf-8")),
+        timeframe=timeframe, stop=args.stop, take_profit=args.take_profit,
+        breakeven=breakeven, trail=args.trail, lock_below=args.lock_below,
+        magic=magic, siblings=[src_magic, donor_magic], scale=scale,
+    )
+
+    header = (
+        f"# {NEW} — M5 leg. Same rules as {SOURCE}; only the dollar levels differ,\n"
+        f"# and they were fitted by scripts/fit_new_timeframe.py over 2026-03-10..09-08,\n"
+        f"# not scaled by hand. Replaces {DONOR}, whose M1 signal lost money in every\n"
+        f"# walk-forward cut.\n"
+        f"#\n"
+        f"#   stop {args.stop:.2f}      >= 2x the measured M5 median candle range ({2 * M5_MEDIAN_RANGE:.2f}).\n"
+        f"#                    A stop inside one candle's ordinary range is hit by noise.\n"
+        f"#   take_profit {args.take_profit:.2f}  near M5's median favourable excursion, measured\n"
+        f"#                    independently by scripts/timeframe_expectancy.py.\n"
+        f"#   breakeven {breakeven:.2f}    DERIVED as take_profit - arm_before. Never set it\n"
+        f"#                    above the arm point: on 2026-09-08 M3 ran with a gap there\n"
+        f"#                    and a +$5 winner could still fall to -$7.\n"
+        f"#   arm_before {ARM_BEFORE:.2f}   NOT scaled with the candle. It races the broker's\n"
+        f"#                    take-profit fill, which depends on dollars per SECOND -- the\n"
+        f"#                    same market on every chart. demo1_m1's $0.20 lost that race\n"
+        f"#                    7 times in 10.\n"
+        f"#   runner OFF       bot/backtest/runner.py does not simulate tp_runner, so a\n"
+        f"#                    timeframe that has never traded cannot have one fitted.\n"
+        f"#                    Enable it later from real exits (simulate_tp_runner.py).\n"
+        f"#   lots x{scale:.3f}     keeps risk/trade at ${lots * args.stop * 100:.0f}, matching {SOURCE}.\n"
+        f"#\n"
+        f"# Secrets live in .env.{NEW}, not here.\n\n"
+    )
+    body = header + yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
 
     print(f"\n  magic_number  : {magic}   (siblings: {src_magic}, {donor_magic})")
     print(f"  lot ladder    : scaled x{scale:.3f}, top {m3_lots} -> {lots}")
@@ -184,12 +220,16 @@ def main() -> None:
         print("\nDRY RUN — nothing written. Re-run with --apply.")
         return
 
-    if new_cfg.exists() or new_env.exists():
-        sys.exit(f"{NEW} already exists. Delete it deliberately before recreating.")
+    if new_cfg.exists() and not args.replace:
+        sys.exit(f"{new_cfg.name} already exists. Re-run with --replace to overwrite it.")
     new_cfg.write_text(body, encoding="utf-8")
-    shutil.copyfile(donor_env, new_env)          # bytes only; contents never touched
-    print(f"\n  written: {new_cfg}")
-    print(f"  written: {new_env}")
+    if not new_env.exists():
+        shutil.copyfile(donor_env, new_env)      # bytes only; contents never touched
+    # Prove the file we just wrote can actually be loaded, rather than
+    # finding out when the bot fails to start.
+    yaml.safe_load(new_cfg.read_text(encoding="utf-8"))
+    print(f"\n  written and parsed OK: {new_cfg}")
+    print(f"  credentials: {new_env}")
 
     # demo1_m3 must learn about its new sibling, or its duplicate-position
     # guard will treat M5's position as a foreign trade and CLOSE it.
