@@ -75,6 +75,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--to", dest="date_to", required=True, help="YYYY-MM-DD, UTC")
     p.add_argument("--stops", default="7,8,9,10,11,12")
     p.add_argument("--tps", default="6,7,8,9,10,11")
+    p.add_argument("--base-stop", type=float, default=None,
+                   help="skip stage 1 and fit the runner on this stop (with --base-tp). "
+                        "Use when stage 1's grid is a plateau and the base is chosen on "
+                        "grounds the argmax cannot see.")
+    p.add_argument("--base-tp", type=float, default=None, help="see --base-stop")
     p.add_argument("--quick", action="store_true",
                    help="coarse 3x3 grid first: same method, ~9 replays, to see the "
                         "shape and time one run before committing to the full sweep")
@@ -251,6 +256,11 @@ def main() -> None:
     jobs = args.jobs or min(os.cpu_count() or 1, 8)
     ctx = dict(df=df, date_from=date_from, boundary=boundary,
                contract_size=contract_size, point=point, balance=args.balance)
+
+    if args.base_stop is not None and args.base_tp is not None:
+        stops, tps = [args.base_stop], [args.base_tp]
+        print(f"STAGE 1 SKIPPED — base fixed at stop ${args.base_stop:.1f} / "
+              f"TP ${args.base_tp:.1f} by the caller.\n")
 
     tasks = [({"stop": sl, "tp": tp},
               replace(base, stop_loss_usd=sl, take_profit_usd=tp,
