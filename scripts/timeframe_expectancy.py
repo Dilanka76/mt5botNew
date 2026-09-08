@@ -193,12 +193,13 @@ def main() -> None:
     m3 = next((r for r in rows if r["tf"] == "M3"), None)
 
     print(f"{'TF':<5}{'trades':>8}{'win%':>7}{'$/trade':>10}{'$/DAY':>10}{'total$':>11}"
-          f"{'maxDD$':>10}{'1st half':>10}{'2nd half':>10}  verdict")
+          f"{'maxDD$':>10}{'ret/DD':>8}{'1st half':>10}{'2nd half':>10}  verdict")
     print("-" * 100)
     for r in rows:
         both = r["first"] > 0 and r["second"] > 0
         enough = r["n"] >= 100
-        beats = m3 is None or r["per_day"] * to_usd > m3["per_day"] * to_usd
+        # M3 is the bar, so it cannot be asked to beat itself.
+        beats = m3 is None or r["tf"] == "M3" or r["per_day"] > m3["per_day"]
         if not both:
             verdict = "NO — fails walk-forward"
         elif not enough:
@@ -208,9 +209,10 @@ def main() -> None:
         else:
             verdict = "PASSES — re-run with --spread 0.24"
         if r["tf"] == "M3":
-            verdict += " (the incumbent)"
+            verdict = "the incumbent — this is the bar"
         print(f"{r['tf']:<5}{r['n']:>8}{r['win']:>6.1f}%{r['exp'] * to_usd:>10.2f}"
               f"{r['per_day'] * to_usd:>10.2f}{r['total'] * to_usd:>11.0f}{r['mdd'] * to_usd:>10.0f}"
+              f"{(r['total'] / r['mdd'] if r['mdd'] else 0):>8.2f}"
               f"{r['first'] * to_usd:>10.2f}{r['second'] * to_usd:>10.2f}  {verdict}")
 
     # ---- can the current dollar levels even be carried over? ----------
