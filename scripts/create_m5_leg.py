@@ -92,7 +92,8 @@ def read_yaml_value(path: Path, key: str) -> str | None:
 
 def build_document(doc: dict, *, timeframe: str, stop: float, take_profit: float,
                    breakeven: float, trail: float | None, lock_below: float | None,
-                   magic: int, siblings: list[int], scale: float) -> dict:
+                   magic: int, siblings: list[int], scale: float,
+                   price_scale: float = 1.0) -> dict:
     """Return the source config edited into the new leg.
 
     Pure and separately testable on purpose. The first version did string
@@ -113,6 +114,9 @@ def build_document(doc: dict, *, timeframe: str, stop: float, take_profit: float
     # off and means "lock at the take-profit" once it is on.
     doc["tp_runner_lock_below_usd"] = 0.0 if lock_below is None else lock_below
     doc["swap_immediate"] = True
+    # A price level like any other: scale it, or M5 locks M3's $0.50.
+    if doc.get("breakeven_lock_usd") is not None:
+        doc["breakeven_lock_usd"] = round(float(doc["breakeven_lock_usd"]) * price_scale, 2)
     doc["execution"]["magic_number"] = magic
     doc["execution"]["sibling_magic_numbers"] = list(siblings)
     # Rescale the sizing ladder so risk per trade survives the bigger stop.
@@ -187,6 +191,7 @@ def main() -> None:
         timeframe=TIMEFRAME, stop=args.stop, take_profit=args.take_profit,
         breakeven=breakeven, trail=args.trail, lock_below=args.lock_below,
         magic=magic, siblings=[src_magic, donor_magic], scale=scale,
+        price_scale=args.stop / m3_stop,
     )
 
     header = (
@@ -217,6 +222,8 @@ def main() -> None:
 
     print(f"\n  magic_number  : {magic}   (siblings: {src_magic}, {donor_magic})")
     print(f"  lot ladder    : scaled x{scale:.3f}, top {m3_lots} -> {lots}")
+    print(f"  price levels  : scaled x{args.stop / m3_stop:.3f} from {SOURCE} "
+          f"(breakeven_lock too)")
     print(f"  writes        : {new_cfg.name}, .env.{NEW} (copied from .env.{DONOR}, never read)")
 
     if not args.apply:

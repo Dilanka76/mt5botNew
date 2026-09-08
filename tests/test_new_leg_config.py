@@ -51,7 +51,8 @@ def main() -> None:
     scale = 0.667
     doc = build_document(src, timeframe="M5", stop=stop, take_profit=tp,
                          breakeven=round(tp - ARM_BEFORE, 2), trail=None, lock_below=None,
-                         magic=910005, siblings=[910003, 910001], scale=scale)
+                         magic=910005, siblings=[910003, 910001], scale=scale,
+                         price_scale=10.0 / 7.0)
 
     # 1. It must survive a full round trip -- this is the bug that shipped.
     text = yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
@@ -99,6 +100,14 @@ def main() -> None:
     check("no tier below the 0.01 broker minimum", all(t["lots"] >= 0.01 for t in ladder))
     check("max_balance tiers untouched",
           [t["max_balance"] for t in ladder] == [t["max_balance"] for t in src_ladder])
+
+    # breakeven_lock is a price level and must scale with the candle too.
+    if src.get("breakeven_lock_usd") is not None:
+        check("breakeven_lock scaled with the price levels",
+              back["breakeven_lock_usd"] == round(src["breakeven_lock_usd"] * 10.0 / 7.0, 2))
+    else:
+        check("no breakeven_lock in the source, so none to scale",
+              back.get("breakeven_lock_usd") is None)
 
     # 5. The source must not be mutated -- it is another live account's config.
     check("the source document was not modified",

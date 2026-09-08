@@ -151,7 +151,20 @@ def main() -> None:
                   f"{note('breakeven_trigger_usd', reads)}")
 
         print("  REVERSAL / SWAP")
-        if c.swap_adx_filter is None:
+        # swap_immediate wins over BOTH the debounce and the ADX gate, so it
+        # has to be tested first. Branching on swap_adx_filter alone printed
+        # "Debounce: 2 candles / ADX gate: >= 25" for demo1_m1 and demo1_m3,
+        # which have run swap_immediate=True since 2026-09-08 -- describing
+        # the exact rules that were deliberately switched off, on the two
+        # accounts whose config anyone is most likely to check.
+        if getattr(c, "swap_immediate", False):
+            print(f"    Swap gate          : NONE -- swap_immediate is ON")
+            print(f"    Debounce           : off (fires on the FIRST opposing candle close)")
+            print(f"    ADX gate           : off (bypassed entirely)"
+                  + ("" if c.swap_adx_filter is None else
+                     f"  [swap_adx_filter is set to ADX({c.swap_adx_filter.adx_period}) >= "
+                     f"{c.swap_adx_filter.adx_threshold:.1f} but is NOT consulted]"))
+        elif c.swap_adx_filter is None:
             print(f"    Swap gate          : none -- reversal fires as soon as it is confirmed")
         else:
             print(f"    Debounce           : 2 candles (arm on the first opposing close, "
