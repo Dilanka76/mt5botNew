@@ -49,7 +49,7 @@ import logging
 import os
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -145,22 +145,33 @@ def sweep(tasks: list[tuple[dict, object]], jobs: int, ctx: dict, label: str) ->
         _init_worker(ctx)
         for task in tasks:
             results.append(_run_one(task))
-            _progress(len(results), total, started, label)
+            _progress(len(results), total, started, label, 1)
         return results
 
     with ProcessPoolExecutor(max_workers=jobs, initializer=_init_worker,
                              initargs=(ctx,)) as pool:
-        for r in pool.map(_run_one, tasks):
-            results.append(r)
-            _progress(len(results), total, started, label)
+        # as_completed, not map: map yields in submission order, so with N
+        # workers the first result only appears once task 1 is done while
+        # N-1 others already finished invisibly. Progress then reads as if
+        # nothing were parallel -- the first run reported "42 min left" on
+        # a job that takes about 10.
+        futures = [pool.submit(_run_one, task) for task in tasks]
+        for future in as_completed(futures):
+            results.append(future.result())
+            _progress(len(results), total, started, label, jobs)
     return results
 
 
-def _progress(done: int, total: int, started: float, label: str) -> None:
+def _progress(done: int, total: int, started: float, label: str, jobs: int) -> None:
     elapsed = time.monotonic() - started
-    if done == 1 or done % 5 == 0 or done == total:
-        rate = elapsed / done
-        left = rate * (total - done)
+    # Wait for one full wave before estimating. Until every worker has
+    # returned something, elapsed/done still measures one task's duration
+    # rather than the pool's throughput, and overstates the remaining time
+    # by roughly the worker count.
+    if done < min(jobs, total):
+        return
+    if done == min(jobs, total) or done % 5 == 0 or done == total:
+        left = (elapsed / done) * (total - done)
         print(f"    {label}: {done}/{total} done, ~{left / 60:.0f} min left", flush=True)
 
 
