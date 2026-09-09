@@ -116,7 +116,7 @@ def main() -> None:
 
         if not trades:
             print("  No closed trades in this window.")
-            per_account[account] = {"n": 0, "pl": 0.0, "trades": []}
+            per_account[account] = {"n": 0, "pl": 0.0, "trades": [], "cfg": c}
             continue
 
         # ---- every trade, with the engine's own words -----------------
@@ -137,7 +137,7 @@ def main() -> None:
 
         wins = sum(1 for t in trades if t["profit"] > 0)
         total = sum(t["profit"] for t in trades)
-        per_account[account] = {"n": len(trades), "pl": total, "trades": trades}
+        per_account[account] = {"n": len(trades), "pl": total, "trades": trades, "cfg": c}
         print(f"\n  {len(trades)} trades, {wins} wins ({100 * wins / len(trades):.0f}%), "
               f"net ${total:+.2f}, ${total / len(trades):+.2f}/trade")
 
@@ -200,17 +200,41 @@ def main() -> None:
         print(f"\n  {leg.upper()} — {len(pairs)} trades BOTH accounts took (the only fair comparison)")
         if pairs:
             print(f"    {'time':<10}{'dir':<6}{'demo1':>10}{'demo2':>10}{'diff':>10}  what made the difference")
+            ca, cb = per_account[a]["cfg"], per_account[b]["cfg"]
             for x, y in pairs:
                 d = float(x["profit"]) - float(y["profit"])
-                note = ("runner ran past target" if d > 5 else
-                        "runner locked early, control rode to TP" if d < -5 else
-                        "entry price only")
+                # Attribute the difference to the rule that actually caused it.
+                # Labelling purely on the size of the gap credited the runner
+                # for a LOSING trade on 2026-09-09, where the real cause was
+                # demo1's tighter stop ($7 vs $10) -- and the runner cannot
+                # act on a loser at all, since it only arms in profit.
+                move = ((float(x["exit_price"]) - float(x["entry_price"])) if x["direction"] == "BUY"
+                        else (float(x["entry_price"]) - float(x["exit_price"])))
+                if float(x["profit"]) <= 0 and float(y["profit"]) <= 0:
+                    note = (f"both lost — stops differ (${ca.stop_loss_usd:.0f} vs "
+                            f"${cb.stop_loss_usd:.0f}); the runner cannot act on a loser")
+                elif float(x["profit"]) > 0 and float(y["profit"]) > 0 and abs(d) > 2:
+                    if move > ca.take_profit_usd + 0.01:
+                        note = f"RUNNER RAN — held to +${move:.2f} past its ${ca.take_profit_usd:.0f} target"
+                    elif d < 0:
+                        note = f"runner locked early at +${move:.2f}, control rode to its target"
+                    else:
+                        note = "different exit rule"
+                elif (float(x["profit"]) > 0) != (float(y["profit"]) > 0):
+                    note = "one won, one lost — different exit rules, not the runner"
+                else:
+                    note = "entry/exit price only"
                 print(f"    {x['entry_time'].astimezone(COLOMBO):%H:%M:%S}{x['direction']:>6}"
                       f"{x['profit']:>+10.2f}{y['profit']:>+10.2f}{d:>+10.2f}  {note}")
             pa = sum(float(x['profit']) for x, _ in pairs)
             pb = sum(float(y['profit']) for _, y in pairs)
             print(f"    {'TOTAL':<16}{pa:>+10.2f}{pb:>+10.2f}{pa - pb:>+10.2f}"
                   f"   = ${(pa - pb) / len(pairs):+.2f}/trade from the RULES")
+            runner_d = sum(float(x["profit"]) - float(y["profit"]) for x, y in pairs
+                           if float(x["profit"]) > 0 and float(y["profit"]) > 0)
+            other_d = (pa - pb) - runner_d
+            print(f"    of which: ${runner_d:+.2f} on trades BOTH won (where the runner can act)")
+            print(f"              ${other_d:+.2f} on the rest (stop size and exit rules)")
         if solo_a:
             s_pl = sum(float(x["profit"]) for x in solo_a)
             print(f"\n    {len(solo_a)} trades only {a} took (session-window difference, NOT the rules):"
