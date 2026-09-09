@@ -580,16 +580,19 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
                 f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
             )
 
-    if strategy_variant == "dual_cross_confirmed_swap":
-        # Deliberately does NOT require swap_adx_filter or
-        # dual_cross_tight_exit — this variant has no tick-based entry, no
-        # early-exit net, no swap debounce, and no ADX gate at all (see the
-        # engine's module docstring).
-        if raw.get("stop_loss_usd") is None:
-            raise ValueError(
-                f"{settings_path}: strategy_variant is 'dual_cross_confirmed_swap' but "
-                f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
-            )
+    # strategy_variant "dual_cross_confirmed_swap" deliberately requires
+    # nothing here. It has no tick-based entry, no early-exit net, no swap
+    # debounce and no ADX gate (see the engine's module docstring), and as
+    # of 2026-09-09 it no longer requires stop_loss_usd either: demo2_m3
+    # runs with NO stop at the user's explicit instruction, holding a
+    # losing trade until the opposite cross.
+    #
+    # There were TWO guards. The engine's was removed with the change; this
+    # one was missed, so load_config refused the very file the change had
+    # just written -- meaning the bot would have failed to start on its
+    # next restart rather than failing at the moment of the edit, which is
+    # the worse of the two. A null stop is now supported and every read of
+    # one copes with it; what it costs is in the engine's __init__.
 
     return AppConfig(
         account=account,

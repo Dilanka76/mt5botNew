@@ -78,6 +78,16 @@ def main() -> None:
     # base stop must not remove the ability to arm one later.
     check("breakeven can still arm a stop", "_breakeven_stop_price" in ENGINE)
 
+    # There were TWO guards. Checking only the engine file passed while
+    # bot/config.py still refused to LOAD a null stop, so the config was
+    # written and the failure waited for the next restart -- which is worse
+    # than failing at the moment of the edit.
+    config_src = (ROOT / "bot" / "config.py").read_text(encoding="utf-8")
+    check("bot/config.py does not refuse a null stop for the plain swap variant",
+          "'dual_cross_confirmed_swap' but " not in config_src)
+    check("the entryfilter variant still requires its stop (unchanged)",
+          "'dual_cross_confirmed_swap_adx_entryfilter' but " in config_src)
+
     print("\ntrend-sized take-profit")
     check("BUY with an uptrend takes the bigger target", target(1.0, BUY)[0] == 8.0)
     check("SELL with a downtrend takes the bigger target", target(-1.0, SELL)[0] == 8.0)
