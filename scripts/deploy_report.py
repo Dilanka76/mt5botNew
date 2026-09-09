@@ -102,7 +102,9 @@ def main() -> None:
     accounts = [validate_account_name(a) for a in args.accounts.split(",")]
 
     print("=" * 88)
-    print(f"DEPLOY REPORT — everything since {args.since} UTC "
+    # Print the resolved timestamp, not the raw argument: with --today
+    # there is no --since and the header read "since None UTC".
+    print(f"DEPLOY REPORT — everything since {since:%Y-%m-%d %H:%M:%S} UTC "
           f"({since.astimezone(COLOMBO):%d %b %H:%M} Colombo)")
     print("=" * 88)
 
