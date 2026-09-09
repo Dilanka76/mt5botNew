@@ -150,10 +150,20 @@ def simulate(df: pd.DataFrame, start_after: datetime, direction: str, entry: flo
         #   high also retraces $0.50 inside itself.
         #
         # ratchet-first: raise the stop on the high, then test the low
-        #   against the RAISED stop. Pessimistic about the trail.
+        #   against the RAISED stop. I first described this as "pessimistic
+        #   about the trail". That was wrong, and the run on 59 real trades
+        #   showed it: ratchet-first scores HIGHER everywhere, so it is the
+        #   OPTIMISTIC bound, not a second pessimistic one.
         #
-        # The truth is between them. A setting that only wins under
-        # stop-first is winning on an artefact of candle resolution.
+        #   Why: on a wide candle whose low is already below the stop,
+        #   stop-first exits at that low stop, while ratchet-first has
+        #   raised it to (high - trail) and banks near the candle's peak.
+        #   That gain dwarfs the shake-out effect it also introduces.
+        #
+        # So the two are a PESSIMISTIC and an OPTIMISTIC bound -- adverse
+        # extreme always first, versus favourable extreme always first --
+        # and reality is a mix. Read them as a range, and trust only a
+        # setting that wins at BOTH ends.
         adverse = float(row["low"]) if is_buy else float(row["high"])
         adverse_profit = (adverse - entry) if is_buy else (entry - adverse)
         favorable = float(row["high"]) if is_buy else float(row["low"])
@@ -284,7 +294,7 @@ def main() -> None:
             print(f"      how they ended: " + ", ".join(f"{k}={v}" for k, v in sorted(endings.items())))
             print()
 
-    print("Within-candle order is unknowable, so the adverse extreme is always assumed")
+    print("Within-candle order is unknowable, so each variant is shown twice: stop-first\nassumes the adverse extreme came first (PESSIMISTIC), ratchet-first assumes the\nfavourable one did (OPTIMISTIC). The real figure lies between the two rows.\nTrust a setting only if it wins at BOTH ends of that range.")
     print("first -- these numbers are pessimistic by construction, never flattering.")
 
 
