@@ -128,8 +128,24 @@ def main() -> None:
               f"{note('early_entry_threshold_usd', reads)}")
 
         print("  EXIT")
-        print(f"    Take profit        : {money(c.take_profit_usd)}  (broker-side)")
-        print(f"    Stop loss          : {money(c.stop_loss_usd)}")
+        # The trend-sized target is a real behaviour change and must be
+        # visible here. show_strategy already described demo1's swap rules
+        # backwards for a week by not knowing about swap_immediate; a
+        # reader would otherwise see only "$6.00" and never learn that a
+        # trade with the M15 trend actually aims for $8.00.
+        if getattr(c, "htf_trend_take_profit_usd", None) is not None:
+            print(f"    Take profit        : {money(c.htf_trend_take_profit_usd)} WITH the "
+                  f"{c.htf_trend_timeframe} EMA13/21 trend, {money(c.take_profit_usd)} against it "
+                  f"(broker-side)")
+            print(f"                         decided once at entry from the last CLOSED "
+                  f"{c.htf_trend_timeframe} candle; never blocks a trade")
+        else:
+            print(f"    Take profit        : {money(c.take_profit_usd)}  (broker-side)")
+        if c.stop_loss_usd is None:
+            print(f"    Stop loss          : NONE — a losing trade runs until the opposite "
+                  f"cross, with no floor")
+        else:
+            print(f"    Stop loss          : {money(c.stop_loss_usd)}")
         trail = c.tp_runner_trail_usd
         if trail is None:
             print(f"    TP-runner          : OFF (trade closes at take profit)")
