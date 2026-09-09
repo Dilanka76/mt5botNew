@@ -37,6 +37,7 @@ from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.adx import compute_adx
 from bot.indicators.ema import compute_emas
+from bot.indicators.htf_trend import compute_htf_trend
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
 from bot.timeframes import TIMEFRAME_MINUTES
@@ -191,6 +192,14 @@ def main() -> None:
         point = symbol_info.point
         starting_balance = args.balance if args.balance is not None else connector.account_info().balance
 
+        # Fetched here, not below: everything after the finally block is
+        # offline, and the higher-timeframe candles need the connection.
+        htf_df = (
+            get_ohlc_range(connector, config.symbol, config.htf_trend_timeframe,
+                           warmup_start, date_to)
+            if config.htf_trend_timeframe is not None else None
+        )
+
         tick_provider = None
         if args.real_ticks:
             # Only the requested [date_from, date_to] range needs real
@@ -210,6 +219,13 @@ def main() -> None:
         # needs this — other variants' engines never read an "adx"
         # column, so skip the extra computation for them.
         df = compute_adx(df, period=config.swap_adx_filter.adx_period)
+    if config.htf_trend_timeframe is not None:
+        # Mirrors main.py exactly. An engine that reads a column the live
+        # loop computes and the backtest does not (or the reverse) is the
+        # 2026-08-21 fault that silently disabled a stop-loss -- see
+        # feedback_live_backtest_data_parity.
+        df = compute_htf_trend(df, htf_df, TIMEFRAME_MINUTES[config.htf_trend_timeframe],
+                               config.ema_periods)
     trades = run_backtest(config, df, date_from, contract_size, point, starting_balance, tick_provider=tick_provider)
 
     out_dir = PROJECT_ROOT / "reports" / "backtest" / args.account

@@ -49,6 +49,8 @@ from bot.data.market_data import get_ohlc
 from bot.execution.trade_executor import TradeExecutor
 from bot.indicators.adx import compute_adx
 from bot.indicators.ema import compute_emas
+from bot.indicators.htf_trend import compute_htf_trend
+from bot.timeframes import minutes_for
 from bot.kill_switch import KillSwitch
 from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
@@ -267,6 +269,15 @@ def run() -> None:
                     # computation for them. Mirrors scripts/backtest.py's
                     # identical conditional wiring.
                     df = compute_adx(df, period=config.swap_adx_filter.adx_period)
+                if config.htf_trend_timeframe is not None:
+                    # Same conditional wiring as the adx column above, and
+                    # it MUST be mirrored in scripts/backtest.py: an engine
+                    # reading a column one side computes and the other does
+                    # not is the 2026-08-21 fault that disabled a stop-loss.
+                    htf = get_ohlc(connector, config.symbol,
+                                   config.htf_trend_timeframe, config.candles_to_fetch)
+                    df = compute_htf_trend(df, htf, minutes_for(config.htf_trend_timeframe),
+                                           config.ema_periods)
 
                 latest_closed_time = df.iloc[-2].name
                 if latest_closed_time != last_closed_candle_time:

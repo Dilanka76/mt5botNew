@@ -60,6 +60,7 @@ from bot.indicators.adx import compute_adx
 from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
+from bot.indicators.htf_trend import compute_htf_trend
 from bot.logging_setup.logger import disable_decision_log, setup_logging
 from bot.mt5_connector import MT5Connector
 from bot.timeframes import TIMEFRAME_MINUTES
@@ -220,11 +221,19 @@ def main() -> None:
     connector.connect()
     try:
         df = get_ohlc_range(connector, config.symbol, timeframe, warmup, date_to)
+        htf_df = (
+            get_ohlc_range(connector, config.symbol, config.htf_trend_timeframe,
+                           warmup, date_to)
+            if config.htf_trend_timeframe is not None else None
+        )
         info = connector.symbol_info(config.symbol)
         contract_size, point = info.trade_contract_size, info.point
     finally:
         connector.disconnect()
     df = compute_emas(df, config.ema_periods)
+    if config.htf_trend_timeframe is not None:
+        df = compute_htf_trend(df, htf_df, TIMEFRAME_MINUTES[config.htf_trend_timeframe],
+                               config.ema_periods)
     if config.swap_adx_filter is not None:
         # Same parity rule as main.py and scripts/backtest.py: every column
         # an engine can read must exist here too.

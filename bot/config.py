@@ -339,6 +339,15 @@ class AppConfig:
     # tight trail ($0.50). Lock at target -> looser trail ($2.00).
     tp_runner_lock_below_usd: float = 0.0
 
+    # Higher-timeframe trend target (demo2_m3, user request 2026-09-09).
+    # When a trade runs WITH the EMA13/21 trend on htf_trend_timeframe as
+    # of that timeframe's last CLOSED candle, it aims for
+    # htf_trend_take_profit_usd instead of take_profit_usd. It never
+    # blocks a trade and never changes once the trade is open -- the
+    # target is placed with the broker at entry.
+    htf_trend_timeframe: str | None = None
+    htf_trend_take_profit_usd: float | None = None
+
     # Swap on the FIRST confirmed opposing candle, with no 2-candle
     # debounce and no ADX gate. False (default) keeps both.
     #
@@ -615,6 +624,8 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         tp_runner_trail_usd=raw.get("tp_runner_trail_usd"),
         tp_runner_arm_before_usd=_float_or_default(raw, "tp_runner_arm_before_usd", 0.20),
         tp_runner_lock_below_usd=_float_or_default(raw, "tp_runner_lock_below_usd", 0.0),
+        htf_trend_timeframe=raw.get("htf_trend_timeframe"),
+        htf_trend_take_profit_usd=raw.get("htf_trend_take_profit_usd"),
         swap_immediate=bool(raw.get("swap_immediate", False)),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
         dual_cross=dual_cross,

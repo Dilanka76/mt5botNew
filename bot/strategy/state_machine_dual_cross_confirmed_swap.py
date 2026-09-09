@@ -59,6 +59,7 @@ import pandas as pd
 from bot.config import AppConfig
 from bot.daily_loss import COLOMBO, daily_limit_reason
 from bot.execution.trade_executor import TradeExecutor
+from bot.indicators.htf_trend import agrees_with_trend
 from bot.logging_setup.logger import log_decision
 from bot.mt5_connector import MT5Connector
 from bot.risk.position_sizing import calculate_lots
@@ -95,10 +96,14 @@ class PendingSetup:
 
 class DualCrossConfirmedSwapEngine:
     def __init__(self, config: AppConfig, connector: MT5Connector, executor: TradeExecutor):
-        if config.stop_loss_usd is None:
-            raise ValueError(
-                "strategy_variant=dual_cross_confirmed_swap requires stop_loss_usd to be set."
-            )
+        # stop_loss_usd may be None: demo2_m3 runs with NO stop from
+        # 2026-09-09 at the user's explicit instruction, holding a losing
+        # trade until the opposite cross. The guard that used to forbid
+        # this is gone, so every read of a stop below must cope with None
+        # -- a position simply has no stop until breakeven arms one.
+        # A loss then has no floor before the cross arrives, and a weekend
+        # gap can open past anything that would have been accepted. That
+        # is the accepted trade-off, not an oversight.
         if config.gap_threshold_usd is None:
             raise ValueError(
                 "strategy_variant=dual_cross_confirmed_swap requires gap_threshold_usd to be set "
@@ -119,16 +124,51 @@ class DualCrossConfirmedSwapEngine:
         self.prev_ema21: float | None = None
         self.current_ema5: float | None = None
         self.current_candle_time: pd.Timestamp | None = None
+        self.current_htf_trend: float | None = None
 
     def _active_sessions(self) -> list:
         return self.config.sessions["dual_cross_confirmed_swap"]
 
-    def _compute_stop_loss(self, direction: Direction, entry_price: float) -> float:
+    def _compute_stop_loss(self, direction: Direction, entry_price: float) -> float | None:
         distance = self.config.stop_loss_usd
+        if distance is None:
+            return None          # no stop: the opposite cross is the only exit
         return (
             entry_price - distance if direction == Direction.BUY
             else entry_price + distance
         )
+
+    def _take_profit_for(self, direction: Direction) -> tuple[float, str]:
+        """The target for a trade about to open, and why it was chosen.
+
+        demo2_m3, user request 2026-09-09: a trade running WITH the
+        higher-timeframe EMA13/21 trend aims further, because a move that
+        agrees with the bigger picture is expected to have more room. A
+        trade against it keeps the normal target.
+
+        Deliberate properties:
+          - It never blocks a trade. Every cross still trades; only the
+            target moves. That sidesteps the trap that has sunk about a
+            dozen entry filters here, where removing trades during a
+            losing stretch always looks profitable.
+          - It is decided ONCE, at entry, and the target goes to the
+            broker with the order. A later flip on the higher timeframe
+            does not move it.
+          - An unknown trend takes the normal target, never the bigger
+            one.
+        """
+        base = self.config.take_profit_usd
+        bigger = self.config.htf_trend_take_profit_usd
+        if bigger is None:
+            return base, ""
+        if agrees_with_trend(direction.value, self.current_htf_trend):
+            return bigger, (f" -- with the {self.config.htf_trend_timeframe} trend "
+                            f"(EMA13/21), so aiming ${bigger:.2f} instead of ${base:.2f}")
+        known = self.current_htf_trend is not None and self.current_htf_trend == self.current_htf_trend
+        return base, (f" -- against the {self.config.htf_trend_timeframe} trend, "
+                      f"keeping ${base:.2f}" if known else
+                      f" -- {self.config.htf_trend_timeframe} trend not known yet, "
+                      f"keeping ${base:.2f}")
 
     def _breakeven_stop_price(self, direction: Direction, entry_price: float) -> float:
         """Where the stop goes once breakeven arms -- exactly the entry
@@ -328,6 +368,13 @@ class DualCrossConfirmedSwapEngine:
         events: list[OpenedTrade | ClosedTrade] = []
         last_closed = df_with_emas.iloc[-2]
         last_closed_time = last_closed.name
+        # Read from THIS candle, before any entry runs, so a trade opened
+        # below uses the trend as of the candle that triggered it. Set at
+        # the end of the method (like prev_ema13) it would be one candle
+        # stale for the very entry it is meant to size.
+        self.current_htf_trend = (
+            float(last_closed["htf_trend"]) if "htf_trend" in last_closed.index else None
+        )
         ema5 = float(last_closed["ema5"])
         ema13 = float(last_closed["ema13"])
         ema21 = float(last_closed["ema21"])
@@ -518,7 +565,7 @@ class DualCrossConfirmedSwapEngine:
                             f"trigger) -> stop-loss moved to {position.stop_loss:.2f}{lock_note}",
                         )
 
-                stop_hit = (
+                stop_hit = position.stop_loss is not None and (
                     (position.direction == Direction.BUY and tick.bid <= position.stop_loss)
                     or (position.direction == Direction.SELL and tick.bid >= position.stop_loss)
                 )
@@ -544,7 +591,9 @@ class DualCrossConfirmedSwapEngine:
                     else:
                         events.append(self._close_position(
                             category="stop_loss",
-                            reason=f"${self.config.stop_loss_usd:.2f} stop-loss hit at {position.stop_loss:.2f}",
+                            reason=f"${self.config.stop_loss_usd:.2f} stop-loss hit at {position.stop_loss:.2f}"
+                                   if self.config.stop_loss_usd is not None else
+                                   f"stop hit at {position.stop_loss:.2f}",
                             exit_price=position.stop_loss,
                         ))
                 else:
@@ -629,7 +678,8 @@ class DualCrossConfirmedSwapEngine:
 
         balance = self.connector.account_info().balance
         lots = calculate_lots(balance, self.config.position_sizing)
-        result = self.executor.open_market_order(direction, lots, self.config.take_profit_usd)
+        take_profit_usd, trend_note = self._take_profit_for(direction)
+        result = self.executor.open_market_order(direction, lots, take_profit_usd)
 
         cross_candle_time = (
             cross_candle_time_override if cross_candle_time_override is not None else self.current_candle_time
@@ -641,9 +691,18 @@ class DualCrossConfirmedSwapEngine:
         )
 
         log_decision(
-            self.config.symbol, "trade_entered", reason,
+            self.config.symbol, "trade_entered", reason + trend_note,
             direction=direction.value, lots=lots, entry=result.price, tp=result.take_profit,
             stop_loss=self.position.stop_loss, balance=balance, pre_validated=True,
+            # Recorded on EVERY entry, including accounts with no
+            # higher-timeframe rule, so the question "do trend-aligned
+            # trades actually run further?" can be answered from the logs
+            # later without rebuilding anything. The rule went live
+            # untested at the user's request; this is what makes it
+            # measurable afterwards.
+            htf_trend=self.current_htf_trend,
+            htf_aligned=agrees_with_trend(direction.value, self.current_htf_trend),
+            target_usd=take_profit_usd,
             **(shadow_filter_info or {}),
         )
 
