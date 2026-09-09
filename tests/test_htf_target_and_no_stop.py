@@ -31,9 +31,12 @@ _dt = types.ModuleType("dotenv"); _dt.load_dotenv = lambda *a, **k: None
 sys.modules.setdefault("dotenv", _dt)
 
 from bot.strategy.state_machine_dual_cross_confirmed_swap import DualCrossConfirmedSwapEngine
+from bot.strategy.state_machine_dual_cross_confirmed_swap_adx import DualCrossConfirmedSwapAdxEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 ENGINE = (ROOT / "bot" / "strategy" / "state_machine_dual_cross_confirmed_swap.py").read_text(encoding="utf-8")
+ADX_ENGINE = (ROOT / "bot" / "strategy"
+              / "state_machine_dual_cross_confirmed_swap_adx.py").read_text(encoding="utf-8")
 
 failures: list[str] = []
 
@@ -57,11 +60,11 @@ class Dir:
 BUY, SELL = Dir("BUY"), Dir("SELL")
 
 
-def target(trend, direction, cfg=None):
-    fake = DualCrossConfirmedSwapEngine.__new__(DualCrossConfirmedSwapEngine)
+def target(trend, direction, cfg=None, engine=DualCrossConfirmedSwapEngine):
+    fake = engine.__new__(engine)
     fake.config = cfg or Cfg()
     fake.current_htf_trend = trend
-    return DualCrossConfirmedSwapEngine._take_profit_for(fake, direction)
+    return engine._take_profit_for(fake, direction)
 
 
 def main() -> None:
@@ -104,6 +107,20 @@ def main() -> None:
     check("the reason text says which target was chosen and why",
           "with the M15 trend" in target(1.0, BUY)[1]
           and "against the M15 trend" in target(-1.0, BUY)[1])
+
+    print("\nthe ADX engine (demo1_m5, demo2_m5) behaves identically")
+    for trend, direction, want in ((1.0, BUY, 8.0), (-1.0, SELL, 8.0),
+                                   (-1.0, BUY, 6.0), (float("nan"), BUY, 6.0)):
+        got = target(trend, direction, engine=DualCrossConfirmedSwapAdxEngine)[0]
+        check(f"adx engine: trend {trend}, {direction.value} -> ${want:.2f}", got == want)
+    check("the adx engine reads the trend from the acted-on candle",
+          "self.current_htf_trend = (" in ADX_ENGINE)
+    check("and logs it on every entry",
+          "htf_trend=self.current_htf_trend" in ADX_ENGINE and "target_usd=" in ADX_ENGINE)
+    # The runner must size itself against THIS trade's target, not the
+    # config's, now that the target varies per trade.
+    check("the runner uses the position's own target, not config.take_profit_usd",
+          'target_price = getattr(position, "take_profit", None)' in ADX_ENGINE)
 
     print("\nread from the right candle")
     # The property is about ORDER INSIDE on_new_candle, not position in

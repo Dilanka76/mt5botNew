@@ -159,6 +159,7 @@ import pandas as pd
 from bot.config import AppConfig
 from bot.daily_loss import COLOMBO, daily_limit_reason
 from bot.execution.trade_executor import TradeExecutor
+from bot.indicators.htf_trend import agrees_with_trend
 from bot.logging_setup.logger import log_decision
 from bot.mt5_connector import MT5Connector
 from bot.risk.position_sizing import calculate_lots
@@ -224,6 +225,7 @@ class DualCrossConfirmedSwapAdxEngine:
         self.prev_ema21: float | None = None
         self.current_ema5: float | None = None
         self.current_candle_time: pd.Timestamp | None = None
+        self.current_htf_trend: float | None = None
         # Armed by a confirmed opposite cross while a position is held;
         # only survives exactly one more candle — see module docstring.
         self.pending_reversal_direction: Direction | None = None
@@ -239,6 +241,41 @@ class DualCrossConfirmedSwapAdxEngine:
 
     def _active_sessions(self) -> list:
         return self.config.sessions["dual_cross_confirmed_swap_adx"]
+
+    def _take_profit_for(self, direction: Direction) -> tuple[float, str]:
+        """The target for a trade about to open, and why it was chosen.
+
+        demo2_m5, user request 2026-09-09. Identical in mechanism to the
+        rule already running on demo2_m3, but pointing the other way:
+        there the trend RAISES the target ($6 -> $8), here it is the
+        against-trend trades that take LESS ($10 -> $8), so a move that
+        disagrees with the bigger picture is banked sooner.
+
+        Same deliberate properties as demo2_m3's: it never blocks a trade,
+        it is decided once at entry because the target goes to the broker
+        with the order, and an unknown trend takes take_profit_usd rather
+        than guessing.
+
+        NOTE the interaction with breakeven_trigger_usd, which is a single
+        value while the target now varies. demo2_m5 keeps $9.00, so an
+        against-trend trade closes at $8 before breakeven could ever arm
+        -- those trades have the stop and nothing else. That is deliberate:
+        lowering the trigger to cover them would fire it at 70% of the
+        $10 target, and early breakevens are the thing this project has
+        measured as costing money (project_trade_protection_findings).
+        """
+        base = self.config.take_profit_usd
+        bigger = self.config.htf_trend_take_profit_usd
+        if bigger is None:
+            return base, ""
+        if agrees_with_trend(direction.value, self.current_htf_trend):
+            return bigger, (f" -- with the {self.config.htf_trend_timeframe} trend "
+                            f"(EMA13/21), so aiming ${bigger:.2f} instead of ${base:.2f}")
+        known = self.current_htf_trend is not None and self.current_htf_trend == self.current_htf_trend
+        return base, (f" -- against the {self.config.htf_trend_timeframe} trend, "
+                      f"keeping ${base:.2f}" if known else
+                      f" -- {self.config.htf_trend_timeframe} trend not known yet, "
+                      f"keeping ${base:.2f}")
 
     def _compute_stop_loss(self, direction: Direction, entry_price: float, distance_usd: float | None = None) -> float:
         distance = distance_usd if distance_usd is not None else self.config.stop_loss_usd
@@ -473,6 +510,11 @@ class DualCrossConfirmedSwapAdxEngine:
         events: list[OpenedTrade | ClosedTrade] = []
         last_closed = df_with_emas.iloc[-2]
         last_closed_time = last_closed.name
+        # Read from THIS candle, before any entry below runs, so a trade
+        # opened in this call is sized against the trend that triggered it.
+        self.current_htf_trend = (
+            float(last_closed["htf_trend"]) if "htf_trend" in last_closed.index else None
+        )
         ema5 = float(last_closed["ema5"])
         ema13 = float(last_closed["ema13"])
         ema21 = float(last_closed["ema21"])
@@ -931,7 +973,15 @@ class DualCrossConfirmedSwapAdxEngine:
             self.runner_broker_stop = None
 
         is_buy = position.direction == Direction.BUY
-        tp = self.config.take_profit_usd
+        # THIS trade's target, not the config's. Since the M15 trend rule
+        # the target varies per trade ($8 or $10 on demo2_m5), so reading
+        # config.take_profit_usd would arm and lock a $10 trade against $8
+        # levels -- removing its take-profit two dollars early and locking
+        # below where it should. The runner is off on that account today,
+        # so this is a latent fault being closed before it can fire.
+        target_price = getattr(position, "take_profit", None)
+        tp = (abs(float(target_price) - position.entry_price)
+              if target_price else self.config.take_profit_usd)
         favorable = (tick.bid - position.entry_price) if is_buy else (position.entry_price - tick.bid)
 
         def price_at(profit: float) -> float:
@@ -1068,7 +1118,8 @@ class DualCrossConfirmedSwapAdxEngine:
 
         balance = self.connector.account_info().balance
         lots = calculate_lots(balance, self.config.position_sizing)
-        result = self.executor.open_market_order(direction, lots, self.config.take_profit_usd)
+        take_profit_usd, trend_note = self._take_profit_for(direction)
+        result = self.executor.open_market_order(direction, lots, take_profit_usd)
 
         cross_candle_time = (
             cross_candle_time_override if cross_candle_time_override is not None else self.current_candle_time
@@ -1080,9 +1131,12 @@ class DualCrossConfirmedSwapAdxEngine:
         )
 
         log_decision(
-            self.config.symbol, "trade_entered", reason,
+            self.config.symbol, "trade_entered", reason + trend_note,
             direction=direction.value, lots=lots, entry=result.price, tp=result.take_profit,
             stop_loss=self.position.stop_loss, balance=balance, pre_validated=True,
+            htf_trend=self.current_htf_trend,
+            htf_aligned=agrees_with_trend(direction.value, self.current_htf_trend),
+            target_usd=take_profit_usd,
             **(shadow_filter_info or {}),
         )
 
