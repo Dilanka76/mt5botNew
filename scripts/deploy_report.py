@@ -109,7 +109,15 @@ def main() -> None:
             f"lock +${c.take_profit_usd - c.tp_runner_lock_below_usd:.2f}, "
             f"trail ${c.tp_runner_trail_usd:.2f}, arm ${c.tp_runner_arm_before_usd:.2f} early")
         print(f"\n{'=' * 88}")
-        print(f"{account} ({c.timeframe})   TP ${c.take_profit_usd:.2f}  stop ${c.stop_loss_usd:.2f}  "
+        # A null stop is a real configuration now (demo2_m3), so nothing
+        # here may assume a number. Same fault as bot/config.py's second
+        # guard: the reporting tools were never told the stop is optional.
+        stop_txt = "NO STOP" if c.stop_loss_usd is None else f"${c.stop_loss_usd:.2f}"
+        tp_txt = f"${c.take_profit_usd:.2f}"
+        if getattr(c, "htf_trend_take_profit_usd", None) is not None:
+            tp_txt = (f"${c.htf_trend_take_profit_usd:.2f} with the {c.htf_trend_timeframe} "
+                      f"trend / ${c.take_profit_usd:.2f} against")
+        print(f"{account} ({c.timeframe})   TP {tp_txt}  stop {stop_txt}  "
               f"breakeven {c.breakeven_trigger_usd}  swap_immediate={c.swap_immediate}")
         print(f"   TP-runner: {runner}")
         print("=" * 88)
@@ -217,12 +225,14 @@ def main() -> None:
                 # the opposite cross at -$6, nowhere near either stop, and the
                 # $2.16 gap was entry price -- but the label still blamed the
                 # stop sizes.
-                hit_a = move <= -(ca.stop_loss_usd - 0.50)
-                hit_b = move_b <= -(cb.stop_loss_usd - 0.50)
+                hit_a = ca.stop_loss_usd is not None and move <= -(ca.stop_loss_usd - 0.50)
+                hit_b = cb.stop_loss_usd is not None and move_b <= -(cb.stop_loss_usd - 0.50)
                 if float(x["profit"]) <= 0 and float(y["profit"]) <= 0:
                     if hit_a or hit_b:
-                        note = (f"both lost — demo1 capped at its ${ca.stop_loss_usd:.0f} stop, "
-                                f"demo2's is ${cb.stop_loss_usd:.0f}")
+                        note = (f"both lost — demo1 stop "
+                                f"{'none' if ca.stop_loss_usd is None else f'${ca.stop_loss_usd:.0f}'}, "
+                                f"demo2 stop "
+                                f"{'none' if cb.stop_loss_usd is None else f'${cb.stop_loss_usd:.0f}'}")
                     else:
                         note = ("both lost on the opposite cross, neither reached its stop "
                                 "— entry/exit price only")
