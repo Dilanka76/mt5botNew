@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -64,7 +65,7 @@ from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
 from bot.mt5_connector import MT5Connector
-from simulate_tp_runner import simulate
+from simulate_tp_runner import build_context, simulate
 
 USD_PER_LOT_PER_DOLLAR = 100.0
 
@@ -96,6 +97,7 @@ def winners(df: pd.DataFrame, tp: float, stop: float | None) -> list[dict]:
     changed = above != above.shift(1)
     changed.iloc[0] = False           # row 0 has no predecessor
     crosses = list(df.index[changed])
+    pos_of = {ts: i for i, ts in enumerate(df.index)}
 
     out = []
     for i in range(len(crosses) - 1):
@@ -109,13 +111,21 @@ def winners(df: pd.DataFrame, tp: float, stop: float | None) -> list[dict]:
                 break                 # stopped before it ever got there
             favorable = (float(row["high"]) - entry) if is_buy else (entry - float(row["low"]))
             if favorable >= tp:
-                out.append({"entry_time": entry_t, "reached_at": idx,
+                out.append({"entry_time": entry_t, "reached_at": idx, "pos": pos_of[idx],
+                            "pos": pos_of[idx],
                             "direction": "BUY" if is_buy else "SELL", "entry": entry})
                 break
     return out
 
 
 def main() -> None:
+    # Windows block-buffers stdout, which made an earlier long-running
+    # script look frozen until it was killed. Line buffering means every
+    # row appears as it is computed.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     args = parse_args()
     config = load_config(args.account)
     date_from = datetime.strptime(args.date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc)
@@ -151,9 +161,11 @@ def main() -> None:
           f"over {len(won)} trades\n")
 
     print(f"  {'lock at':>8}{'trail':>7}{'ordering':>15}{'total':>11}{'vs flat':>11}"
-          f"{'1st half':>11}{'2nd half':>11}   {'ran':>4}")
-    print("-" * 92)
+          f"{'1st half':>11}{'2nd half':>11}   {'ran':>4}", flush=True)
+    print("-" * 92, flush=True)
+    ctx = build_context(df)          # built ONCE, not once per replay
     rows = []
+    started = time.monotonic()
     for lock_below in [float(v) for v in args.locks.split(",")]:
         lock = tp - lock_below
         if lock <= 0:
@@ -164,7 +176,8 @@ def main() -> None:
                 for w in won:
                     r = simulate(df, w["reached_at"], w["direction"], w["entry"],
                                  lock, trail, args.max_candles, None,
-                                 ratchet_first=(ordering == "ratchet-first"))
+                                 ratchet_first=(ordering == "ratchet-first"),
+                                 ctx=ctx, start_pos=w["pos"])
                     if r is None:
                         unresolved += 1
                         continue
@@ -186,7 +199,7 @@ def main() -> None:
                              "ran": ran, "n": len(got)})
                 print(f"  {lock:>8.2f}{trail:>7.2f}{ordering:>15}"
                       f"{total * to_usd:>11,.0f}{(total - base) * to_usd:>+11,.0f}"
-                      f"{d1 * to_usd:>+11,.0f}{d2 * to_usd:>+11,.0f}   {ran:>4}")
+                      f"{d1 * to_usd:>+11,.0f}{d2 * to_usd:>+11,.0f}   {ran:>4}", flush=True)
 
     # ---- verdict against the pre-registered rules ----------------------
     print("\n" + "=" * 92)

@@ -113,9 +113,31 @@ def tp_exit_tickets(account: str) -> set[int]:
     return out
 
 
+def build_context(df: pd.DataFrame) -> dict:
+    """Everything simulate() needs, extracted from the frame ONCE.
+
+    simulate used to rebuild the EMA-cross state over the whole frame and
+    boolean-mask the future on every call. For the 59-trade study that was
+    invisible; scripts/fit_runner.py makes ~35,000 calls against 35,000
+    candles and it became the whole runtime. Numpy arrays plus an integer
+    start position make each call O(candles actually walked).
+    """
+    above = (df["ema13"] > df["ema21"]).to_numpy()
+    changed = np.zeros(len(above), dtype=bool)
+    changed[1:] = above[1:] != above[:-1]      # row 0 has no predecessor
+    return {
+        "high": df["high"].to_numpy(dtype=float),
+        "low": df["low"].to_numpy(dtype=float),
+        "close": df["close"].to_numpy(dtype=float),
+        "above": above,
+        "changed": changed,
+    }
+
+
 def simulate(df: pd.DataFrame, start_after: datetime, direction: str, entry: float,
              lock: float, trail: float | None, max_candles: int,
-             step: float | None = None, ratchet_first: bool = False) -> tuple[str, float] | None:
+             step: float | None = None, ratchet_first: bool = False,
+             ctx: dict | None = None, start_pos: int | None = None) -> tuple[str, float] | None:
     """Replay candles after the TP moment. Returns (how_it_ended,
     profit_in_price_dollars), or None if still open at the horizon.
 
@@ -129,20 +151,22 @@ def simulate(df: pd.DataFrame, start_after: datetime, direction: str, entry: flo
                 fixed. Fewer broker modify calls, which matters on a
                 1-second polling loop.
     """
-    future = df[df.index > start_after]
-    if future.empty:
+    if ctx is None:
+        ctx = build_context(df)
+    if start_pos is None:
+        start_pos = int(df.index.searchsorted(start_after, side="right")) - 1
+    first = start_pos + 1
+    if first >= len(ctx["high"]):
         return None
     is_buy = direction == "BUY"
 
     stop = lock          # profit level the stop protects, in price dollars
     best = lock          # best favourable excursion seen, in price dollars
-    above = df["ema13"] > df["ema21"]
-    changed = above != above.shift(1)
-    changed.iloc[0] = False  # shift(1) is NaN on row 0; it has no predecessor
+    highs, lows, closes = ctx["high"], ctx["low"], ctx["close"]
+    above, changed = ctx["above"], ctx["changed"]
 
-    for i, (idx, row) in enumerate(future.iterrows()):
-        if i >= max_candles:
-            return None
+    last = min(first + max_candles, len(highs))
+    for pos in range(first, last):
 
         # A candle gives a high and a low but not their ORDER, and for a
         # trailing stop the order decides the outcome. Both ways are
@@ -172,9 +196,9 @@ def simulate(df: pd.DataFrame, start_after: datetime, direction: str, entry: flo
         # extreme always first, versus favourable extreme always first --
         # and reality is a mix. Read them as a range, and trust only a
         # setting that wins at BOTH ends.
-        adverse = float(row["low"]) if is_buy else float(row["high"])
+        adverse = lows[pos] if is_buy else highs[pos]
         adverse_profit = (adverse - entry) if is_buy else (entry - adverse)
-        favorable = float(row["high"]) if is_buy else float(row["low"])
+        favorable = highs[pos] if is_buy else lows[pos]
         fav_profit = (favorable - entry) if is_buy else (entry - favorable)
 
         def ratchet() -> None:
@@ -196,8 +220,8 @@ def simulate(df: pd.DataFrame, start_after: datetime, direction: str, entry: flo
             ratchet()
 
         # The opposite-cross exit is unchanged from the live rule.
-        if bool(changed.loc[idx]) and bool(above.loc[idx]) != is_buy:
-            close_profit = (float(row["close"]) - entry) if is_buy else (entry - float(row["close"]))
+        if changed[pos] and bool(above[pos]) != is_buy:
+            close_profit = (closes[pos] - entry) if is_buy else (entry - closes[pos])
             return ("opposite cross", close_profit)
 
     return None
