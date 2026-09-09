@@ -173,15 +173,21 @@ def main() -> None:
         # which have run swap_immediate=True since 2026-09-08 -- describing
         # the exact rules that were deliberately switched off, on the two
         # accounts whose config anyone is most likely to check.
-        if getattr(c, "swap_immediate", False):
-            print(f"    Swap gate          : NONE -- swap_immediate is ON")
-            print(f"    Debounce           : off (fires on the FIRST opposing candle close)")
-            print(f"    ADX gate           : off (bypassed entirely)"
-                  + ("" if c.swap_adx_filter is None else
-                     f"  [swap_adx_filter is set to ADX({c.swap_adx_filter.adx_period}) >= "
-                     f"{c.swap_adx_filter.adx_threshold:.1f} but is NOT consulted]"))
-        elif c.swap_adx_filter is None:
-            print(f"    Swap gate          : none -- reversal fires as soon as it is confirmed")
+        # Two engines reach the same behaviour by different routes: the
+        # plain variant has no debounce or gate at all, while the adx one
+        # bypasses both when swap_immediate is set. Wording them
+        # differently made demo2_m3 and demo2_m5 look like they swap
+        # differently when they do not, so both now print the same line.
+        immediate = getattr(c, "swap_immediate", False) or c.swap_adx_filter is None
+        if immediate:
+            print(f"    Swap               : on the FIRST opposing candle close "
+                  f"(no debounce, no ADX gate)")
+            if c.swap_adx_filter is not None:
+                print(f"                         [swap_adx_filter is set to "
+                      f"ADX({c.swap_adx_filter.adx_period}) >= "
+                      f"{c.swap_adx_filter.adx_threshold:.1f} but is NOT consulted]")
+        elif False:
+            pass
         else:
             print(f"    Debounce           : 2 candles (arm on the first opposing close, "
                   f"fire only if the next candle still opposes)")
