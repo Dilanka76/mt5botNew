@@ -82,9 +82,16 @@ def main() -> None:
         print(f"{account}   stop {'none' if stop is None else f'${float(stop):.2f}'}")
         print("=" * 78)
         old = doc.get("position_sizing") or []
-        print("  was: " + ", ".join(
-            f"{'>' + format(t['max_balance'], 'g') if t['max_balance'] is None else '<=' + format(t['max_balance'], 'g')}"
-            f"={t['lots']}" for t in old) if old else "  was: (none)")
+
+        def rung(t: dict) -> str:
+            """One tier as text. The unbounded last tier has max_balance
+            None, and a conditional expression that still evaluates
+            format() on that branch raises -- which is exactly how the
+            first version of this line died."""
+            cap = t["max_balance"]
+            return f"{'any' if cap is None else '<=' + format(cap, 'g')}={t['lots']}"
+
+        print("  was: " + (", ".join(rung(t) for t in old) if old else "(none)"))
 
         print(f"\n  {'balance':<20}{'lots':>7}{'risk/trade':>13}{'% of balance':>15}")
         floor = 0.0
