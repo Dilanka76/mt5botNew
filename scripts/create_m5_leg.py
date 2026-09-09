@@ -56,6 +56,9 @@ sys.path.insert(0, ".")
 
 from bot.config import PROJECT_ROOT
 
+# Defaults reproduce the original demo1 build; --new/--source/--donor
+# make the same script build demo2_m5 from demo2's own accounts, so the
+# two legs cannot drift apart through hand-editing.
 SOURCE = "demo1_m3"          # rules and structure are copied from here
 DONOR = "demo1_m1"           # MT5 credentials come from here
 NEW = "demo1_m5"
@@ -67,6 +70,9 @@ ARM_BEFORE = 1.00            # fixed, not scaled — see the docstring
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--new", default=NEW, help="account to create (default demo1_m5)")
+    p.add_argument("--source", default=SOURCE, help="account whose RULES are copied")
+    p.add_argument("--donor", default=DONOR, help="account whose MT5 LOGIN is reused")
     p.add_argument("--stop", type=float, required=True, help="fitted stop_loss_usd")
     p.add_argument("--take-profit", type=float, required=True, help="fitted take_profit_usd")
     p.add_argument("--trail", type=float, default=None,
@@ -132,7 +138,9 @@ def check(ok: bool, message: str, failures: list[str]) -> None:
 
 
 def main() -> None:
+    global SOURCE, DONOR, NEW
     args = parse_args()
+    SOURCE, DONOR, NEW = args.source, args.donor, args.new
     cfg_dir = PROJECT_ROOT / "config"
     src_cfg = cfg_dir / f"settings.{SOURCE}.yaml"
     donor_env = PROJECT_ROOT / f".env.{DONOR}"
