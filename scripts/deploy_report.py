@@ -17,7 +17,9 @@ place instead of four scripts:
   5. demo1 against demo2 over the same window, per trade rather than in
      total, since the two can hold different lot sizes.
 
+    python scripts/deploy_report.py --today
     python scripts/deploy_report.py --since "2026-09-08 11:39:00"
+    python scripts/deploy_report.py --today
     python scripts/deploy_report.py --since "2026-09-08 11:39:00" --accounts demo1_m1,demo1_m3,demo2_m1,demo2_m3
 
 Read-only.
@@ -43,7 +45,10 @@ COLOMBO = ZoneInfo("Asia/Colombo")
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--accounts", default="demo1_m1,demo1_m3,demo2_m1,demo2_m3")
-    p.add_argument("--since", required=True, help='"YYYY-MM-DD HH:MM:SS", true UTC')
+    p.add_argument("--since", help='"YYYY-MM-DD HH:MM:SS", true UTC')
+    p.add_argument("--today", action="store_true",
+                   help="from the start of the CURRENT trading session (04:00 Colombo). "
+                        "Saves converting Colombo to UTC by hand every morning.")
     p.add_argument("--offset-hours", type=float, default=None)
     return p.parse_args()
 
@@ -80,8 +85,20 @@ def short_reason(reason: str) -> str:
 
 def main() -> None:
     args = parse_args()
-    since = datetime.strptime(args.since, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     now = datetime.now(timezone.utc)
+    if args.today:
+        # The session opens 04:00 Colombo. Before that hour the current
+        # session began YESTERDAY, so step back a day rather than
+        # reporting an empty window.
+        local = now.astimezone(COLOMBO)
+        start = local.replace(hour=4, minute=0, second=0, microsecond=0)
+        if local < start:
+            start -= timedelta(days=1)
+        since = start.astimezone(timezone.utc)
+    elif args.since:
+        since = datetime.strptime(args.since, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    else:
+        raise SystemExit("Give --today, or --since \"YYYY-MM-DD HH:MM:SS\" in UTC.")
     accounts = [validate_account_name(a) for a in args.accounts.split(",")]
 
     print("=" * 88)
