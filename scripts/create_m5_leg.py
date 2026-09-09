@@ -152,8 +152,13 @@ def main() -> None:
             sys.exit(f"Missing {path.name}. Run this on the trading server, not a dev machine.")
 
     breakeven = round(args.take_profit - ARM_BEFORE, 2)
-    m3_stop = float(read_yaml_value(src_cfg, "stop_loss_usd") or 7.0)
-    m3_lots = 0.12                                   # top of demo1_m3's sizing ladder
+    src_doc = yaml.safe_load(src_cfg.read_text(encoding="utf-8"))
+    m3_stop = float(src_doc.get("stop_loss_usd") or 7.0)
+    # The source's real top lot, not a hardcoded 0.12: copying from a leg
+    # that already sizes at 0.08 would otherwise re-inflate it to 0.12 and
+    # silently hand the new account 50% more risk.
+    ladder = src_doc.get("position_sizing") or [{"lots": 0.12}]
+    m3_lots = float(ladder[-1]["lots"])
     m3_risk = m3_stop * m3_lots * 100
     lots = round(m3_risk / (args.stop * 100), 2)
     scale = lots / m3_lots
@@ -183,9 +188,17 @@ def main() -> None:
         print(f"\nREFUSING: {len(failures)} check(s) failed. Fix the values, do not override.")
         sys.exit(1)
 
-    donor_magic = int(read_yaml_value(cfg_dir / f"settings.{DONOR}.yaml", "magic_number") or 900001)
+    # Siblings are the accounts sharing the NEW account's MT5 login, which
+    # is the donor's — not the source's. With --source demo1_m5 --donor
+    # demo2_m1 the two are different families entirely, and listing the
+    # source's magic would leave demo2's real siblings unaware of the new
+    # leg: their guards would see its positions as foreign and close them.
+    donor_doc = yaml.safe_load((cfg_dir / f"settings.{DONOR}.yaml").read_text(encoding="utf-8"))
+    donor_magic = int(donor_doc["execution"]["magic_number"])
+    family = [donor_magic] + [int(m) for m in
+                              donor_doc["execution"].get("sibling_magic_numbers", [])]
     magic = args.magic or donor_magic + 4
-    src_magic = int(read_yaml_value(src_cfg, "magic_number") or 900003)
+    src_magic = family[1] if len(family) > 1 else donor_magic
 
     # Build the config by editing the PARSED document and re-serialising it.
     # The first version did string substitution on the YAML text and appended
@@ -198,7 +211,7 @@ def main() -> None:
         yaml.safe_load(src_cfg.read_text(encoding="utf-8")),
         timeframe=TIMEFRAME, stop=args.stop, take_profit=args.take_profit,
         breakeven=breakeven, trail=args.trail, lock_below=args.lock_below,
-        magic=magic, siblings=[src_magic, donor_magic], scale=scale,
+        magic=magic, siblings=family, scale=scale,
         price_scale=args.stop / m3_stop,
     )
 
@@ -228,7 +241,7 @@ def main() -> None:
     )
     body = header + yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
 
-    print(f"\n  magic_number  : {magic}   (siblings: {src_magic}, {donor_magic})")
+    print(f"\n  magic_number  : {magic}   (siblings: {', '.join(str(m) for m in family)})")
     print(f"  lot ladder    : scaled x{scale:.3f}, top {m3_lots} -> {lots}")
     print(f"  price levels  : scaled x{args.stop / m3_stop:.3f} from {SOURCE} "
           f"(breakeven_lock too)")
@@ -249,16 +262,28 @@ def main() -> None:
     print(f"\n  written and parsed OK: {new_cfg}")
     print(f"  credentials: {new_env}")
 
-    # demo1_m3 must learn about its new sibling, or its duplicate-position
-    # guard will treat M5's position as a foreign trade and CLOSE it.
-    src_text = src_cfg.read_text(encoding="utf-8")
-    if str(magic) not in src_text:
-        for line in src_text.splitlines():
-            if line.strip().startswith("sibling_magic_numbers:"):
-                updated = line.replace("]", f", {magic}]", 1)
-                src_cfg.write_text(src_text.replace(line, updated), encoding="utf-8")
-                print(f"  updated: {src_cfg.name} sibling_magic_numbers += {magic}")
-                break
+    # Every account sharing this login must learn about the new leg, or
+    # its duplicate-position guard will treat the new positions as foreign
+    # trades and CLOSE them. Updating only the source was enough when
+    # source and donor were the same family; with --source demo1_m5
+    # --donor demo2_m1 they are not.
+    for cfg_path in sorted(cfg_dir.glob("settings.*.yaml")):
+        if cfg_path.name.endswith(".example.yaml") or cfg_path == new_cfg:
+            continue
+        try:
+            doc_other = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            other_magic = int(doc_other.get("execution", {}).get("magic_number", 0))
+        except (yaml.YAMLError, TypeError, ValueError):
+            continue
+        if other_magic not in family:
+            continue
+        sibs = [int(m) for m in doc_other["execution"].get("sibling_magic_numbers", [])]
+        if magic in sibs:
+            continue
+        doc_other["execution"]["sibling_magic_numbers"] = sibs + [magic]
+        cfg_path.write_text(yaml.safe_dump(doc_other, sort_keys=False, default_flow_style=False),
+                            encoding="utf-8")
+        print(f"  updated: {cfg_path.name} sibling_magic_numbers += {magic}")
 
     if args.retire_m1:
         print(f"\n  retiring {DONOR} (never killed while holding a position):")
