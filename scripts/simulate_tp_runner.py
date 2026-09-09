@@ -107,7 +107,7 @@ def tp_exit_tickets(account: str) -> set[int]:
 
 def simulate(df: pd.DataFrame, start_after: datetime, direction: str, entry: float,
              lock: float, trail: float | None, max_candles: int,
-             step: float | None = None) -> tuple[str, float] | None:
+             step: float | None = None, ratchet_first: bool = False) -> tuple[str, float] | None:
     """Replay candles after the TP moment. Returns (how_it_ended,
     profit_in_price_dollars), or None if still open at the horizon.
 
@@ -136,21 +136,46 @@ def simulate(df: pd.DataFrame, start_after: datetime, direction: str, entry: flo
         if i >= max_candles:
             return None
 
-        # Pessimistic ordering: the adverse extreme is assumed to happen
-        # first, so the stop is tested before the trail can ratchet up.
+        # A candle gives a high and a low but not their ORDER, and for a
+        # trailing stop the order decides the outcome. Both ways are
+        # simulated because each is pessimistic about a different thing.
+        #
+        # stop-first (the original): test the low against the CURRENT stop,
+        #   then ratchet on the high. Pessimistic about the entry -- but
+        #   optimistic about the trail, because a candle that makes a new
+        #   high and THEN falls back past the raised stop survives here
+        #   while it would be stopped out in real life. That bias grows as
+        #   the trail shrinks relative to the candle: M3's median range is
+        #   $3.56 against a $0.50 trail, so almost any candle making a new
+        #   high also retraces $0.50 inside itself.
+        #
+        # ratchet-first: raise the stop on the high, then test the low
+        #   against the RAISED stop. Pessimistic about the trail.
+        #
+        # The truth is between them. A setting that only wins under
+        # stop-first is winning on an artefact of candle resolution.
         adverse = float(row["low"]) if is_buy else float(row["high"])
         adverse_profit = (adverse - entry) if is_buy else (entry - adverse)
-        if adverse_profit <= stop:
-            return ("stopped at lock" if stop <= lock else "trailed out", stop)
-
         favorable = float(row["high"]) if is_buy else float(row["low"])
         fav_profit = (favorable - entry) if is_buy else (entry - favorable)
-        if fav_profit > best:
-            best = fav_profit
-            if trail is not None:
-                stop = max(stop, best - trail)
-            if step is not None and best > lock:
-                stop = max(stop, lock + (int((best - lock) / step) * step))
+
+        def ratchet() -> None:
+            nonlocal best, stop
+            if fav_profit > best:
+                best = fav_profit
+                if trail is not None:
+                    stop = max(stop, best - trail)
+                if step is not None and best > lock:
+                    stop = max(stop, lock + (int((best - lock) / step) * step))
+
+        if ratchet_first:
+            ratchet()
+            if adverse_profit <= stop:
+                return ("stopped at lock" if stop <= lock else "trailed out", stop)
+        else:
+            if adverse_profit <= stop:
+                return ("stopped at lock" if stop <= lock else "trailed out", stop)
+            ratchet()
 
         # The opposite-cross exit is unchanged from the live rule.
         if bool(changed.loc[idx]) and bool(above.loc[idx]) != is_buy:
@@ -232,11 +257,13 @@ def main() -> None:
             (f"lock ${tp - 0.50:.2f} + $3 steps      ", tp - 0.50, None, 3.00),
         ]
 
-        for label, lock, trail, step in variants:
+        for label_base, lock, trail, step in variants:
+          for ordering in ("stop-first", "ratchet-first"):
             rows, unresolved, endings = [], 0, {}
             for t in winners:
                 out = simulate(df, t["exit_time"].astimezone(timezone.utc), t["direction"],
-                               float(t["entry_price"]), lock, trail, args.max_candles, step)
+                               float(t["entry_price"]), lock, trail, args.max_candles, step,
+                               ratchet_first=(ordering == "ratchet-first"))
                 if out is None:
                     unresolved += 1
                     continue
@@ -244,6 +271,7 @@ def main() -> None:
                 endings[how] = endings.get(how, 0) + 1
                 rows.append({"time": t["entry_time"], "volume": float(t["volume"]),
                              "profit_price": profit_price})
+            label = f"{label_base}  [{ordering:<13}]"
             if not rows:
                 print(f"  {label}: nothing resolved.\n")
                 continue
