@@ -952,22 +952,35 @@ class DualCrossConfirmedSwapAdxEngine:
                 entry=position.entry_price, favorable=round(favorable, 2), removed=ok,
             )
 
-        # 2. LOCK -- at the target, stop moves to the target and goes to the broker.
-        if self.runner_tp_removed and not self.runner_locked and favorable >= tp:
+        # 2. LOCK -- as soon as price is at or past the lock level.
+        #
+        # This used to wait for the full target, which left a gap: the
+        # broker take-profit was removed at the ARM point (a dollar early)
+        # while the lock only engaged at the target, so between the two the
+        # trade had no take-profit AND no lock -- only the breakeven stop.
+        # On 2026-09-09 17:48 demo1_m3 armed at +$5.14, peaked at about
+        # +$5.94, missed the $6.00 lock trigger by SIX CENTS, reversed, and
+        # exited at +$0.19 for $1.56. demo2_m3 held the same signal with
+        # its take-profit intact and banked $6.00 for $71.28. One trade,
+        # $69.72, and the whole reason demo1_m3 lost the day.
+        #
+        # Testing `favorable >= lock_level` rather than `>= tp` closes it
+        # without ever placing an impossible stop: where the lock sits at
+        # the target (tp_runner_lock_below_usd = 0, as on demo1_m1) the
+        # condition is unchanged, so the stop can never be set ABOVE the
+        # current price -- which the software stop check would read as
+        # instantly hit, closing the trade at a price it never traded.
+        lock_level = max(0.01, tp - self.config.tp_runner_lock_below_usd)
+        if self.runner_tp_removed and not self.runner_locked and favorable >= lock_level:
             self.runner_locked = True
             self.runner_best = favorable
-            # The lock may sit BELOW the target (config.tp_runner_lock_below_usd)
-            # so a dip straight after the target does not end the trade
-            # instantly. Clamped at 0 so a misconfigured value can never
-            # put the stop at or below break-even -- reaching the target
-            # must always leave a guaranteed WIN.
-            lock_level = max(0.01, tp - self.config.tp_runner_lock_below_usd)
             position.stop_loss = price_at(lock_level)
             self.runner_broker_stop = position.stop_loss
             ok = self.executor.set_sltp(position.ticket, stop_loss=position.stop_loss, take_profit=None)
             log_decision(
                 self.config.symbol, "tp_runner_locked",
-                f"Reached the ${tp:.2f} target -> trade kept open, stop locked at "
+                f"Reached +${favorable:.2f} (lock level ${lock_level:.2f}) -> trade kept open, "
+                f"stop locked at "
                 f"{position.stop_loss:.2f} (${lock_level:.2f} profit secured, trailing ${trail:.2f} behind)"
                 f"{'' if ok else ' -- broker stop REJECTED, software stop still active'}",
                 ticket=position.ticket, direction=position.direction.value,
