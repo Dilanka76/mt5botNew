@@ -208,11 +208,24 @@ def main() -> None:
                 # for a LOSING trade on 2026-09-09, where the real cause was
                 # demo1's tighter stop ($7 vs $10) -- and the runner cannot
                 # act on a loser at all, since it only arms in profit.
-                move = ((float(x["exit_price"]) - float(x["entry_price"])) if x["direction"] == "BUY"
-                        else (float(x["entry_price"]) - float(x["exit_price"])))
+                def moved(t):
+                    return ((float(t["exit_price"]) - float(t["entry_price"])) if t["direction"] == "BUY"
+                            else (float(t["entry_price"]) - float(t["exit_price"])))
+                move, move_b = moved(x), moved(y)
+                # "Stops differ" only explains a loss if a stop was actually
+                # REACHED. On 2026-09-09 at 09:36 both accounts swapped out on
+                # the opposite cross at -$6, nowhere near either stop, and the
+                # $2.16 gap was entry price -- but the label still blamed the
+                # stop sizes.
+                hit_a = move <= -(ca.stop_loss_usd - 0.50)
+                hit_b = move_b <= -(cb.stop_loss_usd - 0.50)
                 if float(x["profit"]) <= 0 and float(y["profit"]) <= 0:
-                    note = (f"both lost — stops differ (${ca.stop_loss_usd:.0f} vs "
-                            f"${cb.stop_loss_usd:.0f}); the runner cannot act on a loser")
+                    if hit_a or hit_b:
+                        note = (f"both lost — demo1 capped at its ${ca.stop_loss_usd:.0f} stop, "
+                                f"demo2's is ${cb.stop_loss_usd:.0f}")
+                    else:
+                        note = ("both lost on the opposite cross, neither reached its stop "
+                                "— entry/exit price only")
                 elif float(x["profit"]) > 0 and float(y["profit"]) > 0 and abs(d) > 2:
                     if move > ca.take_profit_usd + 0.01:
                         note = f"RUNNER RAN — held to +${move:.2f} past its ${ca.take_profit_usd:.0f} target"
@@ -234,7 +247,8 @@ def main() -> None:
                            if float(x["profit"]) > 0 and float(y["profit"]) > 0)
             other_d = (pa - pb) - runner_d
             print(f"    of which: ${runner_d:+.2f} on trades BOTH won (where the runner can act)")
-            print(f"              ${other_d:+.2f} on the rest (stop size and exit rules)")
+            print(f"              ${other_d:+.2f} on losers and split results "
+                  f"(stop size, exit rules, entry price)")
         if solo_a:
             s_pl = sum(float(x["profit"]) for x in solo_a)
             print(f"\n    {len(solo_a)} trades only {a} took (session-window difference, NOT the rules):"
