@@ -259,10 +259,20 @@ def main() -> None:
                         note = ("both lost on the opposite cross, neither reached its stop "
                                 "— entry/exit price only")
                 elif float(x["profit"]) > 0 and float(y["profit"]) > 0 and abs(d) > 2:
-                    if move > ca.take_profit_usd + 0.01:
+                    # Only an account that HAS a runner can have run. This
+                    # printed "RUNNER RAN" for demo1_m5, whose runner is
+                    # off -- crediting a disabled feature for a gap that
+                    # was really demo2_m5's smaller $8 trend target.
+                    has_runner = ca.tp_runner_trail_usd is not None
+                    a_target = getattr(ca, "htf_trend_take_profit_usd", None) or ca.take_profit_usd
+                    b_target = getattr(cb, "htf_trend_take_profit_usd", None) or cb.take_profit_usd
+                    if has_runner and move > ca.take_profit_usd + 0.01:
                         note = f"RUNNER RAN — held to +${move:.2f} past its ${ca.take_profit_usd:.0f} target"
-                    elif d < 0:
+                    elif has_runner and d < 0:
                         note = f"runner locked early at +${move:.2f}, control rode to its target"
+                    elif abs(a_target - b_target) > 0.01 or abs(ca.take_profit_usd - cb.take_profit_usd) > 0.01:
+                        note = (f"different TARGETS — demo1 took +${move:.2f}, "
+                                f"demo2 +${move_b:.2f}")
                     else:
                         note = "different exit rule"
                 elif (float(x["profit"]) > 0) != (float(y["profit"]) > 0):
@@ -283,7 +293,12 @@ def main() -> None:
                   f"(stop size, exit rules, entry price)")
         if solo_a:
             s_pl = sum(float(x["profit"]) for x in solo_a)
-            print(f"\n    {len(solo_a)} trades only {a} took (session-window difference, NOT the rules):"
+            # Not necessarily the session window: demo2_m5 simply did not
+            # exist until 09-09 16:54, so demo1_m5 has trades from before
+            # it was created. Calling that a session difference invents a
+            # cause.
+            print(f"\n    {len(solo_a)} trades only {a} took — NOT a rules difference "
+                  f"(different start time, session window, or downtime):"
                   f" ${s_pl:+.2f}, ${s_pl / len(solo_a):+.2f}/trade")
         if tb:
             s_pl = sum(float(y["profit"]) for y in tb)
