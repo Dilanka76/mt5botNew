@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, ".")
 
+from bot.formatting import usd
 from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.process_utils import run_powershell
 
@@ -105,7 +106,7 @@ def main() -> None:
         print(f"  1. config on disk    : tp_runner_trail_usd={config.tp_runner_trail_usd} "
               f"{'OK' if on_disk else '<-- NOT SET'}")
         print(f"     (breakeven {config.breakeven_trigger_usd}, TP ${config.take_profit_usd:.2f}, "
-              f"stop ${config.stop_loss_usd:.2f}, file modified {cfg_mtime:%Y-%m-%d %H:%M:%S} UTC)")
+              f"stop {usd(config.stop_loss_usd)}, file modified {cfg_mtime:%Y-%m-%d %H:%M:%S} UTC)")
         all_ok &= on_disk
 
         # 2. running

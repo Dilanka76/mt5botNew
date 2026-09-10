@@ -42,6 +42,7 @@ sys.path.insert(0, ".")
 
 from bot.analytics import get_closed_trades_range, mt5_utc_offset
 from bot.config import PROJECT_ROOT, load_config, validate_account_name
+from bot.formatting import usd
 from bot.mt5_connector import MT5Connector
 
 COLOMBO = ZoneInfo("Asia/Colombo")
@@ -95,7 +96,7 @@ def check_levels(c, direction: str, entry: float, events: list[dict]) -> None:
         got = float(entered["stop_loss"])
         ok = near(got, want)
         print(f"      stop at entry     : {got:.2f}   expected {want:.2f} "
-              f"(entry {'-' if is_buy else '+'} ${c.stop_loss_usd:.2f})   "
+              f"(entry {'-' if is_buy else '+'} {usd(c.stop_loss_usd)})   "
               f"{'OK' if ok else '<-- MISMATCH'}")
 
     be = next((e for e in events if e.get("action") == "breakeven_armed"), None)
@@ -155,7 +156,7 @@ def main() -> None:
             connector.disconnect()
 
         print("=" * 84)
-        print(f"{account} ({c.timeframe})   TP ${c.take_profit_usd:.2f}  stop ${c.stop_loss_usd:.2f}  "
+        print(f"{account} ({c.timeframe})   TP ${c.take_profit_usd:.2f}  stop {usd(c.stop_loss_usd, 'NO STOP')}  "
               f"breakeven {c.breakeven_trigger_usd}  runner trail {c.tp_runner_trail_usd} "
               f"lock_below {c.tp_runner_lock_below_usd}  swap_immediate={c.swap_immediate}")
         print("=" * 84)
@@ -184,9 +185,15 @@ def main() -> None:
                 sign = 1 if direction == "BUY" else -1
                 print(f"    ticket {p.ticket}  {direction} {p.volume} lots  entry {p.price_open:.2f}  "
                       f"now {p.price_current:.2f}  P/L {p.profit:+.2f}  broker sl={p.sl:.2f} tp={p.tp:.2f}")
-                print(f"      software stop should be {p.price_open - sign * c.stop_loss_usd:.2f} "
-                      f"(entry {'-' if direction == 'BUY' else '+'} ${c.stop_loss_usd:.2f}); "
-                      f"broker sl=0.00 is EXPECTED until the runner locks")
+                if c.stop_loss_usd is None:
+                    print(f"      no software stop on this account — it holds to the "
+                          f"opposite cross")
+                else:
+                    print(f"      software stop should be "
+                          f"{p.price_open - sign * c.stop_loss_usd:.2f} "
+                          f"(entry {'-' if direction == 'BUY' else '+'} "
+                          f"{usd(c.stop_loss_usd)}); "
+                          f"broker sl=0.00 is EXPECTED until the runner locks")
         else:
             print("\n  Nothing open right now.")
         print()

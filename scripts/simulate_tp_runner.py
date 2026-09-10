@@ -59,6 +59,7 @@ import numpy as np
 import pandas as pd
 
 from bot.analytics import get_closed_trades_range, mt5_utc_offset
+from bot.formatting import usd
 from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
@@ -356,7 +357,7 @@ def main() -> None:
         winners = [t for t in trades if int(t["ticket"]) in tickets]
         print("=" * 84)
         print(f"{account} ({config.timeframe}): {len(winners)} take-profit exits since {args.since}  "
-              f"(TP ${tp:.2f}, stop ${config.stop_loss_usd:.2f})")
+              f"(TP ${tp:.2f}, stop {usd(config.stop_loss_usd)})")
         print("=" * 84)
         if not winners:
             print("  No take-profit exits in this window.\n")

@@ -32,6 +32,7 @@ sys.path.insert(0, ".")
 
 import MetaTrader5 as mt5
 
+from bot.formatting import usd
 from bot.config import load_config, validate_account_name
 from bot.mt5_connector import MT5Connector
 
@@ -66,7 +67,7 @@ def main() -> None:
     stops_usd = stops_pts * point
     freeze_usd = freeze_pts * point
 
-    print(f"{account}: {config.symbol}   (TP ${config.take_profit_usd:.2f}, stop ${config.stop_loss_usd:.2f})")
+    print(f"{account}: {config.symbol}   (TP ${config.take_profit_usd:.2f}, stop {usd(config.stop_loss_usd)})")
     print(f"  point size          : {point}")
     print(f"  STOPS level         : {stops_pts} points  =  ${stops_usd:.2f} of price")
     print(f"  FREEZE level        : {freeze_pts} points  =  ${freeze_usd:.2f} of price")
