@@ -138,7 +138,8 @@ def main() -> None:
     args = parse_args()
     now = datetime.now(timezone.utc)
 
-    for account in [validate_account_name(a) for a in args.accounts.split(",")]:
+    accounts = [validate_account_name(a) for a in args.accounts.split(",")]
+    for account in accounts:
         c = load_config(account)
         events = read_events(account)
 
