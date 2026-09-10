@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -100,9 +101,19 @@ def check_levels(c, direction: str, entry: float, events: list[dict]) -> None:
     be = next((e for e in events if e.get("action") == "breakeven_armed"), None)
     if be is not None:
         want = entry + sign * (c.breakeven_lock_usd or 0.0)
-        print(f"      breakeven armed   : trigger ${c.breakeven_trigger_usd:.2f}, "
-              f"stop -> entry {'+' if is_buy else '-'} ${c.breakeven_lock_usd or 0:.2f} "
-              f"= {want:.2f}   OK")
+        # This line printed a bare "OK" -- it computed the expected stop and
+        # never compared it to the one the bot actually set. On 2026-09-10 a
+        # trade whose stop moved to entry+$0.50 was reported OK against an
+        # expected entry+$4.50. The check had never failed because it could
+        # not fail, and "all rule checks passed" partly rested on it.
+        moved = re.search(r"stop-loss moved to ([\d.]+)", be.get("reason", "") or "")
+        got = float(moved.group(1)) if moved else None
+        ok = got is not None and near(got, want)
+        actual = f"{got:.2f}" if got is not None else "unreadable"
+        print(f"      breakeven armed   : {actual}   expected {want:.2f} "
+              f"(entry {'+' if is_buy else '-'} ${c.breakeven_lock_usd or 0:.2f}, "
+              f"trigger ${c.breakeven_trigger_usd:.2f})   "
+              f"{'OK' if ok else '<-- MISMATCH'}")
     elif c.breakeven_trigger_usd is not None:
         print(f"      breakeven         : never armed (never reached "
               f"+${c.breakeven_trigger_usd:.2f})")
@@ -180,9 +191,15 @@ def main() -> None:
             print("\n  Nothing open right now.")
         print()
 
-    print("Config is read as it stands NOW. A trade taken before a config change is judged")
-    print("against the NEW rule -- on demo1 today, anything before 09:49 UTC predates the")
-    print("current settings, so a mismatch there is expected, not a fault.")
+    print("Config is read as it stands NOW, so a trade taken before a config change is")
+    print("judged against the NEW rule. Each account's config was last modified at:")
+    for account in accounts:
+        cfg = PROJECT_ROOT / "config" / f"settings.{account}.yaml"
+        if cfg.exists():
+            when = datetime.fromtimestamp(cfg.stat().st_mtime, tz=timezone.utc)
+            print(f"    {account}: {when:%Y-%m-%d %H:%M} UTC "
+                  f"({when.astimezone(COLOMBO):%d %b %H:%M} Colombo) — a mismatch on a trade")
+            print(f"    {'':<{len(account)}}  before that is expected, not a fault.")
 
 
 if __name__ == "__main__":
