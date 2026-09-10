@@ -45,6 +45,8 @@ import sys
 
 sys.path.insert(0, ".")
 
+import MetaTrader5 as mt5
+
 from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.mt5_connector import MT5Connector
 
@@ -59,20 +61,41 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def open_positions(account: str) -> int | None:
-    """How many positions this account holds, or None if it cannot be asked."""
+def open_positions(account: str) -> tuple[str, int]:
+    """("ok", n) | ("already-retired", 0) | ("unreadable", 0).
+
+    The first version called connector.positions_get(), which does not
+    exist -- MT5Connector has no such method. The AttributeError was
+    swallowed by a bare except and the guard reported "could not read
+    positions" and carried on, which is a safety check that cannot fail.
+    Exactly the fault found in audit_recent_trades' breakeven check the
+    same morning.
+
+    The three outcomes are kept apart because they mean different things:
+    a missing config is an account already retired and safe to proceed on,
+    while a real failure to read must STOP the retirement -- otherwise a
+    broker hiccup silently becomes "no positions open".
+    """
+    settings = PROJECT_ROOT / "config" / f"settings.{account}.yaml"
+    if not settings.exists():
+        return ("already-retired", 0)
     try:
         config = load_config(account)
         connector = MT5Connector(config.mt5)
         connector.connect()
         try:
-            magics = {config.execution.magic_number}
-            return sum(1 for p in (connector.positions_get(config.symbol) or [])
-                       if p.magic in magics)
+            positions = mt5.positions_get(symbol=config.symbol)
+            if positions is None:
+                # None means the query itself failed; an account with no
+                # positions returns an empty tuple.
+                return ("unreadable", 0)
+            return ("ok", sum(1 for p in positions
+                              if p.magic == config.execution.magic_number))
         finally:
             connector.disconnect()
-    except Exception:                                  # noqa: BLE001
-        return None
+    except Exception as exc:                           # noqa: BLE001
+        print(f"  could not query positions: {type(exc).__name__}: {exc}")
+        return ("unreadable", 0)
 
 
 def main() -> None:
@@ -98,9 +121,14 @@ def main() -> None:
             if kill.exists():
                 actions.append((f"remove {kill.name}", kill.unlink))
         else:
-            held = open_positions(account)
-            if held is None:
-                print("  (could not read positions — the account may already be retired)")
+            state, held = open_positions(account)
+            if state == "already-retired":
+                print("  (no config file — this account is already retired)")
+            elif state == "unreadable" and not args.force:
+                print("  REFUSING: could not read this account's open positions.")
+                print("  Retiring blind could strand a live trade with no bot to manage its")
+                print("  stop. Fix the connection and retry, or --force if you are certain.")
+                continue
             elif held > 0 and not args.force:
                 print(f"  REFUSING: {held} position(s) open. Retiring now would leave the")
                 print(f"  trade with no bot to manage its stop. Wait for it to close, or:")
