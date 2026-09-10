@@ -190,9 +190,21 @@ def main() -> None:
             start_account(account)
         print()
 
-    print("Task Scheduler should relaunch main.py on its own; if you use the mobile app,")
-    print("turn the account ON there now. Then confirm the new config really loaded:")
-    print("    python scripts/verify_tp_runner_live.py")
+    # A retired account must NOT be told to turn itself back on. That
+    # advice is what this whole afternoon was about: demo1_m1 and demo2_m1
+    # were "retired" and the app started them again, and they traded.
+    retired = [a for a in accounts
+               if (PROJECT_ROOT / f"KILL_SWITCH_{a}").exists()
+               or not (PROJECT_ROOT / "config" / f"settings.{a}.yaml").exists()]
+    active = [a for a in accounts if a not in retired]
+    if retired:
+        print(f"RETIRED: {', '.join(retired)} — do NOT turn these on in the mobile app.")
+        print("They have a kill switch and/or no config; they cannot trade. To bring one")
+        print("back deliberately: python scripts/retire_account.py --accounts <name> --undo --apply")
+    if active:
+        print(f"Task Scheduler should relaunch {', '.join(active)} on its own; if you use the")
+        print("mobile app, turn those accounts ON there now. Then confirm the config loaded:")
+        print("    python scripts/verify_tp_runner_live.py")
 
 
 if __name__ == "__main__":
