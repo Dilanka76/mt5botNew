@@ -209,7 +209,10 @@ def main() -> None:
     print(f"\n{'=' * 88}")
     print("demo1 (new rules) vs demo2 (control)")
     print("=" * 88)
-    for leg in ("m1", "m3"):
+    # m5 was missing, so demo1_m5 and demo2_m5 were never compared even
+    # though they are the pair the user actually watches now. m1 stays in
+    # the list: both those legs are retired, so it simply prints nothing.
+    for leg in ("m1", "m3", "m5"):
         a, b = f"demo1_{leg}", f"demo2_{leg}"
         if not (per_account.get(a, {}).get("n") and per_account.get(b, {}).get("n")):
             continue
