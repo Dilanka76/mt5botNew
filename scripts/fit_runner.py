@@ -270,6 +270,17 @@ def main() -> None:
     print("\n" + "=" * 96)
     print("VERDICT — must beat the runner-off control in BOTH halves and BOTH orderings")
     print("=" * 96)
+    # Established 2026-09-11 by running simulate_tp_runner with --real-ticks
+    # over 5.9M ticks: real price beat BOTH candle orderings downward, and
+    # the TRAIL ranking reversed. Candles model one high and one low; real
+    # price oscillates many times inside a candle and every swing wider
+    # than the trail takes the stop out. This replay is candle-based, so
+    # its lock levels are sound and its trail ranking is not.
+    print("  NOTE this replay uses CANDLES. Real ticks (2026-09-11, M3) scored every")
+    print("       setting far lower AND reversed the trail ranking — candles said $0.25")
+    print("       best and $2.00 worst; ticks said the opposite. Trust the LOCK level")
+    print("       from here; settle the TRAIL with:")
+    print("         python scripts/simulate_tp_runner.py --accounts <acct> --since ... --real-ticks")
     pairs: dict[tuple[float, float], dict] = {}
     for r in rows:
         pairs.setdefault((r["lock"], r["trail"]), {})[r["ordering"]] = r

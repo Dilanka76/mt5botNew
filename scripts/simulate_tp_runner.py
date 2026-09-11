@@ -435,8 +435,19 @@ def main() -> None:
             print(f"      how they ended: " + ", ".join(f"{k}={v}" for k, v in sorted(endings.items())))
             print()
 
-    print("Within-candle order is unknowable, so each variant is shown twice: stop-first\nassumes the adverse extreme came first (PESSIMISTIC), ratchet-first assumes the\nfavourable one did (OPTIMISTIC). The real figure lies between the two rows.\nTrust a setting only if it wins at BOTH ends of that range.")
-    print("first -- these numbers are pessimistic by construction, never flattering.")
+    print("Within-candle order is unknowable, so each variant is shown twice: stop-first\n"
+          "assumes the adverse extreme came first, ratchet-first assumes the favourable one\n"
+          "did. I called these a PESSIMISTIC and an OPTIMISTIC bound and said the truth lies\n"
+          "between them. The REAL TICKS rows on 2026-09-11 came in BELOW BOTH, every time.\n"
+          "\n"
+          "Both orderings model one high and one low per candle. Real price oscillates many\n"
+          "times inside a candle, and every swing bigger than the trail takes the stop out.\n"
+          "So candle rows OVERSTATE a trailing stop, and the tighter the trail is against the\n"
+          "candle range, the worse the overstatement: on M3 (median range $3.56) a $0.50\n"
+          "trail showed +$968 / +$1,837 on candles and +$242 on ticks.\n"
+          "\n"
+          "Use the REAL TICKS row. The candle rows are only a fallback when tick history is\n"
+          "unavailable, and they are not a bound.")
 
 
 if __name__ == "__main__":
