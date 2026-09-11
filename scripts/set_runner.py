@@ -99,12 +99,19 @@ def main() -> None:
         print(f"\n  Between +${arm_point:.2f} and +${lock_level:.2f} the take-profit is gone and the")
         print(f"  lock has not engaged. The ONLY protection there is the breakeven, at")
         print(f"  +${worst:.2f}. A trade that peaks inside that window pays ${worst:.2f}, not ${tp:.2f}.")
-        if worst < arm_point - (float(trail) if trail else 0.5) - 1e-9:
+        # The threshold was "arm point minus one trail", which with a
+        # $0.25 trail demanded a breakeven within 25c of the arm point --
+        # tight enough that ordinary noise would shake out nearly every
+        # armed trade. The measured shape on both legs is arm point minus
+        # 50c (M3 $5.00/$4.50, M5 $9.00/$8.50), so allow up to a dollar of
+        # room and keep refusing only what is genuinely unguarded.
+        floor = arm_point - 1.00
+        if worst < floor - 1e-9:
             sys.exit(
                 f"REFUSING: breakeven keeps only ${worst:.2f} in a ${gap:.2f}-wide unguarded "
-                f"window.\n  Set --breakeven-lock to about "
-                f"${arm_point - (float(trail) if trail else 0.5):.2f} "
-                f"(the arm point less one trail), or this repeats 2026-09-09 17:48.")
+                f"window.\n  Set --breakeven-lock to at least ${floor:.2f}, and about "
+                f"${arm_point - 0.50:.2f} to match the other legs, or this repeats "
+                f"2026-09-09 17:48.")
         print(f"  Covered: a trade shaken out in that window keeps ${worst:.2f}.")
 
     if be_trigger is not None and float(be_trigger) > arm_point + 1e-9:
