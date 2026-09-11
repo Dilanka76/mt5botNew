@@ -130,7 +130,8 @@ def main() -> None:
                       + (f", {still_open} still open" if still_open else ""))
                 if args.detail or magic not in KNOWN or magic in (0, 910001, 920001, 950001):
                     for r in rows:
-                        print(f"      {r['time'].astimezone(COLOMBO):%d %b %H:%M:%S}  "
+                        print(f"      {r['time']:%d %b %H:%M:%S} UTC "
+                              f"({r['time'].astimezone(COLOMBO):%H:%M} SL)  "
                               f"{r['dir']:<4} {r['lots']:>5} lots at {r['price']:>9.2f}  "
                               f"${r['profit']:>+8.2f}"
                               + ("" if r["closed"] else "   STILL OPEN"))
@@ -147,12 +148,34 @@ def main() -> None:
             if hand_n:
                 print(f"    NOTE manual trades are closed on sight by every bot")
                 print(f"         (reject_manual_trades), usually within a second or two.")
-            retired = [m for m in groups if m in (910001, 920001, 950001)]
-            if retired:
-                print(f"    *** RETIRED legs traded in this window: "
-                      f"{', '.join(str(m) for m in retired)}")
-                print(f"        Check the timestamps above against the retirement at")
-                print(f"        2026-09-10 07:17 — anything after it means a kill switch failed.")
+            # Compare each trade against the account's OWN kill-switch file
+            # time, not a hardcoded string. The first version printed
+            # "anything after 07:17" beside trade rows shown in Colombo,
+            # so demo1_m1's 06:42 UTC trade displayed as 12:12 and read as
+            # five hours AFTER the retirement when it was 35 minutes
+            # before. A false alarm about a failed kill switch is worse
+            # than no check at all.
+            for magic, name in ((910001, "demo1_m1"), (920001, "demo2_m1"),
+                                (950001, "live2_m1")):
+                if magic not in groups:
+                    continue
+                switch = PROJECT_ROOT / f"KILL_SWITCH_{name}"
+                if not switch.exists():
+                    print(f"\n    *** magic {magic} ({name}) traded here and has NO kill "
+                          f"switch — it is not retired.")
+                    continue
+                cut = datetime.fromtimestamp(switch.stat().st_mtime, tz=timezone.utc)
+                after = [r for r in groups[magic] if r["time"] > cut]
+                print(f"\n    {name} (magic {magic}) retired "
+                      f"{cut:%Y-%m-%d %H:%M} UTC / {cut.astimezone(COLOMBO):%H:%M} Colombo")
+                if after:
+                    print(f"    *** {len(after)} trade(s) AFTER that — THE KILL SWITCH FAILED:")
+                    for r in after:
+                        print(f"        {r['time']:%Y-%m-%d %H:%M} UTC  "
+                              f"({r['time'].astimezone(COLOMBO):%H:%M} Colombo)")
+                else:
+                    print(f"    all {len(groups[magic])} of its trades predate that — "
+                          f"retirement held.")
         finally:
             connector.disconnect()
 
