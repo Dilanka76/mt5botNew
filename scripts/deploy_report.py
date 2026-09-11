@@ -266,10 +266,23 @@ def main() -> None:
                     has_runner = ca.tp_runner_trail_usd is not None
                     a_target = getattr(ca, "htf_trend_take_profit_usd", None) or ca.take_profit_usd
                     b_target = getattr(cb, "htf_trend_take_profit_usd", None) or cb.take_profit_usd
+                    # A trade that exits near the BREAKEVEN level never
+                    # reached the runner's lock, so the runner did not act
+                    # on it at all. This printed "runner locked early at
+                    # +$4.24" for demo1_m3 on 2026-09-11 -- its runner
+                    # locks at $6.00, and $4.24 is the $4.50 breakeven stop
+                    # plus slippage. Blaming the runner for a breakeven
+                    # exit points the next fix at the wrong rule.
+                    be_lock = getattr(ca, "breakeven_lock_usd", None)
+                    lock_level = ca.take_profit_usd - getattr(ca, "tp_runner_lock_below_usd", 0.0)
+                    on_breakeven = be_lock is not None and abs(move - float(be_lock)) <= 0.35
                     if has_runner and move > ca.take_profit_usd + 0.01:
                         note = f"RUNNER RAN — held to +${move:.2f} past its ${ca.take_profit_usd:.0f} target"
-                    elif has_runner and d < 0:
-                        note = f"runner locked early at +${move:.2f}, control rode to its target"
+                    elif on_breakeven:
+                        note = (f"demo1's BREAKEVEN stop cut it at +${move:.2f} "
+                                f"(not the runner — that locks at +${lock_level:.2f})")
+                    elif has_runner and move >= lock_level - 0.35 and d < 0:
+                        note = f"runner locked at +${move:.2f}, control's target was bigger"
                     elif abs(a_target - b_target) > 0.01 or abs(ca.take_profit_usd - cb.take_profit_usd) > 0.01:
                         note = (f"different TARGETS — demo1 took +${move:.2f}, "
                                 f"demo2 +${move_b:.2f}")
@@ -288,7 +301,14 @@ def main() -> None:
             runner_d = sum(float(x["profit"]) - float(y["profit"]) for x, y in pairs
                            if float(x["profit"]) > 0 and float(y["profit"]) > 0)
             other_d = (pa - pb) - runner_d
-            print(f"    of which: ${runner_d:+.2f} on trades BOTH won (where the runner can act)")
+            # NOT "the runner": on 2026-09-11 this line read -$23.00 while
+            # the runner was responsible for about -$1.50 of it. The rest
+            # was demo1's breakeven cutting two trades demo2 rode to
+            # target, and demo2's $8 trend target beating demo1's flat $6.
+            # Naming one rule for the sum of three sends the next change
+            # at the wrong one.
+            print(f"    of which: ${runner_d:+.2f} on trades BOTH won — the combined effect of")
+            print(f"              every exit rule that differs (runner, breakeven, target size)")
             print(f"              ${other_d:+.2f} on losers and split results "
                   f"(stop size, exit rules, entry price)")
         if solo_a:
