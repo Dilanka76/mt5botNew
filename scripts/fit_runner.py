@@ -73,6 +73,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--trails", default="0.25,0.5,0.75,1,1.5,2")
     p.add_argument("--max-candles", type=int, default=300,
                    help="how far past the target to follow a trade before giving up")
+    p.add_argument("--breakeven-lock", type=float, default=None,
+                   help="breakeven_lock_usd to use for BOTH sides of the comparison. "
+                        "Default: the account's current value — but if you would raise it "
+                        "when enabling the runner, pass the value you would deploy, or the "
+                        "control is handicapped and the runner's gain is overstated.")
     p.add_argument("--lots", type=float, default=None,
                    help="lot size for the $ columns (default: the account's top tier)")
     return p.parse_args()
@@ -178,7 +183,8 @@ def main() -> None:
     tp = config.take_profit_usd
     arm_before = float(config.tp_runner_arm_before_usd or 1.0)
     arm_point = tp - arm_before
-    breakeven_lock = float(config.breakeven_lock_usd or 0.0)
+    breakeven_lock = (args.breakeven_lock if args.breakeven_lock is not None
+                      else float(config.breakeven_lock_usd or 0.0))
     lots = args.lots if args.lots is not None else float(config.position_sizing[-1].lots)
     to_usd = lots * USD_PER_LOT_PER_DOLLAR
 
@@ -196,7 +202,20 @@ def main() -> None:
     trades = armed(df, arm_point, config.stop_loss_usd)
     print("=" * 96)
     print(f"FIT THE RUNNER — {args.account} ({config.timeframe})")
-    print(f"target ${tp:.2f}   arm point ${arm_point:.2f}   breakeven keeps ${breakeven_lock:.2f}")
+    print(f"target ${tp:.2f}   arm point ${arm_point:.2f}   breakeven keeps ${breakeven_lock:.2f}"
+          + ("   (OVERRIDE — applied to BOTH sides)" if args.breakeven_lock is not None else ""))
+    # A breakeven far below the arm point handicaps the CONTROL, not just
+    # the runner: between arming and the target the control still has its
+    # take-profit, but on a reversal it falls all the way to this level.
+    # The runner then wins mostly by having a stop at all, which is a
+    # finding about the breakeven, not about letting winners run.
+    if breakeven_lock < arm_point - 2.0:
+        print()
+        print(f"  WARNING the breakeven keeps only ${breakeven_lock:.2f} while the runner arms")
+        print(f"          at ${arm_point:.2f}. Most of the gap below is the runner having a")
+        print(f"          stop where the control has almost none — NOT the runner running.")
+        print(f"          Re-run with --breakeven-lock {arm_point - 0.50:.2f} (the value you")
+        print(f"          would actually deploy) to see what the runner is really worth.")
     print(f"{args.date_from}..{args.date_to}, {len(df)} candles, {lots} lots")
     print("=" * 96)
     print(f"{len(trades)} trades reached the ARM POINT — every one the runner would touch,")
