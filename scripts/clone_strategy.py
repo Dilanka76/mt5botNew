@@ -37,6 +37,7 @@ LIVE-MONEY REFUSALS, because the target here is real money:
 from __future__ import annotations
 
 import argparse
+import shutil
 import sys
 
 import yaml
@@ -65,6 +66,13 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--from", dest="source", required=True, type=validate_account_name)
     p.add_argument("--to", dest="target", required=True, type=validate_account_name)
+    p.add_argument("--identity-from", default=None, type=validate_account_name,
+                   help="CREATE the target if it does not exist, taking symbol, execution "
+                        "mode, credentials and the demo-account guard from this account and "
+                        "the strategy from --from. For adding a second leg to a live "
+                        "account that already has one.")
+    p.add_argument("--magic", type=int, default=None,
+                   help="magic number for a newly created target (default: identity's + 2)")
     p.add_argument("--daily-loss", type=float, default=None,
                    help="daily_loss_limit_usd for the target (required for a live account)")
     p.add_argument("--apply", action="store_true")
@@ -75,11 +83,44 @@ def main() -> None:
     args = parse_args()
     cfg = PROJECT_ROOT / "config"
     src_path, dst_path = cfg / f"settings.{args.source}.yaml", cfg / f"settings.{args.target}.yaml"
-    for path, what in ((src_path, "source"), (dst_path, "target")):
-        if not path.exists():
-            sys.exit(f"{path.name} not found ({what}). Run this on the trading server.")
+    if not src_path.exists():
+        sys.exit(f"{src_path.name} not found (source). Run this on the trading server.")
+    # The target may legitimately be missing -- that is what --identity-from
+    # is for. Requiring it here made the creation path unreachable.
+    if not dst_path.exists() and args.identity_from is None:
+        sys.exit(f"{dst_path.name} not found (target). Pass --identity-from <account> to "
+                 f"create it from a real account's identity.")
 
     src = yaml.safe_load(src_path.read_text(encoding="utf-8"))
+    created = False
+    if not dst_path.exists():
+        if args.identity_from is None:
+            sys.exit(f"{dst_path.name} does not exist. To create it, pass --identity-from "
+                     f"<account> so the new leg inherits a real account's symbol, execution "
+                     f"mode and credentials rather than the source's.")
+        # A new leg must inherit IDENTITY from a live sibling, never from
+        # the demo source: copying demo1_m5 wholesale would carry XAUUSDp,
+        # demo_execute and require_demo_account: true onto a real account.
+        id_path = cfg / f"settings.{args.identity_from}.yaml"
+        if not id_path.exists():
+            sys.exit(f"settings.{args.identity_from}.yaml not found.")
+        base = yaml.safe_load(id_path.read_text(encoding="utf-8"))
+        magic = args.magic or int(base["execution"]["magic_number"]) + 2
+        base["execution"]["magic_number"] = magic
+        base["execution"]["sibling_magic_numbers"] = sorted(
+            set(base["execution"].get("sibling_magic_numbers", []))
+            | {int(yaml.safe_load(id_path.read_text(encoding="utf-8"))
+                   ["execution"]["magic_number"])})
+        dst_path.write_text(yaml.safe_dump(base, sort_keys=False, default_flow_style=False),
+                            encoding="utf-8")
+        env_src = PROJECT_ROOT / f".env.{args.identity_from}"
+        env_dst = PROJECT_ROOT / f".env.{args.target}"
+        if env_src.exists() and not env_dst.exists():
+            shutil.copyfile(env_src, env_dst)   # bytes only; never read or printed
+        created = True
+        print(f"  CREATED {dst_path.name} from {args.identity_from}'s identity, magic {magic}")
+        print(f"  CREATED .env.{args.target} (copy of .env.{args.identity_from}, never read)\n")
+
     original = dst_path.read_text(encoding="utf-8")     # exact bytes, to revert
     dst = yaml.safe_load(original)
     is_live = args.target.startswith("live")
@@ -170,6 +211,11 @@ def main() -> None:
     try:
         load_config(args.target)
     except Exception as exc:                           # noqa: BLE001
+        if created:
+            dst_path.unlink()
+            sys.exit(f"\n  REMOVED {dst_path.name} — it will not load:\n"
+                     f"    {type(exc).__name__}: {exc}\n"
+                     f"  Nothing was left behind for something to start by accident.")
         dst_path.write_text(original, encoding="utf-8")
         sys.exit(f"\n  REVERTED — the new config will not load:\n"
                  f"    {type(exc).__name__}: {exc}\n"
@@ -177,6 +223,21 @@ def main() -> None:
     print(f"\n  written, parsed and LOADED OK: {dst_path.name}")
     print(f"  identity verified unchanged: symbol {reread['symbol']}, "
           f"magic {reread['execution']['magic_number']}")
+    if created and args.identity_from:
+        id_path = cfg / f"settings.{args.identity_from}.yaml"
+        id_doc = yaml.safe_load(id_path.read_text(encoding="utf-8"))
+        new_magic = int(reread["execution"]["magic_number"])
+        sibs = [int(m) for m in id_doc["execution"].get("sibling_magic_numbers", [])]
+        if new_magic not in sibs:
+            # Without this the existing leg treats the new leg's positions
+            # as foreign trades and CLOSES them -- reject_manual_trades is
+            # on for every account.
+            id_doc["execution"]["sibling_magic_numbers"] = sibs + [new_magic]
+            id_path.write_text(yaml.safe_dump(id_doc, sort_keys=False, default_flow_style=False),
+                               encoding="utf-8")
+            print(f"  updated {id_path.name}: siblings += {new_magic} "
+                  f"(or it would close the new leg's trades as foreign)")
+
     print(f"\n  Before starting it, read it back:")
     print(f"    python scripts/show_strategy.py --account {args.target}")
 
