@@ -1145,7 +1145,11 @@ class DualCrossConfirmedSwapAdxEngine:
         balance = self.connector.account_info().balance
         lots = calculate_lots(balance, self.config.position_sizing)
         take_profit_usd, trend_note = self._take_profit_for(direction)
-        result = self.executor.open_market_order(direction, lots, take_profit_usd)
+        # The backstop goes in the SAME request as the order. A follow-up
+        # modify would leave a window with no stop, and surviving the bot
+        # dying is the entire point of it.
+        result = self.executor.open_market_order(
+            direction, lots, take_profit_usd, self.config.broker_backstop_usd)
 
         cross_candle_time = (
             cross_candle_time_override if cross_candle_time_override is not None else self.current_candle_time

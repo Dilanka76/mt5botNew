@@ -84,15 +84,36 @@ class TradeExecutor:
         get_open_position() deliberately filters out."""
         return list(mt5.positions_get(symbol=self.symbol) or [])
 
-    def open_market_order(self, direction: Direction, lots: float, take_profit_distance: float) -> OrderResult:
+    def open_market_order(self, direction: Direction, lots: float, take_profit_distance: float,
+                          stop_loss_distance: float | None = None) -> OrderResult:
+        """Opens at market with a broker take-profit, and optionally a
+        broker STOP at `stop_loss_distance`.
+
+        The stop goes in the SAME request as the order, not a follow-up
+        set_sltp call: between an order filling and a separate modify
+        there is a window with no stop at all, and the whole point of a
+        broker stop is to survive the bot dying. It cannot die in a window
+        that does not exist.
+
+        This is deliberately NOT the strategy's stop. It is a disaster
+        backstop, set far wider (live2: $30 on M3 against a $7 software
+        stop) so it never interferes with normal trading and sits too far
+        from price to be worth anyone's while. The software stop still
+        governs every ordinary exit.
+        """
         tick = self.connector.get_tick(self.symbol)
         price = tick.ask if direction == Direction.BUY else tick.bid
         take_profit = price + take_profit_distance if direction == Direction.BUY else price - take_profit_distance
+        stop_loss = None
+        if stop_loss_distance:
+            stop_loss = (price - stop_loss_distance if direction == Direction.BUY
+                         else price + stop_loss_distance)
 
         if self.config.mode == "shadow":
             logger.info(
-                "[SHADOW] Would open %s %s lots=%.2f price=%.2f tp=%.2f",
+                "[SHADOW] Would open %s %s lots=%.2f price=%.2f tp=%.2f sl=%s",
                 direction.value, self.symbol, lots, price, take_profit,
+                f"{stop_loss:.2f}" if stop_loss else "none",
             )
             return OrderResult(ticket=None, price=price, take_profit=take_profit)
 
@@ -118,6 +139,8 @@ class TradeExecutor:
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
+        if stop_loss is not None:
+            request["sl"] = stop_loss
 
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
@@ -126,8 +149,9 @@ class TradeExecutor:
             )
 
         logger.info(
-            "Order opened: %s %s lots=%.2f price=%.2f tp=%.2f ticket=%s",
-            direction.value, self.symbol, lots, price, take_profit, result.order,
+            "Order opened: %s %s lots=%.2f price=%.2f tp=%.2f sl=%s ticket=%s",
+            direction.value, self.symbol, lots, price, take_profit,
+            f"{stop_loss:.2f}" if stop_loss else "none", result.order,
         )
         return OrderResult(ticket=result.order, price=price, take_profit=take_profit)
 
@@ -212,6 +236,8 @@ class TradeExecutor:
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
+        if stop_loss is not None:
+            request["sl"] = stop_loss
 
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:

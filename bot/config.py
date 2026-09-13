@@ -345,6 +345,12 @@ class AppConfig:
     # htf_trend_take_profit_usd instead of take_profit_usd. It never
     # blocks a trade and never changes once the trade is open -- the
     # target is placed with the broker at entry.
+    # A REAL broker-side stop placed with the order, far wider than the
+    # software stop. It is a disaster backstop for the bot dying or the
+    # VPS failing, not a trading rule -- the software stop still governs
+    # every ordinary exit. None = off.
+    broker_backstop_usd: float | None = None
+
     # Be flat for the weekend: once it is Friday past this UTC time, no new
     # entries, and any open position is closed. None = off (previous
     # behaviour: a position can run through the weekend).
@@ -632,6 +638,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         tp_runner_trail_usd=raw.get("tp_runner_trail_usd"),
         tp_runner_arm_before_usd=_float_or_default(raw, "tp_runner_arm_before_usd", 0.20),
         tp_runner_lock_below_usd=_float_or_default(raw, "tp_runner_lock_below_usd", 0.0),
+        broker_backstop_usd=raw.get("broker_backstop_usd"),
         weekend_flat_utc=raw.get("weekend_flat_utc"),
         htf_trend_timeframe=raw.get("htf_trend_timeframe"),
         htf_trend_take_profit_usd=raw.get("htf_trend_take_profit_usd"),
