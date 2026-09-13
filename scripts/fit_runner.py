@@ -247,8 +247,15 @@ def main() -> None:
                        max_candles=args.max_candles, ratchet_first=(ordering == "ratchet-first"))
             got.append(r[1] if r else 0.0)
         control[ordering] = got
+        # Split the CONTROL by half too. Comparing breakeven levels means
+        # comparing this line across runs, and until now it was a single
+        # pooled six-month number -- the only figure here never checked
+        # walk-forward. A level that wins in one period and loses in the
+        # other is noise, and that would have been invisible.
         print(f"  runner OFF [{ordering:<13}]  ${sum(got) * to_usd:>10,.0f}   "
-              f"${sum(got) / len(got) * to_usd:>7.2f}/trade")
+              f"${sum(got) / len(got) * to_usd:>7.2f}/trade   "
+              f"1st half ${sum(got[:mid]) * to_usd:>9,.0f}   "
+              f"2nd half ${sum(got[mid:]) * to_usd:>9,.0f}")
 
     print(f"\n  {'lock at':>8}{'trail':>7}{'ordering':>15}{'vs runner OFF':>15}"
           f"{'1st half':>11}{'2nd half':>11}{'ran':>6}")
