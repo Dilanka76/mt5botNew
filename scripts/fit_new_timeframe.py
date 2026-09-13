@@ -87,8 +87,12 @@ def parse_args() -> argparse.Namespace:
                         "shape and time one run before committing to the full sweep")
     p.add_argument("--arm-before", type=float, default=1.0,
                    help="NOT scaled with the candle — see the module docstring")
-    p.add_argument("--locks", default="0,1,2", help="tp_runner_lock_below_usd candidates")
-    p.add_argument("--trails", default="0.5,0.75,1.0,1.5")
+    # --locks / --trails are accepted and ignored: stage 2 no longer runs,
+    # because this backtest cannot see the runner's ARM step (see stage 2).
+    # Kept as arguments so the documented command lines still work rather
+    # than dying on an unrecognised flag.
+    p.add_argument("--locks", default=None, help=argparse.SUPPRESS)
+    p.add_argument("--trails", default=None, help=argparse.SUPPRESS)
     p.add_argument("--jobs", type=int, default=None,
                    help="parallel worker processes (default: all cores, max 8). "
                         "--jobs 1 forces the plain serial path if anything looks wrong.")
@@ -329,63 +333,38 @@ def main() -> None:
         print("  WARNING: the good scores do not cluster. That is what fitting noise looks")
         print("           like, and none of this grid should be deployed on it.")
 
-    # ---- stage 2: the runner, on stage 1's winner ---------------------
-    tp = best["tp"]
-    print(f"\nSTAGE 2 — TP-runner on stop ${best['stop']:.1f} / TP ${tp:.1f}, "
-          f"arm ${args.arm_before:.2f} early (fixed, not scaled)")
-    print(f"  {'lock at':>9}{'trail':>8}{'trades':>8}{'1st half':>11}{'2nd half':>11}{'total':>11}")
-    off = next(r for r in rows if r["stop"] == best["stop"] and r["tp"] == tp)
-    print(f"  {'runner off':>9}{'-':>8}{off['n']:>8}{off['first']:>11.0f}{off['second']:>11.0f}"
-          f"{off['stats']['total_pl']:>11.0f}")
-
-    runner_tasks = [
-        ({"lock": lock, "trail": trail},
-         replace(base, stop_loss_usd=best["stop"], take_profit_usd=tp,
-                 breakeven_trigger_usd=max(0.5, tp - args.arm_before),
-                 tp_runner_trail_usd=trail,
-                 tp_runner_arm_before_usd=args.arm_before,
-                 tp_runner_lock_below_usd=lock))
-        for lock in [float(v) for v in args.locks.split(",")] if lock < tp
-        for trail in [float(v) for v in args.trails.split(",")]
-    ]
-    runner_rows = sweep(runner_tasks, jobs, ctx, "stage 2") if runner_tasks else []
-    for r in sorted(runner_rows, key=lambda r: (r["lock"], r["trail"])):
-        print(f"  {tp - r['lock']:>9.2f}{r['trail']:>8.2f}{r['n']:>8}{r['first']:>11.0f}"
-              f"{r['second']:>11.0f}{r['stats']['total_pl']:>11.0f}")
-
-    # A runner setting that changes nothing changed nothing. Locking at
-    # +$4 versus +$6 with a $0.50 versus $1.50 trail cannot produce twelve
-    # byte-identical results unless the simulation is blind to all of it --
-    # bot/backtest/runner.py never reads tp_runner_*, and the engine's
-    # set_sltp calls do not feed back into the exits it computes itself.
-    # Reporting that as "the runner does not help" would be a false
-    # negative dressed as a finding, so say what it actually is.
-    inert = runner_rows and all(
-        (r["n"], round(r["first"], 2), round(r["second"], 2))
-        == (off["n"], round(off["first"], 2), round(off["second"], 2))
-        for r in runner_rows
-    )
-    if inert:
-        print()
-        print("  !! STAGE 2 IS MEANINGLESS — every setting returned exactly the runner-off")
-        print("     result, including locks $2 apart and trails 3x apart. This backtest does")
-        print("     not simulate the TP-runner at all; it computes exits itself and ignores")
-        print("     the engine's set_sltp calls. It is NOT evidence the runner fails.")
-        print("     The runner can only be measured on real trades (scripts/simulate_tp_runner.py),")
-        print("     so a brand-new timeframe cannot have it fitted in advance.")
-        print("     SHIP THE LEG WITH THE RUNNER OFF and decide it later on live demo trades.")
-        runner_rows = []
-
-    if runner_rows:
-        rbest = max(runner_rows, key=lambda r: r["first"])
-        gain1 = rbest["first"] - off["first"]
-        gain2 = rbest["second"] - off["second"]
-        print(f"\n  Best runner on first half: lock +${tp - rbest['lock']:.2f}, "
-              f"trail ${rbest['trail']:.2f}")
-        print(f"    vs runner off — first half ${gain1:+,.0f}, second half ${gain2:+,.0f}")
-        if gain2 <= 0:
-            print("    The runner does NOT carry into the second half here. Ship the leg")
-            print("    with the runner OFF and revisit it separately.")
+    # ---- stage 2: the runner -- REFUSED, not merely unmeasured ---------
+    #
+    # The TP-runner has three steps: ARM (remove the broker take-profit a
+    # dollar early), LOCK (stop at the target), TRAIL (ratchet behind the
+    # best price). LOCK and TRAIL assign to position.stop_loss, which
+    # bot/backtest/runner.py reads when it computes exits -- so the backtest
+    # DOES see them. ARM is performed only through executor.set_sltp(), and
+    # bot/backtest/runner.py contains no reference to it, so the simulated
+    # trade keeps the take-profit that the real trade has just dropped.
+    #
+    # The simulation therefore applies the runner's entire COST (a
+    # tightening stop that can end a trade early) while denying its entire
+    # BENEFIT (the ceiling coming off so a winner can run past the target).
+    # Every runner setting must lose, and the more it trails the more it
+    # loses -- which is exactly the monotone "runner is terrible" table this
+    # script used to print, complete with a confident recommendation to ship
+    # with the runner OFF.
+    #
+    # That is worse than the older failure mode. Before, the sweep returned
+    # byte-identical rows and an inert-detector caught it. Now the
+    # rows differ, they look like real measurements, and nothing catches it.
+    # A plausible wrong answer beats an obvious null at fooling people, so
+    # the fix is to refuse the measurement rather than to caveat it.
+    print("\nSTAGE 2 — SKIPPED, and not because the runner failed.")
+    print("  This backtest can see the runner's LOCK and TRAIL (they assign to")
+    print("  position.stop_loss) but NOT its ARM step (removing the broker take-profit,")
+    print("  done only through executor.set_sltp, which bot/backtest/runner.py ignores).")
+    print("  So a simulated runner pays every cost and collects no benefit, and every")
+    print("  setting is guaranteed to score worse than runner-off. Those numbers would")
+    print("  be meaningless, so they are not produced.")
+    print("  Measure the runner on REAL exits instead:  scripts/fit_runner.py --real-ticks")
+    runner_rows: list[dict] = []
 
     print(f"\n{'=' * 96}")
     print("FINAL SPEC to write into the new config (only if stage 1 stability was 4 or 5):")
@@ -394,11 +373,7 @@ def main() -> None:
     print(f"  take_profit_usd          : {tp:.2f}")
     print(f"  breakeven_trigger_usd    : {max(0.5, tp - args.arm_before):.2f}   (= the arm point, derived)")
     print(f"  tp_runner_arm_before_usd : {args.arm_before:.2f}   (fixed — a race against the broker, not a candle size)")
-    if runner_rows:
-        print(f"  tp_runner_lock_below_usd : {rbest['lock']:.2f}")
-        print(f"  tp_runner_trail_usd      : {rbest['trail']:.2f}")
-    else:
-        print(f"  tp_runner_trail_usd      : null   (OFF — not measurable here, see above)")
+    print(f"  tp_runner_trail_usd      : decide from real exits, NOT from this script")
     print(f"  swap_immediate           : true")
     print("\nStill decided OUTSIDE this script: lot size (set it so stop x lots matches the")
     print("risk per trade you already accept), sessions, and the daily loss limit.")
