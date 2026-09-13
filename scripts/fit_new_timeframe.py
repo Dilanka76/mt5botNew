@@ -364,7 +364,12 @@ def main() -> None:
     print("  setting is guaranteed to score worse than runner-off. Those numbers would")
     print("  be meaningless, so they are not produced.")
     print("  Measure the runner on REAL exits instead:  scripts/fit_runner.py --real-ticks")
-    runner_rows: list[dict] = []
+
+    # Deleting stage 2 took `tp = best["tp"]` with it and the FINAL SPEC block
+    # below still used it -- so a 36-cell run printed its whole table and then
+    # died on a NameError at the last three lines. Bind it here, next to the
+    # only other thing that reads `best`.
+    tp = best["tp"]
 
     print(f"\n{'=' * 96}")
     print("FINAL SPEC to write into the new config (only if stage 1 stability was 4 or 5):")
