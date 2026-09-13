@@ -52,7 +52,27 @@ EXPECTED_DIFFS = {"magic_number", "sibling_magic_numbers", "require_demo_account
                   # (contract size, digits, point, volume steps, tick
                   # value/size). A matching name with a different contract
                   # would be far more dangerous than a differing name.
-                  "symbol"}
+                  "symbol",
+                  # A live-only safety cap. demo1 deliberately has none --
+                  # the whole point is that the real-money account stops
+                  # after a bad day and the demo does not. Flagging it as a
+                  # mismatch reported a correctly-configured safety feature
+                  # as a reason not to go live.
+                  "daily_loss_limit_usd"}
+
+# Config blocks named after a strategy variant. Only the block belonging to
+# the CONFIGURED variant is part of "same strategy" -- the others are dead
+# settings that no engine reads, left behind by older experiments. demo1's
+# files still carry dual_cross_tight_exit and dual_cross_confirmed_entry
+# from engines it stopped running long ago; live2's were written fresh and
+# do not. On 2026-09-13 that produced four "UNEXPECTED ... must match"
+# lines and a DO NOT GO LIVE verdict over settings the deployed engine
+# (dual_cross_confirmed_swap_adx) never reads -- its own docstring says it
+# "does NOT require a dual_cross_tight_exit config section at all".
+#
+# A pre-flight that cries wolf is one people learn to skim, which is
+# exactly when it stops protecting anything.
+VARIANT_BLOCKS = {"dual_cross", "dual_cross_confirmed_entry", "dual_cross_tight_exit"}
 
 
 def raw_config(account: str) -> dict | None:
@@ -97,6 +117,18 @@ def main() -> None:
             print()
             continue
 
+        # Which variant-named block actually counts, decided from the
+        # TARGET's own strategy_variant -- the account about to trade real
+        # money, not the demo it is compared against.
+        variant = tgt_raw.get("strategy_variant")
+        active_variant_block = variant if variant in VARIANT_BLOCKS else None
+        if variant != src_raw.get("strategy_variant"):
+            print(f"  STRATEGY VARIANT DIFFERS: {source}={src_raw.get('strategy_variant')}  "
+                  f"{target}={variant}  <-- these are different engines")
+            problems.append(f"{target}: strategy_variant differs from {source}")
+        else:
+            print(f"  strategy_variant={variant} (same engine as {source})")
+
         src_flat, tgt_flat = flatten(src_raw), flatten(tgt_raw)
         keys = sorted(set(src_flat) | set(tgt_flat))
         unexpected = []
@@ -113,8 +145,12 @@ def main() -> None:
             if a in ("<missing>", None) and b in ("<missing>", None):
                 continue
             leaf = key.split(".")[-1]
+            block = key.split(".")[0]
             if leaf in EXPECTED_DIFFS:
                 print(f"  expected diff  {key}: {a} -> {b}")
+            elif block in VARIANT_BLOCKS and block != active_variant_block:
+                print(f"  unused block   {key}: {a} -> {b}  "
+                      f"(no engine reads this under strategy_variant={variant})")
             else:
                 print(f"  UNEXPECTED     {key}: {source}={a}  {target}={b}  <-- must match")
                 unexpected.append(key)
