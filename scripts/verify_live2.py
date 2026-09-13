@@ -1,7 +1,16 @@
 """Pre-flight for live2, before real money trades.
 
-Answers one question: is live2 EXACTLY demo2, apart from the execution
+Answers one question: is live2 EXACTLY demo1, apart from the execution
 block that has to differ?
+
+**The baseline changed on 2026-09-07 and this script did not follow.** live2
+was built as a demo2 mirror, then re-pointed at demo1's strategy on the
+user's instruction ("live2, account should be finalize the stratergy which
+has the demo1, we are using the m3, and the m5"). Until 2026-09-13 the PAIRS
+below still read demo2_m1/live2_m1 and demo2_m3/live2_m3 -- an account pair
+that no longer exists (M1 is retired) and a baseline that is no longer the
+one live2 copies. The pre-flight for a real-money account was checking it
+against the wrong strategy.
 
 Compares the two configs field by field and reports every difference, so
 a typo or a stale value cannot quietly change the strategy on the
@@ -32,7 +41,7 @@ sys.path.insert(0, ".")
 from bot.config import PROJECT_ROOT, discover_configured_accounts, load_config
 from bot.mt5_connector import MT5Connector
 
-PAIRS = [("demo2_m1", "live2_m1"), ("demo2_m3", "live2_m3")]
+PAIRS = [("demo1_m3", "live2_m3"), ("demo1_m5", "live2_m5")]
 # The execution block is ALLOWED to differ -- everything else is not.
 EXPECTED_DIFFS = {"magic_number", "sibling_magic_numbers", "require_demo_account",
                   "mode", "order_comment",
@@ -124,9 +133,11 @@ def main() -> None:
         if config.execution.require_demo_account:
             print("    <-- require_demo_account is TRUE: the bot will refuse to trade here")
             problems.append(f"{target}: require_demo_account still true")
-        if config.tp_runner_trail_usd is not None:
-            print(f"    <-- tp_runner_trail_usd={config.tp_runner_trail_usd}: demo2 does NOT have this")
-            problems.append(f"{target}: has the TP-runner, demo2 does not")
+        # No hardcoded verdict on the TP-runner any more: demo2 did not have
+        # it, demo1 does, and live2 now mirrors demo1. Whether live2's value
+        # is right is already decided by the field-by-field comparison above
+        # -- a second, baseline-specific rule here could only go stale again.
+        print(f"  tp_runner_trail_usd={config.tp_runner_trail_usd}")
         print(f"  daily_loss_limit_usd={config.daily_loss_limit_usd}"
               f"{'  (OFF -- no cap on a bad day)' if not config.daily_loss_limit_usd else ''}")
 
@@ -161,7 +172,7 @@ def main() -> None:
                     problems.append(f"{target}: connected terminal is a demo account")
             if symbol is not None:
                 print(f"  symbol {config.symbol}: found")
-                # "Exactly like demo2" has to include the INSTRUMENT. Position
+                # "Exactly like demo1" has to include the INSTRUMENT. Position
                 # sizing, every stop/target in dollars and every figure in this
                 # project's research assume $100 per lot per $1 of price. A
                 # different contract size on the live symbol would silently
@@ -195,7 +206,7 @@ def main() -> None:
                         for m in mismatched:
                             print(f"      {m}")
                         print("      Every dollar figure (stops, targets, lot tiers, all the")
-                        print("      research) assumes demo2's contract. Do NOT trade until")
+                        print(f"      research) assumes {source}'s contract. Do NOT trade until")
                         print("      this is understood.")
                         problems.append(f"{target}: contract specs differ from {source}")
                     else:
@@ -233,7 +244,7 @@ def main() -> None:
         for p in problems:
             print(f"  - {p}")
     else:
-        print("live2 mirrors demo2 exactly, connects to a live account, and has no")
+        print("live2 mirrors demo1 exactly, connects to a live account, and has no")
         print("magic collision. Remaining by hand: Task Scheduler tasks, and deciding")
         print("whether to set daily_loss_limit_usd before it trades.")
 
