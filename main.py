@@ -237,7 +237,8 @@ def run() -> None:
         "breakeven_lock_usd=%s early_entry_threshold_usd=%s entry_filter_enabled=%s "
         "tp_runner_trail_usd=%s tp_runner_arm_before_usd=%s tp_runner_lock_below_usd=%s "
         "swap_immediate=%s daily_loss_limit_usd=%s "
-        "htf_trend_timeframe=%s htf_trend_take_profit_usd=%s",
+        "htf_trend_timeframe=%s htf_trend_take_profit_usd=%s "
+        "broker_backstop_usd=%s weekend_flat_utc=%s",
         args.account, config.symbol, config.timeframe, config.execution.mode, config.strategy_variant, engine.state.value,
         config.execution.reject_manual_trades, config.stop_loss_usd, config.take_profit_usd,
         config.breakeven_trigger_usd, config.breakeven_lock_usd,
@@ -250,6 +251,10 @@ def run() -> None:
         # the config file says. A new setting missing here is invisible
         # until it misbehaves.
         config.htf_trend_timeframe, config.htf_trend_take_profit_usd,
+        # Both only ever act on the day something goes wrong -- a dead bot,
+        # or a Friday. This line is the only evidence they were loaded at
+        # all, so they have to be on it.
+        config.broker_backstop_usd, config.weekend_flat_utc,
     )
 
     last_closed_candle_time = None
