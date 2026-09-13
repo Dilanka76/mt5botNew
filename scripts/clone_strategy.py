@@ -92,8 +92,8 @@ def main() -> None:
                  f"create it from a real account's identity.")
 
     src = yaml.safe_load(src_path.read_text(encoding="utf-8"))
-    created = False
-    if not dst_path.exists():
+    created = not dst_path.exists()
+    if created:
         if args.identity_from is None:
             sys.exit(f"{dst_path.name} does not exist. To create it, pass --identity-from "
                      f"<account> so the new leg inherits a real account's symbol, execution "
@@ -101,28 +101,30 @@ def main() -> None:
         # A new leg must inherit IDENTITY from a live sibling, never from
         # the demo source: copying demo1_m5 wholesale would carry XAUUSDp,
         # demo_execute and require_demo_account: true onto a real account.
+        #
+        # Built in MEMORY only. The first version wrote the file here,
+        # before the --apply check, so a DRY RUN left a real
+        # settings.live2_m5.yaml behind holding live2_m3's M3 strategy
+        # under the M5 name -- a config Task Scheduler could have started.
         id_path = cfg / f"settings.{args.identity_from}.yaml"
         if not id_path.exists():
             sys.exit(f"settings.{args.identity_from}.yaml not found.")
         base = yaml.safe_load(id_path.read_text(encoding="utf-8"))
-        magic = args.magic or int(base["execution"]["magic_number"]) + 2
+        sibling_magic = int(base["execution"]["magic_number"])
+        magic = args.magic or sibling_magic + 2
         base["execution"]["magic_number"] = magic
         base["execution"]["sibling_magic_numbers"] = sorted(
-            set(base["execution"].get("sibling_magic_numbers", []))
-            | {int(yaml.safe_load(id_path.read_text(encoding="utf-8"))
-                   ["execution"]["magic_number"])})
-        dst_path.write_text(yaml.safe_dump(base, sort_keys=False, default_flow_style=False),
-                            encoding="utf-8")
-        env_src = PROJECT_ROOT / f".env.{args.identity_from}"
-        env_dst = PROJECT_ROOT / f".env.{args.target}"
-        if env_src.exists() and not env_dst.exists():
-            shutil.copyfile(env_src, env_dst)   # bytes only; never read or printed
-        created = True
-        print(f"  CREATED {dst_path.name} from {args.identity_from}'s identity, magic {magic}")
-        print(f"  CREATED .env.{args.target} (copy of .env.{args.identity_from}, never read)\n")
+            set(base["execution"].get("sibling_magic_numbers", [])) | {sibling_magic})
+        dst = base
+        original = None
+        print(f"  {'CREATING' if args.apply else 'WOULD CREATE'} {dst_path.name} from "
+              f"{args.identity_from}'s identity, magic {magic}")
+        print(f"  {'CREATING' if args.apply else 'WOULD CREATE'} .env.{args.target} "
+              f"(copy of .env.{args.identity_from}, never read)\n")
 
-    original = dst_path.read_text(encoding="utf-8")     # exact bytes, to revert
-    dst = yaml.safe_load(original)
+    if not created:
+        original = dst_path.read_text(encoding="utf-8")   # exact bytes, to revert
+        dst = yaml.safe_load(original)
     is_live = args.target.startswith("live")
 
     print("=" * 84)
@@ -195,6 +197,11 @@ def main() -> None:
     for key in IDENTITY_FIELDS:      # belt and braces: never let these move
         if key in src and key in dst:
             pass
+    if created:
+        env_src = PROJECT_ROOT / f".env.{args.identity_from}"
+        env_dst = PROJECT_ROOT / f".env.{args.target}"
+        if env_src.exists() and not env_dst.exists():
+            shutil.copyfile(env_src, env_dst)   # bytes only; never read or printed
     dst_path.write_text(yaml.safe_dump(dst, sort_keys=False, default_flow_style=False),
                         encoding="utf-8")
     reread = yaml.safe_load(dst_path.read_text(encoding="utf-8"))
