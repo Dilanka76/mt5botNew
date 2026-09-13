@@ -163,7 +163,7 @@ from bot.indicators.htf_trend import agrees_with_trend
 from bot.logging_setup.logger import log_decision
 from bot.mt5_connector import MT5Connector
 from bot.risk.position_sizing import calculate_lots
-from bot.sessions import is_within_session
+from bot.sessions import is_within_session, weekend_flat_due
 from bot.strategy.cross_detector import CrossState, Direction
 from bot.strategy.state_machine import POSITION_CLOSE_GRACE_PERIOD_SECONDS, TradeState
 from bot.strategy.state_machine_dual_cross import ClosedTrade, DualPosition, OpenedTrade
@@ -835,6 +835,24 @@ class DualCrossConfirmedSwapAdxEngine:
 
         if self.position is not None:
             position = self.position
+            # BE FLAT FOR THE WEEKEND. Checked before every other exit so a
+            # position cannot survive into a weekend on a technicality. A
+            # stop only fires when ticks arrive and none arrive over a
+            # weekend, so a gap reopens past it and the bot closes at
+            # whatever price exists -- not at the stop.
+            if weekend_flat_due(self.config.weekend_flat_utc):
+                favorable = (
+                    tick.bid - position.entry_price if position.direction == Direction.BUY
+                    else position.entry_price - tick.bid
+                )
+                events.append(self._close_position(
+                    category="weekend_flat",
+                    reason=(f"weekend close: flat by {self.config.weekend_flat_utc} UTC Friday, "
+                            f"closing at {favorable:+.2f} rather than carry the position over "
+                            f"the weekend, where a gap can open past the stop"),
+                    exit_price=tick.bid,
+                ))
+                return events
             if time.monotonic() - position.opened_monotonic >= POSITION_CLOSE_GRACE_PERIOD_SECONDS:
                 # Breakeven-stop (config.breakeven_trigger_usd, only set on
                 # accounts that want it -- explicit user request 2026-08-31,
@@ -1113,6 +1131,14 @@ class DualCrossConfirmedSwapAdxEngine:
                 f"{self.config.execution.magic_number} "
                 f"(tickets {', '.join(str(p.ticket) for p in already_open)}). "
                 f"Opening another would double the position size. Check for a duplicate bot.",
+            )
+            return None
+
+        if weekend_flat_due(self.config.weekend_flat_utc):
+            log_decision(
+                self.config.symbol, "entry_blocked_weekend",
+                f"{direction.value} entry refused: flat by {self.config.weekend_flat_utc} UTC "
+                f"Friday. A trade opened now could not be closed before the market shuts.",
             )
             return None
 
