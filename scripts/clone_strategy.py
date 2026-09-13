@@ -43,7 +43,7 @@ import yaml
 
 sys.path.insert(0, ".")
 
-from bot.config import PROJECT_ROOT, validate_account_name
+from bot.config import PROJECT_ROOT, load_config, validate_account_name
 
 # Copied. Everything not listed here is left as the target has it.
 STRATEGY_FIELDS = [
@@ -80,7 +80,8 @@ def main() -> None:
             sys.exit(f"{path.name} not found ({what}). Run this on the trading server.")
 
     src = yaml.safe_load(src_path.read_text(encoding="utf-8"))
-    dst = yaml.safe_load(dst_path.read_text(encoding="utf-8"))
+    original = dst_path.read_text(encoding="utf-8")     # exact bytes, to revert
+    dst = yaml.safe_load(original)
     is_live = args.target.startswith("live")
 
     print("=" * 84)
@@ -158,7 +159,22 @@ def main() -> None:
     reread = yaml.safe_load(dst_path.read_text(encoding="utf-8"))
     assert reread["symbol"] == dst["symbol"], "symbol moved — aborting"
     assert reread["execution"]["magic_number"] == ex.get("magic_number"), "magic moved"
-    print(f"\n  written and parsed OK: {dst_path.name}")
+
+    # Parsing is not loading. A strategy_variant carries requirements of
+    # its own -- dual_cross_confirmed_swap_adx refuses to load without a
+    # swap_adx_filter section, even though the engine never consults it
+    # when swap_immediate is on. live2_m3 runs the plain variant and
+    # demo1_m3 the adx one, so this copy changes the engine, and a
+    # requirement left behind would surface as the bot failing to start
+    # on Monday morning rather than here.
+    try:
+        load_config(args.target)
+    except Exception as exc:                           # noqa: BLE001
+        dst_path.write_text(original, encoding="utf-8")
+        sys.exit(f"\n  REVERTED — the new config will not load:\n"
+                 f"    {type(exc).__name__}: {exc}\n"
+                 f"  {dst_path.name} is back as it was. Nothing was changed.")
+    print(f"\n  written, parsed and LOADED OK: {dst_path.name}")
     print(f"  identity verified unchanged: symbol {reread['symbol']}, "
           f"magic {reread['execution']['magic_number']}")
     print(f"\n  Before starting it, read it back:")
