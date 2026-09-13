@@ -264,6 +264,30 @@ def main() -> None:
         print("   *** More than half the account. Survivable, but it would take the")
         print("       balance below the tier it started in. ***")
 
+    # ---- 3c. so what size IS survivable? ----------------------------
+    #
+    # price_dd and the price edge are both per-ounce and therefore
+    # lot-independent, so the whole risk/reward question collapses to one
+    # choice: how many lots. This prints that decision directly instead of
+    # leaving it to be done by hand against a ladder.
+    traded = [t for t in trades if (t.get("volume") or 0) > 0]
+    price_total = sum(t["profit"] / (t["volume"] * contract_size) for t in traded)
+    price_per_day = price_total / len(days)
+    print(f"\n3c. WHAT LOT SIZE {money(args.balance)} CAN ACTUALLY CARRY")
+    print(f"   edge, lot-independent     = ${price_total:,.2f} per ounce over "
+          f"{len(days)} days (${price_per_day:.2f}/day)")
+    print(f"   worst stretch             = ${price_dd:,.2f} per ounce")
+    print(f"   {'lots':>6}{'$/day':>10}{'worst drawdown':>17}{'% of balance':>14}")
+    ladder = sorted({0.01, 0.02, 0.03, 0.04, lots})
+    for cand in ladder:
+        per_day = price_per_day * cand * contract_size
+        dd = price_dd * cand * contract_size
+        flag = "  <- current tier" if cand == lots else ""
+        print(f"   {cand:>6.2f}{per_day:>10.2f}{dd:>17,.2f}"
+              f"{dd / args.balance * 100:>13.0f}%{flag}")
+    print("   A drawdown near or above 100% is not survivable at this balance no")
+    print("   matter how good the daily average looks -- the account ends first.")
+
     # ---- 4. losing streaks ------------------------------------------
     streak = worst_streak = 0
     streak_loss = worst_streak_loss = 0.0
