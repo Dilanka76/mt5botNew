@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pandas as pd
 
+from bot.analytics import StaleTickError
 from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.ema import compute_emas
@@ -73,6 +74,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--trails", default="0.25,0.5,0.75,1,1.5,2")
     p.add_argument("--max-candles", type=int, default=300,
                    help="how far past the target to follow a trade before giving up")
+    p.add_argument("--offset-hours", type=float, default=None,
+                   help="broker-vs-UTC offset in hours, normally measured from the newest "
+                        "tick. With the market CLOSED there are no fresh ticks and the "
+                        "measurement fails, but this is historical analysis and does not "
+                        "need live prices -- pass 3 for this broker (UTC+3) to run at "
+                        "weekends. A wrong value shifts every candle timestamp, so pass it "
+                        "only when you know the broker's server timezone.")
     p.add_argument("--breakeven-lock", type=float, default=None,
                    help="breakeven_lock_usd to use for BOTH sides of the comparison. "
                         "Default: the account's current value — but if you would raise it "
@@ -191,8 +199,10 @@ def main() -> None:
     connector = MT5Connector(config.mt5)
     connector.connect()
     try:
+        offset = (timedelta(hours=args.offset_hours) if args.offset_hours is not None
+                  else None)
         df = get_ohlc_range(connector, config.symbol, config.timeframe,
-                            date_from - timedelta(days=2), date_to)
+                            date_from - timedelta(days=2), date_to, offset)
     finally:
         connector.disconnect()
     df = compute_emas(df, config.ema_periods)
@@ -309,4 +319,15 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except StaleTickError as exc:
+        # This script reads HISTORY, not live prices. It only needs the
+        # offset to line candle timestamps up with UTC, and that is a fixed
+        # property of the broker -- so a closed market need not block it.
+        print("\nMARKET CLOSED, so the broker's clock offset cannot be measured from a")
+        print("live tick. This analysis reads history and does not need live prices —")
+        print("re-run with the broker's known offset:")
+        print("\n    ... --offset-hours 3          (this broker runs UTC+3)\n")
+        print(f"  {exc}")
+        raise SystemExit(1)
