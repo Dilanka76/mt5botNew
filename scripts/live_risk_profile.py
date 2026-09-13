@@ -162,30 +162,50 @@ def main() -> None:
         print(f"   broker backstop ${backstop:.2f}    = {money(-bs)}"
               f"   ({bs / args.balance * 100:.1f}% — only if the software stop fails)")
 
-    # ---- 2. the daily distribution ----------------------------------
+    # ---- 2. the daily distribution, in PERCENT ----------------------
+    #
+    # Dollars are not comparable across this replay. The lot ladder steps
+    # 0.04 -> 0.06 -> 0.12 as the balance grows, so a $500 losing day at a
+    # $3,000 balance and a $500 losing day at $300 are completely different
+    # events. Reporting either against the STARTING balance (as the first
+    # version of this script did) manufactures terrifying numbers like
+    # "worst day = 166% of the account" for a day the account survived
+    # easily. Percentages of the balance at the time are the honest unit.
     by_day: dict = defaultdict(float)
+    day_open: dict = {}
+    equity_walk = args.balance
     for t in trades:
-        by_day[as_utc(t["close_time"]).astimezone(COLOMBO).date()] += t["profit"]
+        day = as_utc(t["close_time"]).astimezone(COLOMBO).date()
+        day_open.setdefault(day, equity_walk)
+        by_day[day] += t["profit"]
+        equity_walk += t["profit"]
     days = sorted(by_day)
     daily = [by_day[d] for d in days]
-    mean, sd = statistics.mean(daily), (statistics.pstdev(daily) if len(daily) > 1 else 0.0)
+    daily_pct = [by_day[d] / day_open[d] * 100 for d in days]
+    mean, sd = statistics.mean(daily_pct), (statistics.pstdev(daily_pct) if len(daily_pct) > 1 else 0.0)
     losing = [v for v in daily if v < 0]
+    worst_i = min(range(len(days)), key=lambda i: daily_pct[i])
     print(f"\n2. DAILY P/L over {len(days)} Colombo trading days ({len(trades)} trades, "
           f"{len(trades) / len(days):.1f}/day)")
-    print(f"   average day               = {money(mean)}")
-    print(f"   standard deviation        = {money(sd)}")
+    print("   (as a % of the balance on the day — dollars are not comparable,")
+    print("    the lot ladder steps up as the account grows)")
+    print(f"   average day               = {mean:+.2f}%")
+    print(f"   standard deviation        = {sd:.2f}%")
     print(f"   losing days               = {len(losing)} of {len(days)} "
           f"({len(losing) / len(days) * 100:.0f}%)")
-    print(f"   worst day                 = {money(min(daily))}"
-          f"   ({abs(min(daily)) / args.balance * 100:.1f}% of the starting account)")
-    print(f"   best day                  = {money(max(daily))}")
+    print(f"   worst day                 = {daily_pct[worst_i]:+.1f}%"
+          f"   ({money(daily[worst_i])} on a {money(day_open[days[worst_i]])} balance, "
+          f"{days[worst_i]})")
+    print(f"   best day                  = {max(daily_pct):+.1f}%")
     if sd > 0:
-        print(f"   a 2-sigma bad day         = {money(mean - 2 * sd)}"
-              f"   (happens roughly 1 day in 40)")
+        print(f"   a 2-sigma bad day         = {mean - 2 * sd:+.1f}%"
+              f"   (roughly 1 day in 40)")
+        print(f"   ...which on {money(args.balance)} is {money((mean - 2 * sd) / 100 * args.balance)}")
 
     # ---- 3. the equity path -----------------------------------------
     equity, peak, max_dd, dd_at, trough = args.balance, args.balance, 0.0, None, args.balance
     min_equity = args.balance
+    dd_peak = args.balance
     for t in trades:
         equity += t["profit"]
         min_equity = min(min_equity, equity)
@@ -194,14 +214,55 @@ def main() -> None:
         drop = peak - equity
         if drop > max_dd:
             max_dd, dd_at, trough = drop, as_utc(t["close_time"]).astimezone(COLOMBO).date(), equity
-    print(f"\n3. EQUITY PATH")
+            dd_peak = peak
+    print(f"\n3. EQUITY PATH (with compounding — the lot ladder steps up as it grows)")
     print(f"   final balance             = {money(equity)}")
     print(f"   lowest the account ever got = {money(min_equity)}")
-    print(f"   deepest drawdown          = {money(-max_dd)} "
-          f"({max_dd / peak * 100:.1f}% from its peak), bottoming {dd_at} at {money(trough)}")
+    print(f"   deepest drawdown          = {max_dd / dd_peak * 100:.1f}% "
+          f"({money(-max_dd)} from a {money(dd_peak)} peak), bottoming {dd_at}")
     if min_equity <= 0:
         print("   *** THE ACCOUNT WENT TO ZERO. This configuration does not survive "
               "this window at this balance. ***")
+
+    # ---- 3b. the same drawdown, suffered in MONTH ONE ----------------
+    #
+    # Section 3 is the optimistic reading and must not be quoted alone. The
+    # replay compounds, so the deepest drawdown lands late, at a balance of
+    # thousands, where the lot ladder has CAPPED at 0.12 and percentage risk
+    # per trade is therefore at its LOWEST. At the starting balance the
+    # ladder gives 0.04 on $300 -- 9.3% of the account per stop against
+    # about 1.7% once the balance passes $5,000. The same market is roughly
+    # 2.5x more dangerous, in percentage terms, on day one than it is by the
+    # end of the replay.
+    #
+    # A real account meets its worst stretch whenever the market delivers
+    # it, not conveniently after it has grown 29x. So: measure the worst
+    # drawdown in PRICE terms (lot-size independent), then convert it at the
+    # STARTING lot tier. That is what this stretch costs if it arrives in
+    # month one.
+    price_equity = price_peak = 0.0
+    price_dd = 0.0
+    for t in trades:
+        vol = t.get("volume") or 0.0
+        if vol <= 0:
+            continue
+        price_equity += t["profit"] / (vol * contract_size)
+        price_peak = max(price_peak, price_equity)
+        price_dd = max(price_dd, price_peak - price_equity)
+    at_start = price_dd * lots * contract_size
+    print(f"\n3b. THE SAME WORST STRETCH, IF IT ARRIVED IN MONTH ONE")
+    print(f"   deepest drawdown in price = ${price_dd:,.2f} per ounce")
+    print(f"   at the starting tier ({lots} lots) = {money(-at_start)}")
+    print(f"   against a {money(args.balance)} account = "
+          f"{at_start / args.balance * 100:.0f}% of it")
+    if at_start >= args.balance:
+        print("   *** LARGER THAN THE ACCOUNT. The lot ladder would step down on the")
+        print("       way (0.04 -> 0.03 -> 0.02 -> 0.01), so it does not literally hit")
+        print("       zero -- but this balance cannot absorb this strategy's worst")
+        print("       historical stretch. ***")
+    elif at_start >= args.balance * 0.5:
+        print("   *** More than half the account. Survivable, but it would take the")
+        print("       balance below the tier it started in. ***")
 
     # ---- 4. losing streaks ------------------------------------------
     streak = worst_streak = 0
