@@ -40,7 +40,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, ".")
 
-from bot.analytics import get_closed_trades_range, mt5_utc_offset
+from bot.analytics import StaleTickError, get_closed_trades_range, mt5_utc_offset
 from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.formatting import usd
 from bot.mt5_connector import MT5Connector
@@ -211,4 +211,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except StaleTickError as exc:
+        # The market being shut is a normal weekend condition, not a fault.
+        # A traceback here reads as a broken script and sent the user
+        # re-running it (2026-09-13). The guard itself is right: with no
+        # ticks flowing, the broker-vs-UTC offset it measures is really the
+        # newest tick's AGE, and using it would put every timestamp in the
+        # report hours out.
+        print("\nMARKET CLOSED — this report needs live ticks to work out the broker's")
+        print("time offset, and the newest tick is stale. Re-run once trading opens.")
+        print(f"\n  {exc}".replace("\n", "\n  "))
+        raise SystemExit(1)
