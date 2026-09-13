@@ -181,6 +181,15 @@ def _progress(done: int, total: int, started: float, label: str, jobs: int) -> N
         print(f"    {label}: {done}/{total} done, ~{left / 60:.0f} min left", flush=True)
 
 
+def _corners(values: list[float]) -> list[float]:
+    """Lowest, middle and highest of a candidate list, without duplicates —
+    the coarse version of any grid, whatever timeframe it was written for."""
+    if len(values) <= 3:
+        return values
+    picks = [values[0], values[len(values) // 2], values[-1]]
+    return sorted(dict.fromkeys(picks))
+
+
 def evaluate(config, df, date_from, boundary, contract_size, point, balance) -> dict:
     trades = run_backtest(config, df, date_from, contract_size, point, balance)
     first, second = split_halves(trades, boundary)
@@ -259,7 +268,11 @@ def main() -> None:
     stops = [float(v) for v in args.stops.split(",")]
     tps = [float(v) for v in args.tps.split(",")]
     if args.quick:
-        stops, tps = [8.0, 10.0, 12.0], [7.0, 9.0, 11.0]
+        # Corners and centre of whatever grid was asked for. This used to be
+        # hardcoded to M5's 8/10/12 x 7/9/11, so --quick on an M3 grid timed a
+        # region the real sweep never visits and reported a shape that was not
+        # M3's at all.
+        stops, tps = _corners(stops), _corners(tps)
         print("QUICK MODE — coarse grid, for shape and timing only. The pass/fail")
         print("verdict below is NOT final; re-run without --quick before deciding.\n")
     jobs = args.jobs or min(os.cpu_count() or 1, 8)
