@@ -49,7 +49,7 @@ def main() -> None:
         sys.exit(f"{path.name} not found. Run this on the trading server.")
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
     soft = doc.get("stop_loss_usd")
-    lots = float((doc.get("position_sizing") or [{"lots": 0}])[-1]["lots"])
+    tiers = doc.get("position_sizing") or [{"max_balance": None, "lots": 0.01}]
 
     backstop = None if args.off else args.backstop
     flat = None if args.off else args.weekend_flat
@@ -70,9 +70,20 @@ def main() -> None:
                      f"  It would fire on ordinary losing trades and sit where a hunt would\n"
                      f"  look. Use at least ${float(soft) * 2:.2f}, or --off.")
         print(f"\n  software stop ${float(soft):.2f} governs every normal exit.")
-        print(f"  the ${backstop:.2f} backstop only fires if the bot or the machine dies:")
-        print(f"    normal loss   ${float(soft) * lots * 100:>7.2f}   ({lots} lots)")
-        print(f"    if bot dies   ${backstop * lots * 100:>7.2f}   instead of unlimited")
+        print(f"  the ${backstop:.2f} backstop only fires if the bot or the machine dies.")
+        # Shown across the WHOLE ladder, not just its top tier. The first
+        # version printed only the top rung -- "$360 if the bot dies" on an
+        # account funded with $300, which reads as though the backstop can
+        # lose more than the account. It can, but only at a balance big
+        # enough to trade that size.
+        print(f"\n    {'balance up to':>16}{'lots':>7}{'normal loss':>13}{'if bot dies':>13}")
+        for t in tiers:
+            cap = t.get("max_balance")
+            lot = float(t["lots"])
+            print(f"    {('any' if cap is None else f'${cap:,.0f}'):>16}{lot:>7}"
+                  f"{float(soft) * lot * 100:>13.2f}{backstop * lot * 100:>13.2f}")
+        print(f"\n    Your lot size comes from the BALANCE, so read the row your account")
+        print(f"    is in. The backstop scales with it -- it is a cap, not a fixed amount.")
 
     if flat:
         print(f"\n  every Friday from {flat} UTC: no new entries, and any open position")
