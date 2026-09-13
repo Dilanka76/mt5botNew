@@ -55,6 +55,7 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, ".")
 
+from bot.analytics import StaleTickError
 from bot.backtest.runner import run_backtest
 from bot.indicators.adx import compute_adx
 from bot.config import load_config, validate_account_name
@@ -91,6 +92,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--jobs", type=int, default=None,
                    help="parallel worker processes (default: all cores, max 8). "
                         "--jobs 1 forces the plain serial path if anything looks wrong.")
+    p.add_argument("--offset-hours", type=float, default=None,
+                   help="broker-vs-UTC offset in hours, normally measured from the newest "
+                        "tick. With the market CLOSED there are no fresh ticks and the "
+                        "measurement fails, but this is a historical replay and does not "
+                        "need live prices -- pass 3 for this broker (UTC+3) to fit at "
+                        "weekends. A wrong value shifts every candle timestamp, so pass it "
+                        "only when it is known.")
     p.add_argument("--balance", type=float, default=100000.0,
                    help="same starting balance for every candidate, so position sizing "
                         "cannot masquerade as edge (it did in the 2026-09-06 stop sweep)")
@@ -229,10 +237,12 @@ def main() -> None:
     connector = MT5Connector(config.mt5)
     connector.connect()
     try:
-        df = get_ohlc_range(connector, config.symbol, timeframe, warmup, date_to)
+        offset = (timedelta(hours=args.offset_hours) if args.offset_hours is not None
+                  else None)
+        df = get_ohlc_range(connector, config.symbol, timeframe, warmup, date_to, offset)
         htf_df = (
             get_ohlc_range(connector, config.symbol, config.htf_trend_timeframe,
-                           warmup, date_to)
+                           warmup, date_to, offset)
             if config.htf_trend_timeframe is not None else None
         )
         info = connector.symbol_info(config.symbol)
@@ -395,4 +405,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except StaleTickError as exc:
+        # A replay of historical candles needs the broker's clock offset only
+        # to line their timestamps up with UTC, and that is a fixed property
+        # of the broker -- so a closed market need not block a fit. Same
+        # escape as scripts/fit_runner.py.
+        print("\nMARKET CLOSED, so the broker's clock offset cannot be measured from a")
+        print("live tick. This fit replays history and does not need live prices \u2014")
+        print("re-run with the broker's known offset:")
+        print("\n    ... --offset-hours 3          (this broker runs UTC+3)\n")
+        print(f"  {exc}")
+        raise SystemExit(1)
