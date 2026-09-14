@@ -236,8 +236,17 @@ class TradeExecutor:
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
-        if stop_loss is not None:
-            request["sl"] = stop_loss
+        # NO "sl" here. These two lines were pasted in by mistake on
+        # 2026-09-13 (a412f9e, the broker-backstop change) where they belong
+        # in open_market_order -- `stop_loss` is a local there and does not
+        # exist in this function at all, so close_position() raised
+        # NameError on EVERY call for the next eighteen hours. Every
+        # software exit -- breakeven, stop-loss, opposite-cross swap,
+        # foreign-position rejection -- failed. Only broker-side exits (a
+        # take-profit fill, the backstop) still worked.
+        #
+        # A close request must never carry a stop-loss in any case: it is
+        # closing the position, not protecting it.
 
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
