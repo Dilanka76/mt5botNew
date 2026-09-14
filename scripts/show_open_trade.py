@@ -36,6 +36,7 @@ sys.path.insert(0, ".")
 
 import MetaTrader5 as mt5
 
+from bot.analytics import StaleTickError, mt5_utc_offset
 from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.mt5_connector import MT5Connector
 
@@ -90,6 +91,13 @@ def main() -> None:
             positions = [p for p in (mt5.positions_get(symbol=config.symbol) or [])
                          if p.magic == config.execution.magic_number]
             tick = mt5.symbol_info_tick(config.symbol)
+            # position.time is in MT5's own broker-time convention, NOT true
+            # UTC -- the 6th place in this project where that has bitten.
+            # Read raw it made a trade opened 2h26m ago print as "-34 min",
+            # and put its own tp_runner_armed event three hours BEFORE the
+            # trade existed, which is exactly the kind of nonsense that gets
+            # a real finding dismissed as a glitch.
+            offset = mt5_utc_offset(connector, config.symbol)
         finally:
             connector.disconnect()
 
@@ -105,11 +113,12 @@ def main() -> None:
             # of error, which on a $6 target is most of a percent.
             now = (tick.bid if is_buy else tick.ask) if tick else pos.price_current
             favorable = (now - pos.price_open) if is_buy else (pos.price_open - now)
-            opened = datetime.fromtimestamp(pos.time, tz=timezone.utc)
+            opened = datetime.fromtimestamp(pos.time, tz=timezone.utc) - offset
             age = (datetime.now(timezone.utc) - opened).total_seconds() / 60
 
             print(f"  ticket {pos.ticket}   {'BUY' if is_buy else 'SELL'}   {pos.volume} lots")
-            print(f"  opened               {opened:%Y-%m-%d %H:%M:%S} UTC  ({age:.0f} min ago)")
+            print(f"  opened               {opened:%Y-%m-%d %H:%M:%S} UTC  ({age:.0f} min ago)"
+                  f"   [broker clock is UTC{offset.total_seconds() / 3600:+.0f}]")
             print(f"  entry                {pos.price_open:.2f}")
             print(f"  now                  {now:.2f}   ({favorable:+.2f} in price, "
                   f"{pos.profit:+.2f} floating)")
@@ -154,4 +163,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except StaleTickError as exc:
+        # No fallback offset here on purpose: with the market closed there
+        # is no open trade to explain, and guessing the clock is how a
+        # wrong answer gets presented confidently.
+        print("\nMARKET CLOSED -- the broker clock offset cannot be measured, and with")
+        print("no ticks flowing there is no live trade state worth reading anyway.")
+        print(f"  {exc}")
+        raise SystemExit(1)
