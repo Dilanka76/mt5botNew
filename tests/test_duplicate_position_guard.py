@@ -49,6 +49,10 @@ class FakeConfig:
     account: str = "demo2_m1"
     symbol: str = "XAUUSDp"
     daily_loss_limit_usd: float | None = None
+    # Added 2026-09-14: _enter() reads this since the weekend-flat rule
+    # landed, and this stub was never updated -- the test had been dying
+    # on AttributeError rather than testing the guard it is named for.
+    weekend_flat_utc: str | None = None
     execution: FakeExec = field(default_factory=FakeExec)
     logging: FakeLogging = field(default_factory=FakeLogging)
 

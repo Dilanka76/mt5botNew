@@ -506,8 +506,51 @@ class DualCrossConfirmedSwapAdxEngine:
             )
             return None
 
+    def _self_heal_desync(self) -> None:
+        """Adopt a broker position the engine has forgotten.
+
+        reconcile_on_startup() does this once, at launch. Nothing did it
+        mid-run, so a desync lasted until the process restarted. On
+        2026-09-14 demo1_m3 went IDLE at 03:00:42 holding an open trade and
+        was still IDLE at 05:33 -- two and a half hours in which the trade
+        had no take-profit (the runner had just removed it), no software
+        stop, and nobody watching it run +$13.19 back to a loss.
+
+        Called once per candle rather than per tick, which gives a close
+        that is genuinely in flight time to settle at the broker before
+        this could mistake it for a desync.
+        """
+        if self.position is not None or self.config.execution.mode == "shadow":
+            return
+        try:
+            broker_position = self.executor.get_open_position()
+        except Exception:  # noqa: BLE001 - a read failure must not kill the loop
+            return
+        if broker_position is None:
+            return
+        direction = Direction.BUY if broker_position.type == mt5.ORDER_TYPE_BUY else Direction.SELL
+        self.position = DualPosition(
+            direction=direction, ticket=broker_position.ticket,
+            entry_price=broker_position.price_open, take_profit=broker_position.tp,
+            stop_loss=self._compute_stop_loss(direction, broker_position.price_open),
+            cross_candle_time=None, is_concurrent_entry=False, validated=True,
+        )
+        self._update_state()
+        log_decision(
+            self.config.symbol, "position_desync_healed",
+            f"Engine was flat but the broker held {direction.value} ticket "
+            f"{broker_position.ticket} -- adopted it. The stop is rebuilt at the "
+            f"configured distance, so any breakeven or runner lock this trade had "
+            f"earned is GONE; the runner will re-arm if price is still past the "
+            f"arm point. Something cleared the position without closing it -- "
+            f"check the log above for an exception.",
+            ticket=broker_position.ticket, entry=broker_position.price_open,
+            tp=broker_position.tp,
+        )
+
     def on_new_candle(self, df_with_emas: pd.DataFrame) -> list[OpenedTrade | ClosedTrade]:
         events: list[OpenedTrade | ClosedTrade] = []
+        self._self_heal_desync()
         last_closed = df_with_emas.iloc[-2]
         last_closed_time = last_closed.name
         # Read from THIS candle, before any entry below runs, so a trade
@@ -1178,8 +1221,21 @@ class DualCrossConfirmedSwapAdxEngine:
 
     def _close_position(self, category: str, reason: str, exit_price: float) -> ClosedTrade:
         position = self.position
-        self.position = None
+        # Close FIRST, forget SECOND. The reverse order orphaned a real
+        # trade on demo1_m3 (2026-09-14 03:00:42): close_position() raised,
+        # self.position was already None, so the engine went IDLE while the
+        # broker still held the position -- and because the TP-runner had
+        # deleted the broker take-profit one second earlier, that trade sat
+        # for 2.5 hours with no target, no software stop and nothing
+        # managing it, running +$13.19 to a loss unattended. Nothing was
+        # even logged, because the log_decision below never ran either.
+        #
+        # Clearing state only after the broker call succeeds means a failed
+        # close leaves the position intact and the next tick simply tries
+        # again. If the close DID reach the broker despite raising, the
+        # live_tickets reconciliation closes it out properly instead.
         self.executor.close_position(position.ticket)
+        self.position = None
         log_decision(
             self.config.symbol, "trade_exited", reason,
             direction=position.direction.value, entry=position.entry_price, ticket=position.ticket, category=category,

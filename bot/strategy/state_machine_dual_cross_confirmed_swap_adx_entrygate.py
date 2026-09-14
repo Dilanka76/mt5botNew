@@ -540,8 +540,21 @@ class DualCrossConfirmedSwapAdxEntrygateEngine:
 
     def _close_position(self, category: str, reason: str, exit_price: float) -> ClosedTrade:
         position = self.position
-        self.position = None
+        # Close FIRST, forget SECOND. The reverse order orphaned a real
+        # trade on demo1_m3 (2026-09-14 03:00:42): close_position() raised,
+        # self.position was already None, so the engine went IDLE while the
+        # broker still held the position -- and because the TP-runner had
+        # deleted the broker take-profit one second earlier, that trade sat
+        # for 2.5 hours with no target, no software stop and nothing
+        # managing it, running +$13.19 to a loss unattended. Nothing was
+        # even logged, because the log_decision below never ran either.
+        #
+        # Clearing state only after the broker call succeeds means a failed
+        # close leaves the position intact and the next tick simply tries
+        # again. If the close DID reach the broker despite raising, the
+        # live_tickets reconciliation closes it out properly instead.
         self.executor.close_position(position.ticket)
+        self.position = None
         log_decision(
             self.config.symbol, "trade_exited", reason,
             direction=position.direction.value, entry=position.entry_price, ticket=position.ticket, category=category,

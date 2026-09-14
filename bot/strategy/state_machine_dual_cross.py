@@ -567,8 +567,13 @@ class DualCrossEngine:
         """Bot-initiated close (stop_loss, validation_failed,
         closed_by_concurrent_validation) — actively places a real close
         order via the executor."""
-        position = self.positions.pop(direction)
+        # pop() AFTER the close, not before. Popping first meant a close
+        # that raised removed the position from tracking while the broker
+        # still held it -- the same orphaning that stranded a real demo1_m3
+        # trade for 2h32m on 2026-09-14 (see tests/test_close_failure_orphan.py).
+        position = self.positions[direction]
         self.executor.close_position(position.ticket)
+        self.positions.pop(direction)
         log_decision(
             self.config.symbol, "trade_exited", reason,
             direction=direction.value, entry=position.entry_price, ticket=position.ticket, category=category,

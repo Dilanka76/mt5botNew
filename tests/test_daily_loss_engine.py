@@ -52,6 +52,8 @@ class FakeConfig:
     account: str
     daily_loss_limit_usd: float | None
     symbol: str = "XAUUSDp"
+    # See the note in test_duplicate_position_guard.py -- same stale stub.
+    weekend_flat_utc: str | None = None
     logging: FakeLogging = field(default_factory=FakeLogging)
     execution: FakeExec = field(default_factory=FakeExec)
     position_sizing: list = field(default_factory=list)
