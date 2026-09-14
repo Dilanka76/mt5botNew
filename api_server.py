@@ -434,23 +434,49 @@ def stop_all():
 
 @router.post("/start-all", dependencies=[Depends(verify_api_key)])
 def start_all():
-    """Master 'all on' — deactivates EVERY configured account's kill switch
-    and launches its main.py if not already running, real money included.
+    """Master 'all on' — starts DEMO accounts only. Real-money accounts are
+    skipped and must be started deliberately, one at a time.
 
-    HISTORY: excluded real-money accounts on 2026-09-01, re-included on
-    2026-09-07 at the user's explicit request after being shown the risk
-    below.
+    HISTORY: excluded real-money accounts 2026-09-01, re-included 2026-09-07
+    at the user's explicit request, excluded again 2026-09-14 at the user's
+    request after live2 was about to be funded.
 
-    THIS IS THE DANGEROUS DIRECTION OF THE MASTER TOGGLE. One tap now
-    STARTS real-money trading with no per-account confirmation -- on an
-    account that may have been stopped deliberately, possibly during
-    news, possibly while nobody is watching. /stop-all is the safe
-    direction; this one is not. Each result carries "is_live" so the
-    caller can show plainly which real-money accounts it just started."""
+    WHY THE TWO DIRECTIONS ARE NOT SYMMETRIC. /stop-all still covers every
+    account including live: the worst case of an accidental tap there is
+    that trading halts. /start-all is the dangerous direction -- one tap
+    would start real-money trading with no per-account confirmation, on an
+    account that may have been stopped deliberately, possibly during news,
+    possibly while nobody is watching.
+
+    It is not hypothetical. On 2026-09-13 a single tap cleared live2's two
+    kill switches and launched both live legs; the switches were only
+    noticed missing the next morning, hours before the account was to be
+    funded. Easy to stop everything, deliberate to start real money.
+
+    Each result carries "is_live" and "skipped" so the caller can say
+    plainly which accounts were left alone and why."""
     results = []
     for account, kill_switch in app.state.kill_switches.items():
         is_live = app.state.configs[account].execution.mode == "live_execute"
         was_active = kill_switch.is_active()
+
+        if is_live:
+            # Not touched at all -- the kill switch is left exactly as it
+            # is. Clearing it was the specific harm here: it is how an
+            # operator records "this account is deliberately stopped", and
+            # a master switch must not be able to erase that.
+            results.append({
+                "account": account,
+                "is_live": True,
+                "skipped": True,
+                "reason": "real-money account — start it individually",
+                "kill_switch_was_active": was_active,
+                "main_process_was_already_running":
+                    find_account_process(MAIN_SCRIPT_MATCH, account) is not None,
+                "launched_pid": None,
+            })
+            continue
+
         if was_active:
             kill_switch.deactivate()
 
@@ -462,6 +488,7 @@ def start_all():
         results.append({
             "account": account,
             "is_live": is_live,
+            "skipped": False,
             "kill_switch_was_active": was_active,
             "main_process_was_already_running": proc is not None,
             "launched_pid": launched_pid,

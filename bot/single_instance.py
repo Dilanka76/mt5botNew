@@ -50,24 +50,52 @@ def acquire(account: str):
 
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateMutexW.restype = ctypes.c_void_p
-    # Session-local. Every bot runs as the same user on the same machine,
-    # and "Global\\" can be refused without SeCreateGlobalPrivilege, which
-    # would make this fail for the wrong reason.
-    name = f"mt5bot-main-{account}"
-    handle = kernel32.CreateMutexW(None, True, name)
-    last_error = ctypes.get_last_error()
 
-    if not handle:
-        # Could not create it at all. Fail CLOSED -- an unverifiable
-        # guard is not a guard. Same lesson as the process scan.
-        logger.critical("single_instance: CreateMutexW failed (error %s) for %r -- "
-                        "cannot verify this is the only instance", last_error, account)
-        return None
+    # "Global\\" FIRST, session-local only as a fallback.
+    #
+    # This used to be session-local only, with a comment reasoning that
+    # every bot runs as the same user so a session-local name is enough.
+    # That reasoning has a hole: a task started by Task Scheduler runs in
+    # Session 0 while one started from the app or a console runs in the
+    # interactive session, and a session-local name lives in a SEPARATE
+    # NAMESPACE per session. Two bots in two sessions would each create
+    # "their" mutex successfully, see no conflict, and both trade -- the
+    # exact double-position accident this file exists to prevent.
+    #
+    # A Global name is machine-wide and closes that. It needs
+    # SeCreateGlobalPrivilege, which every bot here has (they all run as
+    # Administrator), but if it is ever refused we fall back rather than
+    # halt all trading -- and say loudly that the guard is now only as
+    # wide as this session.
+    for scope in ("Global\\", ""):
+        name = f"{scope}mt5bot-main-{account}"
+        handle = kernel32.CreateMutexW(None, True, name)
+        last_error = ctypes.get_last_error()
 
-    if last_error == ERROR_ALREADY_EXISTS:
-        kernel32.CloseHandle(ctypes.c_void_p(handle))
-        logger.error("single_instance: another main.py already holds %r", name)
-        return None
+        if handle and last_error == ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
+            # EXPECTED, not alarming: the main.py task carries a 5-minute
+            # repeat trigger so a dead bot restarts within five minutes.
+            # While one is healthy, every one of those attempts lands here
+            # and exits. Logged at ERROR it wrote 288 alarms a day into
+            # app.log and buried the real ones -- on 2026-09-14 a genuine
+            # CRITICAL sat in that noise for hours.
+            logger.info("single_instance: another main.py already holds %r -- exiting. "
+                        "This is the normal outcome of the 5-minute restart trigger "
+                        "while a healthy bot is running.", name)
+            return None
 
-    logger.info("single_instance: acquired %r", name)
-    return handle
+        if handle:
+            logger.info("single_instance: acquired %r", name)
+            return handle
+
+        if scope:
+            logger.warning("single_instance: could not create the machine-wide lock %r "
+                           "(error %s) -- falling back to a session-local one",
+                           name, last_error)
+
+    # Neither worked. Fail CLOSED -- an unverifiable guard is not a guard.
+    # Same lesson as the process scan.
+    logger.critical("single_instance: CreateMutexW failed (error %s) for %r -- "
+                    "cannot verify this is the only instance", last_error, account)
+    return None
