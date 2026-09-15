@@ -1,162 +1,218 @@
-"""Fast health snapshot across all 5 trading accounts — one command instead
-of manually checking each account's process list and logs.
+"""Is every account actually healthy, right now?
 
-For each account (demo1, demo2, live1, live2, live3) this checks:
-  - is `main.py --account <name>` running (bot.process_utils, same
-    account-aware process matching main.py/watchdog.py use for their own
-    duplicate-instance checks)
-  - is `scripts/watchdog.py --account <name>` running
-  - how old is the last "[HEARTBEAT]" line in logs/<name>/app.log
-  - how old is the last line in logs/<name>/watchdog.log
+User, 2026-09-16, with real money trading: *"now all demo accounts and the
+live account need to be checked, working without any issue"*.
 
-An account is UNHEALTHY if its main.py isn't running, its watchdog.py
-isn't running, or its last heartbeat is older than
-STALE_HEARTBEAT_THRESHOLD_SECONDS (matches watchdog.py's own default
---stale-threshold of 180s = 3 missed heartbeats).
+Every other tool here answers one question about one thing -- is the config
+loaded, what is the open trade, how did yesterday go. This answers the
+question you actually ask each morning, for every account at once, and it
+does it WITHOUT opening a single MT5 connection: each bot already writes
+logs/<account>/status.json every heartbeat, and that file carries the whole
+picture.
 
-Pure stdlib + bot.process_utils (also pure stdlib) — no MT5 import, so this
-can run standalone without a live MT5 connection.
+The check that matters most is free, because of where those two fields come
+from. `bot_state` is the ENGINE's view; `open_position` is read from the
+BROKER. So bot_state IDLE with a position present means the engine has
+forgotten a trade it is holding -- the 2026-09-14 fault that left a live
+position for 2h32m with no take-profit and nobody watching. It cost hours to
+find then. It is one comparison here.
 
-Usage:
+Seven checks per account:
+  1. is a process running
+  2. is status.json FRESH (a stale file means the loop has stopped, even
+     though the process is alive -- "running" and "working" differ)
+  3. kill switch
+  4. session open, and the balance
+  5. ORPHAN: engine flat while the broker holds a position
+  6. errors in app.log recently
+  7. entries REFUSED recently -- the symptom an orphan produces downstream
+
     python scripts/health_check.py
+    python scripts/health_check.py --accounts live2_m3,live2_m5 --minutes 60
 
-Exit code 0 if all 5 accounts are healthy, 1 if any are unhealthy — so this
-can be wired into an external monitor/cron later if wanted.
+Read-only: reads files and the process list. Opens no MT5 connection.
 """
 from __future__ import annotations
 
+import argparse
+import json
+import re
+import subprocess
 import sys
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
-# Must come before the bot.* import — same reasoning as scripts/watchdog.py:
-# not guaranteed to be run with the project root on sys.path.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, ".")
 
-from bot.process_utils import find_account_process
+from bot.config import PROJECT_ROOT, discover_configured_accounts, validate_account_name
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-ACCOUNTS = ["demo1", "demo2", "live1", "live2", "live3"]
-MAIN_SCRIPT_MATCH = "main.py"
-WATCHDOG_SCRIPT_MATCH = "watchdog.py"
-STALE_HEARTBEAT_THRESHOLD_SECONDS = 180  # 3 minutes = 3 missed heartbeats, matches watchdog.py's default
+PS_LIST = (
+    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+    "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+)
+STALE_SECONDS = 180          # heartbeat is ~60s; three misses is a stopped loop
 
 
-def _parse_log_timestamp(line: str) -> datetime | None:
-    """Log lines start "YYYY-MM-DD HH:MM:SS,mmm [LEVEL] ..." (see
-    bot/logging_setup/logger.py and scripts/watchdog.py's own formatters) —
-    that prefix is always exactly 23 characters."""
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--accounts", default=None,
+                   help="comma-separated; default is every configured account")
+    p.add_argument("--minutes", type=int, default=30,
+                   help="how far back to look for errors and refused entries")
+    return p.parse_args()
+
+
+def processes() -> list[dict]:
     try:
-        return datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S,%f")
-    except ValueError:
-        return None
-
-
-def _last_timestamp(path: Path, must_contain: str | None = None) -> datetime | None:
-    """Last line's timestamp in a log file, scanning from the end.
-    `must_contain` restricts which lines count (e.g. only "[HEARTBEAT]"
-    lines in app.log, not just any log line)."""
-    if not path.exists():
-        return None
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", PS_LIST],
+                             capture_output=True, text=True, timeout=60).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if not out:
+        return []
     try:
-        lines = path.read_text(errors="ignore").splitlines()
-    except OSError:
-        return None
-    for line in reversed(lines):
-        if must_contain and must_contain not in line:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        return []
+    return [data] if isinstance(data, dict) else data
+
+
+def is_running(procs: list[dict], account: str) -> bool:
+    pattern = re.compile(rf"--account[=\s]+{re.escape(account)}(?:\s|$)", re.IGNORECASE)
+    return any("main.py" in (p.get("CommandLine") or "").lower()
+               and pattern.search(p.get("CommandLine") or "") for p in procs)
+
+
+def recent_decisions(account: str, since: datetime) -> list[dict]:
+    path = PROJECT_ROOT / "logs" / account / "decisions.jsonl"
+    if not path.is_file():
+        return []
+    out = []
+    for line in path.read_text(errors="ignore").splitlines()[-4000:]:
+        line = line.strip()
+        if not line:
             continue
-        ts = _parse_log_timestamp(line)
-        if ts is not None:
-            return ts
-    return None
+        try:
+            e = json.loads(line)
+            ts = datetime.fromisoformat(e["timestamp"])
+        except (json.JSONDecodeError, KeyError, ValueError):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts >= since:
+            out.append(e)
+    return out
 
 
-def _format_age(ts: datetime | None) -> str:
-    if ts is None:
-        return "no data"
-    age_seconds = max(0.0, (datetime.now() - ts).total_seconds())
-    if age_seconds < 60:
-        return f"{age_seconds:.0f}s"
-    return f"{age_seconds / 60:.1f}m"
+def recent_errors(account: str, minutes: int) -> int:
+    """ERROR/CRITICAL lines in the last `minutes`, ignoring the expected
+    single-instance refusal -- the main.py task retriggers every 5 minutes by
+    design and each attempt logs one. Counting those would mean every account
+    always looks unhealthy, which is how a real error gets skimmed past."""
+    path = PROJECT_ROOT / "logs" / account / "app.log"
+    if not path.is_file():
+        return 0
+    cutoff = datetime.now() - timedelta(minutes=minutes)
+    count = 0
+    for line in path.read_text(errors="ignore").splitlines()[-4000:]:
+        if "[ERROR]" not in line and "[CRITICAL]" not in line:
+            continue
+        if "single_instance" in line or "already holds the single-instance" in line:
+            continue
+        m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
+        if m and datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S") >= cutoff:
+            count += 1
+    return count
 
 
-@dataclass
-class AccountHealth:
-    account: str
-    main_running: bool
-    watchdog_running: bool
-    heartbeat_ts: datetime | None
-    watchdog_log_ts: datetime | None
+def main() -> None:
+    args = parse_args()
+    accounts = ([validate_account_name(a.strip()) for a in args.accounts.split(",")]
+                if args.accounts else discover_configured_accounts())
+    procs = processes()
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(minutes=args.minutes)
+    problems: list[str] = []
 
-    @property
-    def heartbeat_age_seconds(self) -> float | None:
-        if self.heartbeat_ts is None:
-            return None
-        return (datetime.now() - self.heartbeat_ts).total_seconds()
+    print("=" * 88)
+    print(f"HEALTH CHECK — {len(accounts)} account(s), looking back {args.minutes} minutes")
+    print("=" * 88)
 
-    @property
-    def healthy(self) -> bool:
-        if not self.main_running or not self.watchdog_running:
-            return False
-        age = self.heartbeat_age_seconds
-        return age is not None and age <= STALE_HEARTBEAT_THRESHOLD_SECONDS
+    for account in accounts:
+        print(f"\n{account}")
+        status_path = PROJECT_ROOT / "logs" / account / "status.json"
+        running = is_running(procs, account)
+        ks = (PROJECT_ROOT / f"KILL_SWITCH_{account}").exists()
 
+        if not status_path.is_file():
+            print("  no status.json — this account has never run")
+            continue
 
-def check_account(account: str) -> AccountHealth:
-    main_proc = find_account_process(MAIN_SCRIPT_MATCH, account)
-    watchdog_proc = find_account_process(WATCHDOG_SCRIPT_MATCH, account)
+        try:
+            st = json.loads(status_path.read_text(errors="ignore"))
+        except json.JSONDecodeError:
+            print("  status.json unreadable")
+            problems.append(f"{account}: status.json unreadable")
+            continue
 
-    app_log = PROJECT_ROOT / "logs" / account / "app.log"
-    watchdog_log = PROJECT_ROOT / "logs" / account / "watchdog.log"
+        written = datetime.fromisoformat(st["written_at_utc"])
+        if written.tzinfo is None:
+            written = written.replace(tzinfo=timezone.utc)
+        age = (now - written).total_seconds()
+        state = st.get("bot_state", "?")
+        position = st.get("open_position")
+        info = st.get("account_info") or {}
+        balance = info.get("balance")
 
-    return AccountHealth(
-        account=account,
-        main_running=main_proc is not None,
-        watchdog_running=watchdog_proc is not None,
-        heartbeat_ts=_last_timestamp(app_log, must_contain="[HEARTBEAT]"),
-        watchdog_log_ts=_last_timestamp(watchdog_log),
-    )
+        flags: list[str] = []
+        if not running and not ks:
+            flags.append("NOT RUNNING and no kill switch — it should be up and is not")
+            problems.append(f"{account}: not running")
+        if running and age > STALE_SECONDS:
+            flags.append(f"LOOP STALLED — status.json is {age / 60:.0f} min old "
+                         f"while the process is alive")
+            problems.append(f"{account}: loop stalled")
+        # THE ONE THAT MATTERS: engine flat, broker holding a trade.
+        if position and state != "IN_POSITION":
+            flags.append(f"*** ORPHAN — engine says {state} but the broker holds "
+                         f"{position.get('direction', '?')} {position.get('volume', '?')} "
+                         f"lots. Nothing is managing that trade. ***")
+            problems.append(f"{account}: ORPHANED POSITION")
 
+        errors = recent_errors(account, args.minutes)
+        blocked = [d for d in recent_decisions(account, since)
+                   if d.get("action") == "entry_blocked_existing_position"]
+        if errors:
+            flags.append(f"{errors} error(s) in the log in the last {args.minutes} min")
+            problems.append(f"{account}: {errors} recent error(s)")
+        if blocked:
+            flags.append(f"{len(blocked)} entry(s) REFUSED — the broker held a position "
+                         f"the engine had forgotten")
+            problems.append(f"{account}: {len(blocked)} refused entries")
 
-def print_summary(results: list[AccountHealth]) -> None:
-    headers = ["Account", "Main Process", "Watchdog Process", "Last Heartbeat Age", "Watchdog Log Age", "Status"]
-    rows = [
-        [
-            r.account,
-            "RUNNING" if r.main_running else "NOT RUNNING",
-            "RUNNING" if r.watchdog_running else "NOT RUNNING",
-            _format_age(r.heartbeat_ts),
-            _format_age(r.watchdog_log_ts),
-            "HEALTHY" if r.healthy else "UNHEALTHY",
-        ]
-        for r in results
-    ]
+        bal = f"${balance:,.2f}" if isinstance(balance, (int, float)) else "?"
+        pos = "flat"
+        if position:
+            pos = (f"{position.get('direction', '?')} {position.get('volume', '?')} lots "
+                   f"@ {position.get('price_open', '?')}")
+        print(f"  {'running' if running else 'STOPPED':<9} "
+              f"{'kill switch ON' if ks else 'kill switch off':<16} "
+              f"state {state:<12} {pos:<28} {bal}")
+        print(f"  status.json {age:.0f}s old   session {st.get('session_status', '?')}   "
+              f"mode {st.get('execution_mode', '?')}")
+        for f in flags:
+            print(f"    !! {f}")
+        if not flags:
+            print("    OK")
 
-    widths = [max(len(headers[i]), *(len(row[i]) for row in rows)) for i in range(len(headers))]
-
-    def fmt_row(cols: list[str]) -> str:
-        return " | ".join(col.ljust(widths[i]) for i, col in enumerate(cols))
-
-    print(fmt_row(headers))
-    print("-+-".join("-" * w for w in widths))
-    for row in rows:
-        print(fmt_row(row))
-
-
-def main() -> int:
-    results = [check_account(account) for account in ACCOUNTS]
-    print_summary(results)
-
-    unhealthy = [r for r in results if not r.healthy]
-    print()
-    if unhealthy:
-        print(f"{len(unhealthy)} account(s) unhealthy: {', '.join(r.account for r in unhealthy)}")
-        return 1
-
-    print("All 5 accounts healthy.")
-    return 0
+    print(f"\n{'=' * 88}")
+    if problems:
+        print(f"{len(problems)} problem(s):")
+        for p in problems:
+            print(f"  - {p}")
+        raise SystemExit(1)
+    print("All accounts healthy.")
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
