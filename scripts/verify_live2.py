@@ -31,8 +31,8 @@ Read-only: connects to MT5 to read account/symbol info. Places no orders.
 """
 from __future__ import annotations
 
+import argparse
 import sys
-from pathlib import Path
 
 import yaml
 
@@ -41,7 +41,13 @@ sys.path.insert(0, ".")
 from bot.config import PROJECT_ROOT, discover_configured_accounts, load_config
 from bot.mt5_connector import MT5Connector
 
-PAIRS = [("demo1_m3", "live2_m3"), ("demo1_m5", "live2_m5")]
+# The baseline has now moved TWICE -- built against demo2, re-pointed at
+# demo1 on 2026-09-07, back to demo2 on 2026-09-16. Both times this constant
+# was left behind, and a pre-flight comparing a real-money account against
+# the wrong strategy is worse than no pre-flight. So it is an argument now,
+# defaulting to the current baseline, and a stale default shows up in the
+# header of every run instead of hiding in the source.
+DEFAULT_PAIRS = "demo2_m3:live2_m3,demo2_m5:live2_m5"
 # The execution block is ALLOWED to differ -- everything else is not.
 EXPECTED_DIFFS = {"magic_number", "sibling_magic_numbers", "require_demo_account",
                   "mode", "order_comment",
@@ -94,10 +100,22 @@ def flatten(d: dict, prefix: str = "") -> dict:
     return out
 
 
-def main() -> None:
-    problems: list[str] = []
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--pairs", default=DEFAULT_PAIRS,
+                   help="source:target pairs, comma separated — the strategy each live "
+                        f"leg must match. Default: {DEFAULT_PAIRS}")
+    return p.parse_args()
 
-    for source, target in PAIRS:
+
+def main() -> None:
+    args = parse_args()
+    pairs = [tuple(pair.split(":", 1)) for pair in args.pairs.split(",")]
+    problems: list[str] = []
+    print(f"baseline: {args.pairs}")
+
+    for source, target in pairs:
         print("=" * 78)
         print(f"{target}  vs  {source}")
         print("=" * 78)
