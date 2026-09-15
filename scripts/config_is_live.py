@@ -115,11 +115,26 @@ def main() -> None:
         written = datetime.fromtimestamp(cfg.stat().st_mtime).replace(microsecond=0)
         print(f"  config written   {written:%Y-%m-%d %H:%M:%S}   {cfg.name}")
 
+        started_line, _ = last_start_line(account)
         proc = bot_process(procs, account)
         if proc is None:
             print("  process          NOT RUNNING")
-            print("                   Nothing is trading this account. If that is intended,")
-            print("                   fine; if not, it will not pick the config up by itself.")
+            # A bot that starts, logs, and exits on its kill switch leaves no
+            # process to compare -- but its startup line is still written BY
+            # that process and still proves which config it read. Reporting
+            # only "NOT RUNNING" made a correctly kill-switched account look
+            # unverified, which is the opposite of the truth.
+            if started_line is not None and started_line >= written:
+                print(f"  VERDICT          config PROVEN LOADED — a process read this file at "
+                      f"{started_line:%H:%M:%S}")
+                print("                   and then exited (kill switch). Nothing is trading it now;")
+                print("                   the configuration itself is confirmed.")
+            elif started_line is not None:
+                print("  VERDICT          *** UNVERIFIED *** — the last process to start read an")
+                print("                   OLDER file. Start it once to confirm the current config.")
+                problems.append(f"{account}: config never loaded by any process")
+            else:
+                print("                   Nothing has ever started on this account.")
         else:
             started_raw = (proc.get("Started") or "").replace("T", " ")
             try:
