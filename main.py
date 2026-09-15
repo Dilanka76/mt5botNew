@@ -56,6 +56,7 @@ from bot.logging_setup.logger import setup_logging
 from bot.mt5_connector import MT5Connector
 from bot import single_instance
 from bot.process_utils import find_account_process, list_processes
+from bot.risk.position_sizing import calculate_lots
 from bot.sessions import is_within_session
 from bot.status_writer import build_status_payload, status_file_path, write_status_atomic
 from bot.strategy.state_machine import EMAScalpEngine
@@ -231,6 +232,10 @@ def run() -> None:
     engine = engine_cls(config, connector, executor)
     engine.reconcile_on_startup()
 
+    try:
+        _lots_now = calculate_lots(connector.account_info().balance, config.position_sizing)
+    except Exception:  # noqa: BLE001 - a logging detail must never stop the bot starting
+        _lots_now = "unknown"
     logger.info(
         "Bot started: account=%s symbol=%s timeframe=%s mode=%s strategy_variant=%s state=%s "
         "reject_manual_trades=%s stop_loss_usd=%s take_profit_usd=%s breakeven_trigger_usd=%s "
@@ -238,7 +243,7 @@ def run() -> None:
         "tp_runner_trail_usd=%s tp_runner_arm_before_usd=%s tp_runner_lock_below_usd=%s "
         "swap_immediate=%s daily_loss_limit_usd=%s "
         "htf_trend_timeframe=%s htf_trend_take_profit_usd=%s "
-        "broker_backstop_usd=%s weekend_flat_utc=%s",
+        "broker_backstop_usd=%s weekend_flat_utc=%s lots_now=%s ladder=%s",
         args.account, config.symbol, config.timeframe, config.execution.mode, config.strategy_variant, engine.state.value,
         config.execution.reject_manual_trades, config.stop_loss_usd, config.take_profit_usd,
         config.breakeven_trigger_usd, config.breakeven_lock_usd,
@@ -255,6 +260,15 @@ def run() -> None:
         # or a Friday. This line is the only evidence they were loaded at
         # all, so they have to be on it.
         config.broker_backstop_usd, config.weekend_flat_utc,
+        # THE LOT SIZE, and the ladder it came from. Every other setting on
+        # this line is a price; this one decides what every one of those
+        # prices is worth. It was the only consequential setting NOT
+        # recorded here, and on 2026-09-15 that cost a real check: the
+        # ladder was edited to 0.01 while live2_m3's running process still
+        # held 0.06, and the startup line -- the one record of what was
+        # loaded -- could not show the difference. Resolved from the LIVE
+        # balance, so it reads as the size the next trade will actually use.
+        _lots_now, config.position_sizing,
     )
 
     last_closed_candle_time = None
