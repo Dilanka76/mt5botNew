@@ -91,6 +91,7 @@ def main() -> None:
 
         # A position already at the broker -> refuse, before touching it.
         eng = object.__new__(cls)
+        eng.recently_closed = {}   # __init__ bypassed
         eng.config = FakeConfig()
         eng.executor = FakeExecutor([FakePosition(111), FakePosition(222)])
         eng.connector = ExplodingConnector()
@@ -102,6 +103,7 @@ def main() -> None:
 
         # Flat at the broker -> proceeds (proven by the connector raising).
         eng2 = object.__new__(cls)
+        eng2.recently_closed = {}   # __init__ bypassed
         eng2.config = FakeConfig()
         eng2.executor = FakeExecutor([])
         eng2.connector = ExplodingConnector()
@@ -121,6 +123,7 @@ def main() -> None:
                 raise RuntimeError("MT5 query failed")
 
         eng3 = object.__new__(cls)
+        eng3.recently_closed = {}   # __init__ bypassed
         eng3.config = FakeConfig()
         eng3.executor = Broken()
         eng3.connector = ExplodingConnector()

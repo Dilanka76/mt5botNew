@@ -85,6 +85,7 @@ class Executor:
 
 def engine_with(executor, position):
     e = DualCrossConfirmedSwapAdxEngine.__new__(DualCrossConfirmedSwapAdxEngine)
+    e.recently_closed = {}   # __init__ bypassed; see test_swap_reentry_race.py
     e.executor = executor
     e.position = position
     e.config = types.SimpleNamespace(

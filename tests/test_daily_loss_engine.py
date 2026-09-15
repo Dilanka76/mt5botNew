@@ -111,6 +111,7 @@ def main() -> None:
 
             # Over the cap: _enter must refuse BEFORE touching the broker.
             eng = object.__new__(cls)
+            eng.recently_closed = {}   # __init__ bypassed
             eng.config = FakeConfig(account=account, daily_loss_limit_usd=50.0)
             eng.connector = FakeConnector()   # raises if reached
             eng.executor = FakeExecutor()
@@ -130,6 +131,7 @@ def main() -> None:
             # Under the cap: the guard must NOT block -- proven by the
             # connector being reached (it raises, which is the pass here).
             eng2 = object.__new__(cls)
+            eng2.recently_closed = {}   # __init__ bypassed
             eng2.config = FakeConfig(account=account, daily_loss_limit_usd=500.0)
             eng2.connector = FakeConnector()
             eng2.executor = FakeExecutor()
@@ -143,6 +145,7 @@ def main() -> None:
 
             # Limit unset: the rule must be completely inert.
             eng3 = object.__new__(cls)
+            eng3.recently_closed = {}   # __init__ bypassed
             eng3.config = FakeConfig(account=account, daily_loss_limit_usd=None)
             eng3.connector = FakeConnector()
             eng3.executor = FakeExecutor()
