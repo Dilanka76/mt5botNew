@@ -137,6 +137,36 @@ def main() -> None:
             elif real:
                 check(OK, "MT5 confirms this is a REAL account")
 
+            # ---- the three switches that silently reject every order ----
+            #
+            # None of these can be set from code. They live in the terminal
+            # and at the broker, and when one is off order_send fails while
+            # everything else -- connection, symbol, margin, config -- looks
+            # perfect. On 2026-08-27 a manual-trade rejection was traced back
+            # to AutoTrading being off after hours of looking elsewhere, and
+            # the only trace of that in this project was a COMMENT. Checked
+            # here so a new terminal cannot repeat it.
+            term = mt5.terminal_info()
+            if term is None:
+                check(WARN, "could not read terminal_info() — AutoTrading state unknown")
+            elif not getattr(term, "trade_allowed", False):
+                check(FAIL, "AutoTrading is OFF in the terminal",
+                      "The 'Algo Trading' button is not green. Every order will be\n"
+                      "rejected. Click it in the terminal, or Tools > Options >\n"
+                      "Expert Advisors > Allow algorithmic trading. Code cannot set this.")
+            else:
+                check(OK, "AutoTrading is ON in the terminal (Algo Trading is green)")
+
+            if not getattr(info, "trade_allowed", True):
+                check(FAIL, "the BROKER has disabled trading on this account",
+                      "Nothing on this machine can fix that — contact the broker.")
+            elif not getattr(info, "trade_expert", True):
+                check(FAIL, "the BROKER has disabled EXPERT ADVISOR trading on this account",
+                      "Manual trades would work; automated ones will not. This is the one\n"
+                      "that looks like the bot is broken when it is the account setting.")
+            else:
+                check(OK, "the broker allows automated trading on this account")
+
             # ---- margin: the one that can end the account ----
             lots = calculate_lots(info.balance, c.position_sizing)
             margin = None
