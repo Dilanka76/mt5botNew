@@ -66,6 +66,11 @@ from bot.risk.position_sizing import calculate_lots
 from bot.sessions import is_within_session, weekend_flat_due
 from bot.strategy.cross_detector import CrossState, Direction
 from bot.strategy.state_machine import POSITION_CLOSE_GRACE_PERIOD_SECONDS, TradeState
+
+# How long a just-closed ticket stays exempt from the duplicate guard.
+# Generous on purpose: the window only has to outlast the broker's cache
+# update, and a ticket we closed can never become a real duplicate.
+STALE_CLOSE_WINDOW_SECONDS = 30.0
 from bot.strategy.state_machine_dual_cross import ClosedTrade, DualPosition, OpenedTrade
 
 logger = logging.getLogger("bot.strategy.state_machine_dual_cross_confirmed_swap")
@@ -119,6 +124,16 @@ class DualCrossConfirmedSwapEngine:
         # per candle for the rest of the day.
         self._daily_limit_logged_date = None
         self.position: DualPosition | None = None
+        # Tickets this engine has just closed, ticket -> time.monotonic().
+        # MT5's positions_get() reads the terminal's local cache, which the
+        # server updates asynchronously -- so for a few milliseconds after a
+        # SUCCESSFUL close the broker still lists the position. The swap
+        # closes and re-enters in the same breath, so the duplicate-position
+        # guard was reading that stale cache and refusing the reversal.
+        # Live, 2026-09-15 22:54:01: closed at .417, re-entry refused at
+        # .424. Seven milliseconds. The BUY closed and the SELL never
+        # opened -- the swap went flat instead of reversing.
+        self.recently_closed: dict[int, float] = {}
         self.pending: PendingSetup | None = None
         self.prev_ema13: float | None = None
         self.prev_ema21: float | None = None
@@ -726,6 +741,26 @@ class DualCrossConfirmedSwapEngine:
             already_open = self.executor.get_open_positions()
         except Exception:  # noqa: BLE001 - a read failure must not kill the loop
             already_open = []
+
+        # Tell a STALE READ apart from a REAL duplicate. A position we closed
+        # moments ago that the broker has not dropped from its cache yet is
+        # the first; anything else -- another process, a manual trade -- is
+        # the second, and still refused. Comparing TICKETS is what separates
+        # them: a duplicate opened by something else carries a ticket this
+        # engine has never seen.
+        now_mono = time.monotonic()
+        self.recently_closed = {t: ts for t, ts in self.recently_closed.items()
+                                if now_mono - ts < STALE_CLOSE_WINDOW_SECONDS}
+        stale = [p for p in already_open if p.ticket in self.recently_closed]
+        already_open = [p for p in already_open if p.ticket not in self.recently_closed]
+        if stale and not already_open:
+            log_decision(
+                self.config.symbol, "entry_allowed_stale_close",
+                f"Broker still lists ticket(s) "
+                f"{', '.join(str(p.ticket) for p in stale)}, which this engine closed "
+                f"moments ago -- a stale cache read, not a duplicate. Proceeding with "
+                f"the {direction.value} entry.",
+            )
         if already_open:
             log_decision(
                 self.config.symbol, "entry_blocked_existing_position",
@@ -801,6 +836,11 @@ class DualCrossConfirmedSwapEngine:
         # again. If the close DID reach the broker despite raising, the
         # live_tickets reconciliation closes it out properly instead.
         self.executor.close_position(position.ticket)
+        # Remember it BEFORE clearing state: the re-entry that follows a swap
+        # runs microseconds later and must not mistake the broker's stale
+        # cache entry for a duplicate position.
+        if position.ticket is not None:
+            self.recently_closed[position.ticket] = time.monotonic()
         self.position = None
         log_decision(
             self.config.symbol, "trade_exited", reason,

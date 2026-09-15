@@ -117,7 +117,16 @@ def recent_errors(account: str, minutes: int) -> int:
     for line in path.read_text(errors="ignore").splitlines()[-4000:]:
         if "[ERROR]" not in line and "[CRITICAL]" not in line:
             continue
-        if "single_instance" in line or "already holds the single-instance" in line:
+        # Both of these are NORMAL and log loudly. The main.py task
+        # retriggers every 5 minutes by design, and each attempt logs a
+        # single_instance refusal; a kill-switched bot logs a CRITICAL halt
+        # every time it starts. Counting either makes every account look
+        # permanently unhealthy -- which is exactly how a real error gets
+        # skimmed past. On 2026-09-16 this reported "7 error(s)" on four
+        # accounts and every one was a kill-switch halt.
+        if ("single_instance" in line
+                or "already holds the single-instance" in line
+                or "Kill switch is active" in line):
             continue
         m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
         if m and datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S") >= cutoff:
