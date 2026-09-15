@@ -66,6 +66,15 @@ EXPECTED_DIFFS = {"magic_number", "sibling_magic_numbers", "require_demo_account
                   # as a reason not to go live.
                   "daily_loss_limit_usd"}
 
+# Fields a LIVE account is expected to carry that a demo does not, because
+# they exist to protect real money. Flagging these as mismatches was
+# actively harmful: on 2026-09-16 the pre-flight printed "DO NOT go live"
+# over a broker backstop, a weekend-flat rule and a reduced lot ladder --
+# every one of them a deliberate safety measure. A check that shouts about
+# the guards being present teaches you to ignore it, and thirty seconds
+# after the last such verdict the kill switches came off anyway.
+LIVE_HARDENING = {"broker_backstop_usd", "weekend_flat_utc"}
+
 # Config blocks named after a strategy variant. Only the block belonging to
 # the CONFIGURED variant is part of "same strategy" -- the others are dead
 # settings that no engine reads, left behind by older experiments. demo1's
@@ -103,6 +112,10 @@ def flatten(d: dict, prefix: str = "") -> dict:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--allow", default="",
+                   help="comma-separated fields you have DELIBERATELY set differently from "
+                        "the source (e.g. position_sizing,stop_loss_usd). Named explicitly "
+                        "every run so a deviation cannot quietly become permanent.")
     p.add_argument("--pairs", default=DEFAULT_PAIRS,
                    help="source:target pairs, comma separated — the strategy each live "
                         f"leg must match. Default: {DEFAULT_PAIRS}")
@@ -112,8 +125,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     pairs = [tuple(pair.split(":", 1)) for pair in args.pairs.split(",")]
+    allowed = {f.strip() for f in args.allow.split(",") if f.strip()}
     problems: list[str] = []
     print(f"baseline: {args.pairs}")
+    if allowed:
+        print(f"deliberate deviations allowed: {', '.join(sorted(allowed))}")
 
     for source, target in pairs:
         print("=" * 78)
@@ -166,6 +182,10 @@ def main() -> None:
             block = key.split(".")[0]
             if leaf in EXPECTED_DIFFS:
                 print(f"  expected diff  {key}: {a} -> {b}")
+            elif leaf in LIVE_HARDENING:
+                print(f"  live safety    {key}: {a} -> {b}  (protects real money, correct)")
+            elif leaf in allowed:
+                print(f"  DELIBERATE     {key}: {a} -> {b}  (--allow)")
             elif block in VARIANT_BLOCKS and block != active_variant_block:
                 print(f"  unused block   {key}: {a} -> {b}  "
                       f"(no engine reads this under strategy_variant={variant})")
