@@ -61,6 +61,11 @@ STRATEGY_FIELDS = [
 # Never copied — these say WHICH account this is.
 IDENTITY_FIELDS = ["symbol", "execution", "mt5", "logging", "kill_switch"]
 
+# Never copied either, for a different reason: these exist because the
+# target is REAL MONEY, so the demo source does not have them and copying
+# the source's absence would silently strip a live account's guards.
+LIVE_ONLY_FIELDS = ["broker_backstop_usd", "weekend_flat_utc", "daily_loss_limit_usd"]
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -75,6 +80,12 @@ def parse_args() -> argparse.Namespace:
                    help="magic number for a newly created target (default: identity's + 2)")
     p.add_argument("--daily-loss", type=float, default=None,
                    help="daily_loss_limit_usd for the target (required for a live account)")
+    p.add_argument("--fresh", action="store_true",
+                   help="rebuild the target from the SOURCE file rather than editing the "
+                        "target in place. The result contains exactly what the source "
+                        "contains, plus the target's identity and its live-only safety "
+                        "settings. Use when the target has drifted and you want certainty "
+                        "that nothing unknown survived.")
     p.add_argument("--no-software-stop", action="store_true",
                    help="null out stop_loss_usd on the TARGET after copying, so losers exit "
                         "only on the opposite cross behind the broker backstop. Deliberate "
@@ -236,6 +247,23 @@ def main() -> None:
     if not args.apply:
         print("\nDRY RUN — nothing written. Re-run with --apply.")
         return
+
+    if args.fresh:
+        # Rebuild rather than edit. Copying field-by-field can only ever
+        # remove keys this script KNOWS about (STRATEGY_FIELDS); anything
+        # else in the target survives silently. Starting from the source
+        # file inverts that: the result contains exactly what the source
+        # contains, and a key can only be present because it was carried
+        # over on purpose.
+        #
+        # Two things are carried over: IDENTITY (which account this is) and
+        # LIVE_ONLY (guards that exist because this is real money and which
+        # the demo source therefore does not have). Those are not strategy.
+        keep = {k: dst[k] for k in IDENTITY_FIELDS + LIVE_ONLY_FIELDS if k in dst}
+        dst = dict(src)
+        dst.update(keep)
+        print("\n  --fresh: rebuilt from " + args.source + "'s file.")
+        print(f"    carried over: {', '.join(sorted(keep))}")
 
     for key in stale:
         dst.pop(key, None)
