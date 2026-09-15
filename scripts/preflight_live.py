@@ -83,12 +83,38 @@ def main() -> None:
         try:
             info = connector.account_info()
             sym = connector.symbol_info(c.symbol)
-            tick = mt5.symbol_info_tick(c.symbol)
-            price = float(tick.ask) if tick and tick.ask else float(sym.ask or 0)
 
             print("=" * 84)
             print(f"{account}   {c.symbol}   login {info.login}   {c.execution.mode}")
             print("=" * 84)
+
+            # SYMBOL FIRST. Everything below needs a price, and a price needs
+            # the symbol to exist. Reading sym.ask before checking that
+            # crashed with AttributeError on NoneType -- so the one situation
+            # this script exists to diagnose (a new account that names gold
+            # differently) was the one it could not report. 2026-09-16, while
+            # moving live2 to a tighter-spread account.
+            if sym is None:
+                check(FAIL, f"symbol {c.symbol} does NOT exist on this account")
+                try:
+                    gold = sorted(s.name for s in (mt5.symbols_get() or [])
+                                  if "XAU" in s.name.upper() or "GOLD" in s.name.upper())
+                except Exception:  # noqa: BLE001 - reporting must not raise
+                    gold = []
+                if gold:
+                    print("         gold symbols this account DOES offer:")
+                    for name in gold:
+                        print(f"           {name}")
+                    print(f"         Put the right one in config/settings.{account}.yaml")
+                    print("         under `symbol:` — then re-run this.")
+                else:
+                    print("         and no gold symbol was found at all. If the account is new,")
+                    print("         open Market Watch in the terminal and show the gold symbol")
+                    print("         first — MT5 hides symbols that have never been selected.")
+                continue
+
+            tick = mt5.symbol_info_tick(c.symbol)
+            price = float(tick.ask) if tick and tick.ask else float(sym.ask or 0)
 
             # ---- is this actually a real account? ----
             # trade_mode 0 = demo, 1 = contest, 2 = real
