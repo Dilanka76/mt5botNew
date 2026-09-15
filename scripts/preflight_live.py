@@ -82,6 +82,18 @@ def main() -> None:
         connector.connect()
         try:
             info = connector.account_info()
+            # SELECT it first, exactly as the bot does at startup
+            # (MT5Connector.ensure_symbol). MT5 only streams ticks for
+            # symbols in Market Watch, so on a brand-new account -- where
+            # nothing has ever been selected -- symbol_info() returns full
+            # specs while symbol_info_tick() returns None. This script then
+            # reported "market closed, spread not checked" on a perfectly
+            # open market, which is exactly the number the 2026-09-16 account
+            # move existed to measure.
+            try:
+                connector.ensure_symbol(c.symbol)
+            except Exception:  # noqa: BLE001 - the miss is reported below
+                pass
             sym = connector.symbol_info(c.symbol)
 
             print("=" * 84)
