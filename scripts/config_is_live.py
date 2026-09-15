@@ -158,7 +158,21 @@ def main() -> None:
 
         when, spec = last_start_line(account)
         if spec:
-            print(f"  it reported      ({when:%Y-%m-%d %H:%M:%S})")
+            # The startup line can PREDATE the running process: a bot takes a
+            # few seconds to connect to MT5 and write it, so running this
+            # straight after `schtasks /Run` shows the PREVIOUS run's values
+            # under a correct LOADED verdict. A tool built to catch stale
+            # readings must not serve one -- 2026-09-16, when it displayed an
+            # old lot ladder beside a freshly restarted bot.
+            stale_line = (proc is not None and started is not None and when < started)
+            if stale_line:
+                print(f"  it reported      ({when:%Y-%m-%d %H:%M:%S})  *** THIS IS THE "
+                      f"PREVIOUS RUN ***")
+                print("                   The current process has not written its startup line")
+                print("                   yet. Wait a few seconds and re-run; the values below")
+                print("                   are NOT what is loaded now.")
+            else:
+                print(f"  it reported      ({when:%Y-%m-%d %H:%M:%S})")
             for chunk in re.findall(r"\S+=\S+", spec):
                 key, _, value = chunk.partition("=")
                 print(f"      {key:<28} {value}")
