@@ -318,9 +318,14 @@ def main() -> None:
         for p in problems:
             print(f"  - {p}")
     else:
-        print("live2 mirrors demo1 exactly, connects to a live account, and has no")
-        print("magic collision. Remaining by hand: Task Scheduler tasks, and deciding")
-        print("whether to set daily_loss_limit_usd before it trades.")
+        # Was hardcoded to "demo1" and stayed that way after the baseline
+        # moved to demo2 -- the closing verdict of a real-money check naming
+        # the wrong strategy, which is the one line most likely to be read
+        # and the one least likely to be questioned.
+        for source, target in pairs:
+            print(f"{target} mirrors {source} exactly.")
+        print("Connects to a live account, no magic collision. Remaining by hand:")
+        print("Task Scheduler tasks, lot ladder, and lifting the kill switches.")
 
 
 if __name__ == "__main__":
