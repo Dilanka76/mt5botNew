@@ -75,6 +75,10 @@ def parse_args() -> argparse.Namespace:
                    help="magic number for a newly created target (default: identity's + 2)")
     p.add_argument("--daily-loss", type=float, default=None,
                    help="daily_loss_limit_usd for the target (required for a live account)")
+    p.add_argument("--no-software-stop", action="store_true",
+                   help="null out stop_loss_usd on the TARGET after copying, so losers exit "
+                        "only on the opposite cross behind the broker backstop. Deliberate "
+                        "deviation from the source; refused unless a backstop is set.")
     p.add_argument("--apply", action="store_true")
     return p.parse_args()
 
@@ -151,10 +155,29 @@ def main() -> None:
         if ex.get("require_demo_account"):
             sys.exit(f"\nREFUSING: {args.target} still has require_demo_account: true, so it would\n"
                      f"  refuse to trade a real account. Change that deliberately first.")
-        if src.get("stop_loss_usd") is None:
-            sys.exit(f"\nREFUSING: {args.source} has NO stop loss — it holds losers until the\n"
-                     f"  opposite cross. On a real account a gap or a stalled bot makes that\n"
-                     f"  loss unbounded. Pick a source that has a stop.")
+        # The old rule was "no stop -> refuse". That is a proxy, and the
+        # wrong one: what makes a no-stop trade dangerous is having NOTHING
+        # under it, and a broker-side backstop is something -- it survives
+        # the bot dying, which a software stop does not. On 2026-09-14 a
+        # forgotten position was protected by exactly that and nothing else.
+        #
+        # So refuse only when the trade would be genuinely unprotected, and
+        # when a backstop IS there, say in dollars what it actually means
+        # rather than waving it through.
+        if src.get("stop_loss_usd") is None or args.no_software_stop:
+            backstop = dst.get("broker_backstop_usd")
+            if not backstop:
+                sys.exit(f"\nREFUSING: this would leave {args.target} with NO stop of any kind —\n"
+                         f"  no software stop and no broker backstop. A gap or a stalled bot then\n"
+                         f"  makes the loss unbounded on a real account. Set a backstop first:\n"
+                         f"    python scripts/set_safety_rules.py --account {args.target} "
+                         f"--backstop 30 --apply")
+            tier_lots = float((src.get("position_sizing") or [{"lots": 0}])[-1]["lots"])
+            print(f"\n  *** NO SOFTWARE STOP on {args.target}. ***")
+            print(f"  Losers exit on the opposite cross; the ${backstop:.2f} broker backstop is")
+            print("  the ONLY thing under the trade, which makes it the real stop rather than")
+            print(f"  a last resort. At the top tier ({tier_lots} lots) it is a "
+                  f"${backstop * tier_lots * 100:.0f} loss.")
         if args.daily_loss is None:
             sys.exit(f"\nREFUSING: a live account needs --daily-loss. Every account here has run\n"
                      f"  without one; it is the biggest hole left before real money.")
@@ -174,13 +197,18 @@ def main() -> None:
             mark = "" if before == after else "   <-- changed"
             print(f"    {key:<26} {str(before):>10}  ->  {after}{mark}")
 
+    if args.no_software_stop:
+        print(f"    {'stop_loss_usd':<26} {str(changes.get('stop_loss_usd')):>10}"
+              f"  ->  None   <-- --no-software-stop: opposite cross + backstop only")
+        changes["stop_loss_usd"] = None
+
     if args.daily_loss is not None:
         print(f"    {'daily_loss_limit_usd':<26} {str(dst.get('daily_loss_limit_usd')):>10}"
               f"  ->  {args.daily_loss}   <-- blocks NEW entries after this much is lost in a"
               f" Colombo day")
         changes["daily_loss_limit_usd"] = args.daily_loss
 
-    stop = src.get("stop_loss_usd")
+    stop = None if args.no_software_stop else src.get("stop_loss_usd")
     top_lots = float((src.get("position_sizing") or [{"lots": 0}])[-1]["lots"])
     if stop:
         print(f"\n  risk per trade at the top tier: ${stop * top_lots * 100:.0f} "
