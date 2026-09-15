@@ -196,9 +196,15 @@ class PendingSetup:
 
 class DualCrossConfirmedSwapAdxEngine:
     def __init__(self, config: AppConfig, connector: MT5Connector, executor: TradeExecutor):
-        if config.stop_loss_usd is None:
+        # A null stop is allowed ONLY behind a broker-side backstop. demo2's
+        # design holds a loser until the opposite cross, and this engine runs
+        # demo2_m5; without a stop AND without a backstop, a gap or a stalled
+        # bot makes the loss unbounded. The backstop sits at the broker, so it
+        # survives the bot dying -- which a software stop does not.
+        if config.stop_loss_usd is None and not config.broker_backstop_usd:
             raise ValueError(
-                "strategy_variant=dual_cross_confirmed_swap_adx requires stop_loss_usd to be set."
+                "strategy_variant=dual_cross_confirmed_swap_adx with stop_loss_usd unset "
+                "needs broker_backstop_usd set — otherwise nothing bounds a losing trade."
             )
         if config.swap_adx_filter is None:
             raise ValueError(
@@ -277,8 +283,11 @@ class DualCrossConfirmedSwapAdxEngine:
                       f" -- {self.config.htf_trend_timeframe} trend not known yet, "
                       f"keeping ${base:.2f}")
 
-    def _compute_stop_loss(self, direction: Direction, entry_price: float, distance_usd: float | None = None) -> float:
+    def _compute_stop_loss(self, direction: Direction, entry_price: float,
+                           distance_usd: float | None = None) -> float | None:
         distance = distance_usd if distance_usd is not None else self.config.stop_loss_usd
+        if distance is None:
+            return None          # no stop: the opposite cross is the only exit
         return (
             entry_price - distance if direction == Direction.BUY
             else entry_price + distance
@@ -728,6 +737,16 @@ class DualCrossConfirmedSwapAdxEngine:
                                 f"stays at breakeven-armed entry price {self.position.stop_loss:.2f}, NOT "
                                 f"tightened to a worse level",
                             )
+                        elif self.config.stop_loss_usd is None:
+                            # Nothing to tighten -- this leg has no stop at all,
+                            # and half of nothing is not a stop either.
+                            log_decision(
+                                self.config.symbol, "swap_pending_no_stop_to_tighten",
+                                f"{direction.value} candle close opposes the held "
+                                f"{self.position.direction.value} position, but this leg runs "
+                                f"without a stop-loss — nothing to tighten, the opposite cross "
+                                f"remains the exit",
+                            )
                         else:
                             tightened_distance = self.config.stop_loss_usd / 2
                             old_stop_loss = self.position.stop_loss
@@ -927,7 +946,11 @@ class DualCrossConfirmedSwapAdxEngine:
                 # breakeven and the pending-reversal tightening already use.
                 self._manage_tp_runner(position, tick)
 
-                stop_hit = (
+                # `is not None` FIRST: with no stop, position.stop_loss is
+                # None and comparing a float to it raises TypeError on every
+                # tick. The plain swap engine has always guarded this; this one
+                # never needed to until demo2_m5's no-stop design came here.
+                stop_hit = position.stop_loss is not None and (
                     (position.direction == Direction.BUY and tick.bid <= position.stop_loss)
                     or (position.direction == Direction.SELL and tick.bid >= position.stop_loss)
                 )

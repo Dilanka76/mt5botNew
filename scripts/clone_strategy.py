@@ -197,6 +197,22 @@ def main() -> None:
             mark = "" if before == after else "   <-- changed"
             print(f"    {key:<26} {str(before):>10}  ->  {after}{mark}")
 
+    # A field the SOURCE does not have must be REMOVED from the target, not
+    # left standing. Copying only the keys present in the source meant
+    # demo1's leftovers survived a switch to demo2's strategy: on 2026-09-16
+    # live2_m3 was cloned from demo2_m3 -- which has no runner -- and came
+    # out still carrying tp_runner_trail_usd 2.0, plus swap_immediate,
+    # entry_filter_enabled and a whole swap_adx_filter block. The report said
+    # "strategy copied" and the account was running something else.
+    #
+    # Removing the key rather than nulling it also means the target falls
+    # back to the same default the SOURCE is using, which is what "same
+    # strategy" has to mean.
+    stale = [k for k in STRATEGY_FIELDS if k not in src and k in dst]
+    for key in stale:
+        print(f"    {key:<26} {str(dst[key]):>10}  ->  (removed)   "
+              f"<-- {args.source} does not set this")
+
     if args.no_software_stop:
         print(f"    {'stop_loss_usd':<26} {str(changes.get('stop_loss_usd')):>10}"
               f"  ->  None   <-- --no-software-stop: opposite cross + backstop only")
@@ -221,6 +237,8 @@ def main() -> None:
         print("\nDRY RUN — nothing written. Re-run with --apply.")
         return
 
+    for key in stale:
+        dst.pop(key, None)
     dst.update(changes)
     for key in IDENTITY_FIELDS:      # belt and braces: never let these move
         if key in src and key in dst:

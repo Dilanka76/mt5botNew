@@ -569,10 +569,16 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
                 f"{settings_path}: strategy_variant is 'dual_cross_confirmed_swap_adx' but no "
                 f"'swap_adx_filter:' section is present."
             )
-        if raw.get("stop_loss_usd") is None:
+        # Allowed without a stop ONLY behind a broker backstop -- demo2_m5's
+        # design holds a loser to the opposite cross. Same rule the engine
+        # enforces at construction and clone_strategy.py enforces at write
+        # time: refuse when NOTHING bounds the trade, not merely when the
+        # software stop is absent.
+        if raw.get("stop_loss_usd") is None and not raw.get("broker_backstop_usd"):
             raise ValueError(
-                f"{settings_path}: strategy_variant is 'dual_cross_confirmed_swap_adx' but "
-                f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
+                f"{settings_path}: strategy_variant is 'dual_cross_confirmed_swap_adx' with "
+                f"stop_loss_usd unset, which needs broker_backstop_usd set — otherwise "
+                f"nothing bounds a losing trade."
             )
 
     if strategy_variant == "dual_cross_confirmed_swap_adx_entryfilter":
