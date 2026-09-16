@@ -408,8 +408,24 @@ def stop(config: AppConfig = Depends(get_account_config)):
     return {"ok": True, "account": account, "message": "Kill switch activated — main.py will halt gracefully on its next check."}
 
 
+def _in_scope(is_live: bool, scope: str) -> bool:
+    """Which accounts a master toggle covers.
+
+    The app has two switches -- all live, all demo -- so every bulk call
+    names the group it means. Defaults preserve the behaviour existing
+    callers already rely on: start-all has meant DEMO ONLY since 2026-09-14,
+    stop-all has always meant everything, because halting more than you
+    intended is safe and starting more than you intended is not.
+    """
+    if scope == "all":
+        return True
+    if scope == "live":
+        return is_live
+    return not is_live          # "demo", and anything unrecognised
+
+
 @router.post("/stop-all", dependencies=[Depends(verify_api_key)])
-def stop_all():
+def stop_all(scope: str = "all"):
     """Master 'all off' — activates EVERY configured account's kill switch
     in one call, real-money accounts included.
 
@@ -429,15 +445,17 @@ def stop_all():
     results = []
     for account, kill_switch in app.state.kill_switches.items():
         is_live = app.state.configs[account].execution.mode == "live_execute"
+        if not _in_scope(is_live, scope):
+            continue
         was_active = kill_switch.is_active()
         if not was_active:
-            kill_switch.activate(reason="Stopped via API (stop-all)")
+            kill_switch.activate(reason=f"Stopped via API (stop-all, scope={scope})")
         results.append({"account": account, "was_already_stopped": was_active, "is_live": is_live})
-    return {"ok": True, "accounts": results}
+    return {"ok": True, "scope": scope, "accounts": results}
 
 
 @router.post("/start-all", dependencies=[Depends(verify_api_key)])
-def start_all():
+def start_all(scope: str = "demo"):
     """Master 'all on' — starts DEMO accounts only. Real-money accounts are
     skipped and must be started deliberately, one at a time.
 
@@ -464,7 +482,11 @@ def start_all():
         is_live = app.state.configs[account].execution.mode == "live_execute"
         was_active = kill_switch.is_active()
 
-        if is_live:
+        # Out of scope accounts are not touched AT ALL -- not started, and
+        # their kill switches left exactly as they are. Clearing a switch on
+        # an account the caller did not ask for is what made one tap on
+        # 2026-09-07 start both live legs.
+        if not _in_scope(is_live, scope):
             # Not touched at all -- the kill switch is left exactly as it
             # is. Clearing it was the specific harm here: it is how an
             # operator records "this account is deliberately stopped", and
@@ -473,7 +495,7 @@ def start_all():
                 "account": account,
                 "is_live": True,
                 "skipped": True,
-                "reason": "real-money account — start it individually",
+                "reason": f"out of scope (scope={scope})",
                 "kill_switch_was_active": was_active,
                 "main_process_was_already_running":
                     find_account_process(MAIN_SCRIPT_MATCH, account) is not None,
@@ -497,7 +519,7 @@ def start_all():
             "main_process_was_already_running": proc is not None,
             "launched_pid": launched_pid,
         })
-    return {"ok": True, "accounts": results}
+    return {"ok": True, "scope": scope, "accounts": results}
 
 
 app.include_router(router)
