@@ -181,8 +181,23 @@ def main() -> None:
             flags.append(f"LOOP STALLED — status.json is {age / 60:.0f} min old "
                          f"while the process is alive")
             problems.append(f"{account}: loop stalled")
+        # A STOPPED bot holding a position is an ABANDONED trade. The kill
+        # switch makes the bot exit its loop, so the swap exit and the
+        # software stop both stop happening -- only whatever the broker
+        # holds is left. This used to print "OK", because not-running WITH a
+        # kill switch reads as intentional. It is intentional; the open
+        # position is what makes it dangerous, and that is the combination
+        # nothing was checking. 2026-09-16: demo1_m5 and demo2_m5 both sat
+        # like this for half an hour, reported healthy.
+        if position and not running:
+            flags.append(f"ABANDONED TRADE — bot stopped while holding "
+                         f"{position.get('direction', '?')} {position.get('volume', '?')} "
+                         f"lots. No swap exit, no software stop; only what the broker "
+                         f"holds. Restart it, or close the trade by hand.")
+            problems.append(f"{account}: stopped while holding a position")
+
         # THE ONE THAT MATTERS: engine flat, broker holding a trade.
-        if position and state != "IN_POSITION":
+        if position and state != "IN_POSITION" and running:
             flags.append(f"*** ORPHAN — engine says {state} but the broker holds "
                          f"{position.get('direction', '?')} {position.get('volume', '?')} "
                          f"lots. Nothing is managing that trade. ***")
