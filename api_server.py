@@ -20,12 +20,16 @@ with it rather than expecting the tunnel to strip it):
     POST /apiconnect/stop-all             activate EVERY account's kill switch
                                            in one call (master "all off"),
                                            real-money accounts INCLUDED
-    POST /apiconnect/start-all            start EVERY account in one call
-                                           (master "all on"), real-money
-                                           accounts INCLUDED — one tap starts
-                                           live trading with no per-account
-                                           confirmation (user's explicit
-                                           choice 2026-09-07)
+    POST /apiconnect/start-all            start every DEMO account in one
+                                           call (master "all on"). Real-money
+                                           accounts are SKIPPED and their kill
+                                           switches left untouched — start
+                                           those individually via
+                                           /{account}/start, which the app now
+                                           exposes per account with a
+                                           confirmation. Changed 2026-09-14
+                                           after one tap started both live
+                                           legs and cleared their guards.
     GET  /apiconnect/{account}/analytics  daily/hourly P/L breakdown + win
                                            rate, computed live from that
                                            account's local trade ledger
