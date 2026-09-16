@@ -164,6 +164,7 @@ from bot.logging_setup.logger import log_decision
 from bot.mt5_connector import MT5Connector
 from bot.risk.position_sizing import calculate_lots
 from bot.sessions import is_within_session, weekend_flat_due
+from bot.timeframes import minutes_for
 from bot.strategy.cross_detector import CrossState, Direction
 from bot.strategy.state_machine import POSITION_CLOSE_GRACE_PERIOD_SECONDS, TradeState
 
@@ -233,6 +234,28 @@ class DualCrossConfirmedSwapAdxEngine:
         self.position: DualPosition | None = None
         self.pending: PendingSetup | None = None
         self.prev_ema13: float | None = None
+        # WARM-UP. A bot may not ENTER until it has been running for one
+        # full candle period, so any cross it acts on provably closed while
+        # it was watching.
+        #
+        # live2_m5, 2026-09-16 22:43:14 -- two seconds after startup, on a
+        # cross from a candle that had closed at 22:40, before the process
+        # existed. MT5's candle cache is briefly one behind at connect, so
+        # loop 1 evaluated candle N-2 (prev was None, no entry, prev set to
+        # N-2) and loop 1 second later evaluated N-1 against it and called
+        # the historical cross a live one. The `prev_ema13 is None` guard
+        # only ever blocked the FIRST of those two.
+        #
+        # The tell is the gap: normal live entries run 2.75-2.87 from EMA13,
+        # these ran 10.16 -- ten dollars of the move already gone. Every
+        # restart during a session was opening an unplanned trade at a bad
+        # price, which is what the user saw twice from the screen and what
+        # cost the first live trade.
+        #
+        # EXITS are deliberately NOT gated. Swapping out of a position on a
+        # cross that fired while the bot was down is the safe direction.
+        self._started_monotonic = time.monotonic()
+        self._warmup_seconds = minutes_for(config.timeframe) * 60
         self.prev_ema21: float | None = None
         self.current_ema5: float | None = None
         self.current_candle_time: pd.Timestamp | None = None
@@ -259,6 +282,10 @@ class DualCrossConfirmedSwapAdxEngine:
         self.runner_locked = False
         self.runner_best = 0.0
         self.runner_broker_stop: float | None = None
+
+    def _warmed_up(self) -> bool:
+        """True once a full candle period has passed since startup."""
+        return (time.monotonic() - self._started_monotonic) >= self._warmup_seconds
 
     def _active_sessions(self) -> list:
         return self.config.sessions["dual_cross_confirmed_swap_adx"]
@@ -678,7 +705,17 @@ class DualCrossConfirmedSwapAdxEngine:
                                 exit_price=exit_price,
                             ))
                             self.pending_reversal_direction = None
-                            if not is_within_session(self._active_sessions()):
+                            if not self._warmed_up():
+                                # See the warm-up note in __init__. The close
+                                # above still happened; only the re-entry is
+                                # withheld, because that cross is history.
+                                log_decision(
+                                    self.config.symbol, "entry_skipped_warmup",
+                                    f"{direction.value} cross at {last_closed_time} ignored for "
+                                    f"re-entry: less than one {self.config.timeframe} candle since "
+                                    f"startup, so this cross closed before the bot was watching.",
+                                )
+                            elif not is_within_session(self._active_sessions()):
                                 log_decision(
                                     self.config.symbol, "cross_ignored_outside_session",
                                     f"{direction.value} confirmed cross (2-candle) at {last_closed_time}, no session open",
@@ -819,7 +856,17 @@ class DualCrossConfirmedSwapAdxEngine:
                         )
                         self.pending = None
 
-                    if not is_within_session(self._active_sessions()):
+                    if not self._warmed_up():
+                        # See the warm-up note in __init__. This cross closed
+                        # before, or around, the moment this process started,
+                        # so it is history, not a signal.
+                        log_decision(
+                            self.config.symbol, "entry_skipped_warmup",
+                            f"{direction.value} cross at {last_closed_time} ignored: the bot has "
+                            f"been running less than one {self.config.timeframe} candle, so this "
+                            f"cross closed before it was watching. Waiting for a live one.",
+                        )
+                    elif not is_within_session(self._active_sessions()):
                         log_decision(
                             self.config.symbol, "cross_ignored_outside_session",
                             f"{direction.value} confirmed cross at {last_closed_time}, no session open",
