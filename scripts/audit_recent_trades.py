@@ -91,7 +91,20 @@ def check_levels(c, direction: str, entry: float, events: list[dict]) -> None:
     sign = 1 if is_buy else -1
 
     entered = next((e for e in events if e.get("action") == "trade_entered"), None)
-    if entered is not None and entered.get("stop_loss") is not None:
+    # A leg with NO stop is a real configuration here, not an anomaly:
+    # demo2_m3 has held losers to the opposite cross for weeks, and since
+    # 2026-09-16 both live2 legs do too. Multiplying by a null stop crashed
+    # the audit outright, so the accounts whose behaviour is least bounded
+    # were the ones that could not be audited.
+    if entered is not None and c.stop_loss_usd is None:
+        backstop = getattr(c, "broker_backstop_usd", None)
+        print(f"      stop at entry     : NONE — this leg holds losers to the opposite "
+              f"cross" + (f", behind a {usd(backstop)} broker backstop" if backstop
+                          else " with NO backstop either"))
+        if entered.get("stop_loss") is not None:
+            print(f"      *** but the entry recorded a stop of "
+                  f"{float(entered['stop_loss']):.2f} — config and trade disagree ***")
+    elif entered is not None and entered.get("stop_loss") is not None:
         want = entry - sign * c.stop_loss_usd
         got = float(entered["stop_loss"])
         ok = near(got, want)
@@ -113,7 +126,7 @@ def check_levels(c, direction: str, entry: float, events: list[dict]) -> None:
         actual = f"{got:.2f}" if got is not None else "unreadable"
         print(f"      breakeven armed   : {actual}   expected {want:.2f} "
               f"(entry {'+' if is_buy else '-'} ${c.breakeven_lock_usd or 0:.2f}, "
-              f"trigger ${c.breakeven_trigger_usd:.2f})   "
+              f"trigger {usd(c.breakeven_trigger_usd)})   "
               f"{'OK' if ok else '<-- MISMATCH'}")
     elif c.breakeven_trigger_usd is not None:
         print(f"      breakeven         : never armed (never reached "
