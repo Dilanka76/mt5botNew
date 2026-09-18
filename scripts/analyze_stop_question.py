@@ -107,8 +107,17 @@ def read_decisions(account: str) -> tuple[dict, list]:
             entries.append({"ts": ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc),
                             "direction": e.get("direction"),
                             "aligned": e.get("htf_aligned"),
+                            "trend": e.get("htf_trend"),
                             "gap": e.get("gap")})
     return exits, entries
+
+
+def _known(v) -> bool:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return False
+    return f == f          # not NaN
 
 
 def match_entry(entries: list, direction: str, when: datetime) -> dict | None:
@@ -200,6 +209,7 @@ def main() -> None:
                 "at_exit": at_exit,
                 "exit": exits.get(t["ticket"], "unknown"),
                 "aligned": logged["aligned"] if logged else None,
+                "trend_known": bool(logged) and _known(logged.get("trend")),
                 "day": t["entry_time"].astimezone(COLOMBO).date(),
                 "entry_utc": entry_utc,
             })
@@ -297,15 +307,20 @@ def main() -> None:
                   f"measure nothing here.")
         # Same bar as the M3 stop fit (2026-09-13): a stop only counts if it
         # helps in BOTH halves -- one good day must not decide it.
-        robust = [v for v in verdicts if v[1] > 0 and all(h > 0 for h in v[2])]
+        # ...and the neighbouring distances must agree (both rules pre-set
+        # 2026-09-13): a single positive row between two negative ones is noise.
+        robust = [v for i, v in enumerate(verdicts)
+                  if v[1] > 0 and all(h > 0 for h in v[2])
+                  and all(verdicts[j][1] > 0 for j in (i - 1, i + 1) if 0 <= j < len(verdicts))]
         best = max(verdicts, key=lambda v: v[1])
         if robust:
             b = max(robust, key=lambda v: v[1])
             print(f"    VERDICT: a ${b[0]:.2f} stop would have helped, by {money(b[1])}, in BOTH halves.")
             print("             The no-stop thesis does NOT hold on this account's data.")
         elif best[1] > 0:
-            print(f"    VERDICT: a ${best[0]:.2f} stop shows {money(best[1])} overall but NOT in both")
-            print("             halves -- one stretch carries it. Not evidence against no-stop.")
+            print(f"    VERDICT: a ${best[0]:.2f} stop shows {money(best[1])} overall, but not in both")
+            print("             halves AND with its neighbouring distances agreeing -- noise, not")
+            print("             evidence against no-stop.")
         else:
             print(f"    VERDICT: NO stop distance tested would have helped (best ${best[0]:.2f}: "
                   f"{money(best[1])}).")
@@ -333,8 +348,11 @@ def main() -> None:
 
         # ---- 5. the M15 trend rule -------------------------------------
         print("\n  5. THE M15 TREND RULE -- with the trend vs against it")
+        print("    (on these engines the M15 trend does not block entries -- WITH the trend")
+        print("     gets the bigger target, AGAINST gets the normal one)")
         line("WITH the M15 trend", [r for r in rows if r["aligned"] is True])
-        line("AGAINST it", [r for r in rows if r["aligned"] is False])
+        line("AGAINST it", [r for r in rows if r["aligned"] is False and r["trend_known"]])
+        line("trend UNKNOWN", [r for r in rows if r["aligned"] is False and not r["trend_known"]])
         unmatched = [r for r in rows if r["aligned"] is None]
         if unmatched:
             print(f"    ({len(unmatched)} trade(s) could not be matched to their entry record)")
