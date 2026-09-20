@@ -175,8 +175,14 @@ def main() -> None:
             print(f"  ({unmatched} trade(s) had no entry record; treated as against-trend)")
 
         print(f"\n  {'with':>6} {'against':>8} {'wins':>6} {'rate':>6} {'net':>12} "
-              f"{'vs now':>11} {'rescued':>8} {'trimmed':>11}")
+              f"{'vs today':>11} {'rescued':>8} {'trimmed':>11}")
         results = []
+        # Compare every row against the SIMULATED today row, never against
+        # what really happened. The simulation caps a swap-exit winner that
+        # ran past its target back to the target, so its own baseline sits
+        # below reality -- measuring the other rows against reality would
+        # charge them for that gap as well as for the target change.
+        baseline = None
         for with_t, against_t in GRIDS.get(config.timeframe, []):
             if with_t > now_pair[0] + 0.001 or against_t > now_pair[1] + 0.001:
                 continue        # bigger targets cannot be tested honestly
@@ -197,19 +203,26 @@ def main() -> None:
                     if pl > 0:
                         n_wins += 1
                 net += pl
+            if (with_t, against_t) == now_pair:
+                baseline = net
             results.append((with_t, against_t, net))
             mark = "  <- your idea" if PROPOSED.get(config.timeframe) == (with_t, against_t) else ""
             mark += "  (today)" if (with_t, against_t) == now_pair else ""
             print(f"  ${with_t:>5.2f} ${against_t:>7.2f} {n_wins:>6} "
                   f"{100 * n_wins / len(rows):>5.0f}% {money(net):>12} "
-                  f"{money(net - actual):>11} {n_rescued:>4} {money(rescued):>11}"
+                  f"{money(net - baseline) if baseline is not None else '-':>11} "
+                  f"{n_rescued:>4} {money(rescued):>11}"
                   f" {money(trimmed):>10}{mark}")
         print("  rescued = losers that would have hit the smaller target instead")
         print("  trimmed = what the winners give up by taking less")
+        if baseline is not None:
+            print(f"\n  the today row simulates {money(baseline)} against the {money(actual)} that")
+            print("  really happened -- that gap is the simulation's own error (swap exits that")
+            print("  ran PAST the target are capped back to it), so every row is compared to it.")
         if results:
             best = max(results, key=lambda r: r[2])
-            print(f"\n  best on THIS data: ${best[0]:.2f} / ${best[1]:.2f} -> {money(best[2])} "
-                  f"({money(best[2] - actual)} vs today)")
+            print(f"  best on THIS data: ${best[0]:.2f} / ${best[1]:.2f} -> {money(best[2])}"
+                  + (f" ({money(best[2] - baseline)} vs today)" if baseline is not None else ""))
             print("  On one stretch of days that is a suggestion, not a decision: the same")
             print("  table on demo2's longer history, split in halves, is what settles it.")
 
