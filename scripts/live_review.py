@@ -107,6 +107,13 @@ def summary(label: str, rows: list) -> None:
         rs = [r for r in rows if r["reason"] == reason]
         w = sum(1 for r in rs if r["net"] > 0)
         print(f"      {reason:<20} {n:>4}   {w:>3} won   {money(sum(r['net'] for r in rs)):>11}")
+    for d in ("BUY", "SELL"):
+        ds = [r for r in rows if r["dir"] == d]
+        if ds:
+            w = [r for r in ds if r["net"] > 0]
+            print(f"    {d:<5} {len(ds):>4} trades   {len(w):>3} won "
+                  f"({100 * len(w) / len(ds):>3.0f}%)   {money(sum(r['net'] for r in ds)):>11}"
+                  f"   {money(sum(r['net'] for r in ds) / len(ds))}/trade")
     lots = Counter(r["lots"] for r in rows)
     print("    lot sizes used: " + ", ".join(f"{v:g} x{n}" for v, n in sorted(lots.items())))
 
