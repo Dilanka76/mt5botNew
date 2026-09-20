@@ -173,7 +173,14 @@ def main() -> None:
             gap_candles = ((entry_utc - prev_exit) / bar) if prev_exit else None
             e_range = float(entry_candle["high"].iloc[-1] - entry_candle["low"].iloc[-1])
 
-            row = {"profit": float(t["profit"]), "volume": float(t["volume"]),
+            # A REVERSAL RE-ENTRY: opened within a minute of the previous
+            # trade's close, i.e. the swap flipped straight into the other
+            # direction. 92% of live2's losses (2026-09-16..19) came in runs
+            # of 3+ losses, and those runs are made of these. Spacing and
+            # cooldown rules are already ruled out (2026-09-03) -- this asks
+            # a different question: are the reversals themselves profitable?
+            reentry = gap_candles is not None and gap_candles * bar.total_seconds() <= 60
+            row = {"reentry": reentry, "profit": float(t["profit"]), "volume": float(t["volume"]),
                    "dir": t["direction"], "mfe": mfe, "mae": mae, "target": float(target),
                    "entry_utc": entry_utc, "exit_utc": exit_utc,
                    "entry_px": entry, "e_range": e_range,
@@ -221,6 +228,23 @@ def main() -> None:
                   f"{len(bw):>8} {money(won):>11} | {money(lost + won):>12}")
         print("  A bucket is only worth attacking if its NET is negative -- avoiding a")
         print("  bucket means giving up its winners too.")
+
+        print(f"\n  {'entry type':<17} {'losers':>7} {'lost':>11} {'avg':>9} | "
+              f"{'winners':>8} {'won':>11} | {'NET':>12}")
+        for label, want in (("REVERSAL re-entry", True), ("fresh entry", False)):
+            bl = [r for r in losers if r["reentry"] is want]
+            bw = [r for r in winners if r["reentry"] is want]
+            if not bl and not bw:
+                continue
+            lost, won = sum(r["profit"] for r in bl), sum(r["profit"] for r in bw)
+            n = len(bl) + len(bw)
+            print(f"  {label:<17} {len(bl):>7} {money(lost):>11} "
+                  f"{money(lost / len(bl)) if bl else '-':>9} | "
+                  f"{len(bw):>8} {money(won):>11} | {money(lost + won):>12}"
+                  f"   {money((lost + won) / n)}/trade")
+        print("  The swap reverses straight into the opposite trade. If REVERSAL re-entry")
+        print("  is net-negative and fresh entry is not, the swap's re-entry is the leak --")
+        print("  a different question from spacing/cooldown, which was ruled out 2026-09-03.")
 
         # what the losers look like, for the entry-validation question
         if losers:
