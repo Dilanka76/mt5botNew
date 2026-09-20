@@ -73,6 +73,12 @@ FEATURES = [
     ("ADX14", "adx", "trend strength"),
     ("spread at entry", "spread", "broker cost at that moment"),
     ("Colombo hour", "hour", "time of day"),
+    # --- market STRUCTURE, never tested in this project before ----------
+    ("M15 candle overlap", "m15_overlap", "1.0 = M15 candles printing side by side: a box"),
+    ("M15 box width / ATR", "m15_box_atr", "small = price trapped in a tight range"),
+    ("place in the M15 box", "m15_box_pos", "1.0 = at the top of the range we are buying into"),
+    ("EMA crosses last 15", "crosses15", "the braiding count: how choppy the lines are"),
+    ("distance from EMA21 / ATR", "displacement", "has price broken AWAY from the lines"),
 ]
 
 
@@ -114,6 +120,58 @@ def read_aligned(account: str) -> list:
     return out
 
 
+def swing_points(h: pd.Series, l: pd.Series, k: int = 2):
+    """Fractal swings: a high with k lower highs each side, and the same
+    for lows. The textbook definition of the points HH/HL structure is
+    read from -- not an indicator, the shape of price itself."""
+    hi = [h.index[i] for i in range(k, len(h) - k)
+          if h.iloc[i] == h.iloc[i - k:i + k + 1].max()]
+    lo = [l.index[i] for i in range(k, len(l) - k)
+          if l.iloc[i] == l.iloc[i - k:i + k + 1].min()]
+    return hi, lo
+
+
+def structure_at(htf: pd.DataFrame, hi: list, lo: list, when) -> dict:
+    """Market geometry as it stood at `when`, from the last two swings of
+    each kind that had already formed (a fractal needs k candles after it
+    to exist, so only swings confirmed before `when` are used)."""
+    ph = [t for t in hi if t <= when][-2:]
+    pl = [t for t in lo if t <= when][-2:]
+    out = {"structure": 0.0, "m15_box_atr": float("nan"), "m15_box_pos": float("nan")}
+    if len(ph) < 2 or len(pl) < 2:
+        return out
+    h1, h2 = float(htf.loc[ph[0], "high"]), float(htf.loc[ph[1], "high"])
+    l1, l2 = float(htf.loc[pl[0], "low"]), float(htf.loc[pl[1], "low"])
+    if h2 > h1 and l2 > l1:
+        out["structure"] = 1.0            # higher highs AND higher lows
+    elif h2 < h1 and l2 < l1:
+        out["structure"] = -1.0           # lower highs AND lower lows
+    top, bottom = max(h1, h2), min(l1, l2)
+    atr = float(htf.loc[:when, "atr"].iloc[-1]) if len(htf.loc[:when]) else float("nan")
+    close = float(htf.loc[:when, "close"].iloc[-1])
+    if atr and atr == atr:
+        out["m15_box_atr"] = (top - bottom) / atr
+    if top > bottom:
+        out["m15_box_pos"] = (close - bottom) / (top - bottom)
+    return out
+
+
+def overlap_ratio(htf: pd.DataFrame, when, n: int = 5) -> float:
+    """How much consecutive candles cover the same prices. Near 1.0 the
+    candles print side by side -- the box the user is trying to see."""
+    w = htf.loc[:when].tail(n + 1)
+    if len(w) < n + 1:
+        return float("nan")
+    vals = []
+    for i in range(1, len(w)):
+        h1, l1 = float(w["high"].iloc[i - 1]), float(w["low"].iloc[i - 1])
+        h2, l2 = float(w["high"].iloc[i]), float(w["low"].iloc[i])
+        union = max(h1, h2) - min(l1, l2)
+        if union > 0:
+            vals.append(max(0.0, min(h1, h2) - max(l1, l2)) / union)
+    return sum(vals) / len(vals) if vals else float("nan")
+
+
 def prepare(df: pd.DataFrame, config) -> pd.DataFrame:
     """Every feature the bot could have known, on each closed candle."""
     out = compute_emas(df, config.ema_periods)
@@ -132,6 +190,9 @@ def prepare(df: pd.DataFrame, config) -> pd.DataFrame:
     out["_slope_raw"] = out["ema21"] - out["ema21"].shift(5)
     out["_push_raw"] = out["close"] - out["open"]
     out["_travel_raw"] = out["close"] - out["close"].shift(10)
+    side = (out["ema13"] - out["ema21"]).apply(lambda v: 1 if v > 0 else (-1 if v < 0 else 0))
+    out["crosses15"] = (side != side.shift(1)).rolling(15).sum()
+    out["displacement"] = (out["close"] - out["ema21"]).abs() / out["atr"].replace(0, float("nan"))
     return out
 
 
@@ -185,10 +246,16 @@ def main() -> None:
                                           since, now, offset)
             df = get_ohlc_range(connector, config.symbol, config.timeframe,
                                 since - timedelta(days=3), now, offset)
+            # the "zoom out" chart: structure is read here, entries below
+            htf_name = config.htf_trend_timeframe or "M15"
+            htf = get_ohlc_range(connector, config.symbol, htf_name,
+                                 since - timedelta(days=5), now, offset)
         finally:
             connector.disconnect()
 
         feats = prepare(df, config)
+        htf = prepare(htf, config)
+        swing_hi, swing_lo = swing_points(htf["high"], htf["low"])
         logged = read_aligned(account)
         bar = timedelta(minutes=minutes_for(config.timeframe))
 
@@ -213,8 +280,21 @@ def main() -> None:
                 d = abs((e["ts"] - entry_utc).total_seconds())
                 if d <= best_d:
                     match, best_d = e, d
+            # structure from the last HTF candle closed before entry
+            htf_prior = htf.index[htf.index <= entry_utc]
+            if len(htf_prior):
+                st = structure_at(htf, swing_hi, swing_lo, htf_prior[-1])
+                ov = overlap_ratio(htf, htf_prior[-1])
+            else:
+                st, ov = {"structure": 0.0, "m15_box_atr": float("nan"),
+                          "m15_box_pos": float("nan")}, float("nan")
             rows.append({
                 "entry_utc": entry_utc,
+                "m15_overlap": ov, "m15_box_atr": st["m15_box_atr"],
+                "m15_box_pos": st["m15_box_pos"] if sign > 0 else 1 - st["m15_box_pos"],
+                "crosses15": float(c["crosses15"]), "displacement": float(c["displacement"]),
+                "structure_agrees": st["structure"] == sign,
+                "structure_against": st["structure"] == -sign,
                 "oz": float(t["profit"]) / (vol * OZ_PER_LOT),
                 "gap": float(c["gap"]), "ema_sep": float(c["ema_sep"]),
                 "slope": sign * float(c["_slope_raw"]), "body": float(c["body"]),
@@ -250,6 +330,8 @@ def main() -> None:
         # yes/no features
         print("\n  yes/no splits")
         for label, key in (("M15 trend aligned", "aligned"), ("reversal re-entry", "reentry"),
+                           ("structure agrees (HH/HL)", "structure_agrees"),
+                           ("structure AGAINST us", "structure_against"),
                            ("BUY", "dir")):
             for want in ((True, False) if key != "dir" else ("BUY", "SELL")):
                 sel = [r for r in rows if r[key] == want]
