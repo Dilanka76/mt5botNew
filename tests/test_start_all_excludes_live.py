@@ -9,9 +9,13 @@ only noticed missing the next morning, hours before the account was due to
 be funded.
 
 The two directions are deliberately NOT symmetric:
-  /stop-all   covers every account, live included -- worst case of an
+  /stop-all   defaults to every account, live included -- worst case of an
               accidental tap is that trading halts
-  /start-all  demo only -- real money is started one account at a time
+  /start-all  defaults to demo only -- real money is started deliberately
+
+Since 2026-09-15 both take a `scope` ("all" / "live" / "demo") so the app
+can offer two master switches. The defaults above are unchanged, and an
+account outside the named scope must be left completely untouched.
 
 Clearing the kill switch was the specific harm. It is how an operator
 records "this account is deliberately stopped", and a master switch must
@@ -19,7 +23,6 @@ not be able to erase that.
 """
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -47,29 +50,36 @@ def body(name: str) -> str:
 
 def main() -> None:
     start_all, stop_all = body("start_all"), body("stop_all")
+    in_scope = body("_in_scope")
 
-    print("/start-all leaves real money alone")
-    check("it branches on is_live", "if is_live:" in start_all)
-    # The live branch must reach `continue` before any deactivate/launch.
-    live_branch = start_all[start_all.index("if is_live:"):]
-    live_branch = live_branch[:live_branch.index("continue")]
-    check("the live branch never deactivates a kill switch",
-          "deactivate" not in live_branch)
-    check("the live branch never launches a process",
-          "launch_python_script" not in live_branch)
-    check("it reports the skip to the caller", '"skipped": True' in start_all)
+    print("the master toggles name the group they mean")
+    # Rewritten 2026-09-20: the original checked for a literal "if is_live:"
+    # in start_all, which 5ec9877 replaced with the shared _in_scope()
+    # helper when the app gained separate LIVE and DEMO toggles. The rule
+    # being protected is unchanged -- a bulk call must never touch an
+    # account outside the group it was asked for, and start-all must still
+    # default to demo.
+    check("start-all defaults to demo", 'def start_all(scope: str = "demo")' in start_all)
+    check("stop-all defaults to everything", 'def stop_all(scope: str = "all")' in stop_all)
+    for name, src in (("start-all", start_all), ("stop-all", stop_all)):
+        check(f"{name} asks _in_scope before acting", "_in_scope(is_live, scope)" in src)
+        gate = src[src.index("_in_scope(is_live, scope)"):]
+        gate = gate[:gate.index("continue")]
+        check(f"{name} does nothing to an out-of-scope account",
+              "deactivate" not in gate and "activate(" not in gate
+              and "launch_python_script" not in gate)
 
-    print("\nit still starts demo accounts")
+    print("\n_in_scope itself")
+    check("scope 'live' selects only live", 'if scope == "live":\n        return is_live' in in_scope)
+    check("anything unrecognised means demo, never live", "return not is_live" in in_scope)
+
+    print("\nit still does the work for in-scope accounts")
     after = start_all[start_all.index("continue"):]
-    check("a demo account still has its kill switch cleared",
+    check("an in-scope account has its kill switch cleared",
           "kill_switch.deactivate()" in after)
-    check("a demo account is still launched", "launch_python_script" in after)
-
-    print("\n/stop-all still covers EVERYTHING, live included")
-    check("stop-all has no is_live branch at all",
-          not re.search(r"if\s+is_live\s*:", stop_all))
-    check("stop-all still activates every kill switch",
-          "kill_switch.activate(" in stop_all)
+    check("an in-scope account is still launched", "launch_python_script" in after)
+    check("it reports what it skipped", '"skipped": True' in start_all)
+    check("stop-all still activates kill switches", "kill_switch.activate(" in stop_all)
 
     print()
     if failures:

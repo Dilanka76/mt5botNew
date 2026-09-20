@@ -48,6 +48,7 @@ from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc
 from bot.execution.trade_executor import TradeExecutor
 from bot.indicators.adx import compute_adx
+from bot.indicators.consolidation import compute_consolidation
 from bot.indicators.ema import compute_emas
 from bot.indicators.htf_trend import compute_htf_trend
 from bot.timeframes import minutes_for
@@ -294,6 +295,7 @@ def run() -> None:
                     # computation for them. Mirrors scripts/backtest.py's
                     # identical conditional wiring.
                     df = compute_adx(df, period=config.swap_adx_filter.adx_period)
+                htf = None      # referenced by the consolidation block below
                 if config.htf_trend_timeframe is not None:
                     # Same conditional wiring as the adx column above, and
                     # it MUST be mirrored in scripts/backtest.py: an engine
@@ -303,6 +305,18 @@ def run() -> None:
                                    config.htf_trend_timeframe, config.candles_to_fetch)
                     df = compute_htf_trend(df, htf, minutes_for(config.htf_trend_timeframe),
                                            config.ema_periods)
+                if config.consolidation_filter is not None:
+                    # Same conditional wiring again, and it MUST be
+                    # mirrored in scripts/backtest.py (it is). The engines
+                    # read cons_overlap/cons_box_atr through
+                    # _consolidation(); with no column they get None and
+                    # trade exactly as before.
+                    cons_tf = config.consolidation_filter.timeframe
+                    cons_htf = (htf if htf is not None and cons_tf == config.htf_trend_timeframe
+                                else get_ohlc(connector, config.symbol, cons_tf,
+                                              config.candles_to_fetch))
+                    df = compute_consolidation(df, cons_htf, minutes_for(cons_tf),
+                                               config.consolidation_filter.lookback)
 
                 latest_closed_time = df.iloc[-2].name
                 if latest_closed_time != last_closed_candle_time:

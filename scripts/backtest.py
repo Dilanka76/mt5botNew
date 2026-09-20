@@ -36,6 +36,7 @@ from bot.backtest.runner import run_backtest
 from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.adx import compute_adx
+from bot.indicators.consolidation import compute_consolidation
 from bot.indicators.ema import compute_emas
 from bot.indicators.htf_trend import compute_htf_trend
 from bot.logging_setup.logger import setup_logging
@@ -199,6 +200,14 @@ def main() -> None:
                            warmup_start, date_to)
             if config.htf_trend_timeframe is not None else None
         )
+        # Same reason: the consolidation filter's own chart, fetched only
+        # when it differs from the trend chart above.
+        cons_df = None
+        if config.consolidation_filter is not None:
+            cons_df = (htf_df if config.consolidation_filter.timeframe == config.htf_trend_timeframe
+                       else get_ohlc_range(connector, config.symbol,
+                                           config.consolidation_filter.timeframe,
+                                           warmup_start, date_to))
 
         tick_provider = None
         if args.real_ticks:
@@ -226,6 +235,11 @@ def main() -> None:
         # feedback_live_backtest_data_parity.
         df = compute_htf_trend(df, htf_df, TIMEFRAME_MINUTES[config.htf_trend_timeframe],
                                config.ema_periods)
+    if config.consolidation_filter is not None:
+        # Mirrors main.py exactly -- see feedback_live_backtest_data_parity.
+        df = compute_consolidation(df, cons_df,
+                                   TIMEFRAME_MINUTES[config.consolidation_filter.timeframe],
+                                   config.consolidation_filter.lookback)
     trades = run_backtest(config, df, date_from, contract_size, point, starting_balance, tick_provider=tick_provider)
 
     out_dir = PROJECT_ROOT / "reports" / "backtest" / args.account

@@ -11,6 +11,10 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+# No imports of ours above this line but timeframes, which imports nothing
+# at all -- it is deliberately free of MetaTrader5 so it is safe here.
+from bot.timeframes import TIMEFRAME_MINUTES
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 ACCOUNT_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -192,6 +196,36 @@ class DualCrossTightExitConfig:
     # corrected one-attempt behavior without touching the live config.
     # Never set True in a live-deployed config/settings.<account>.yaml.
     allow_multiple_tick_attempts_per_candle: bool = False
+
+
+@dataclass
+class ConsolidationFilterConfig:
+    """Skip entries while price is boxed in on the higher timeframe.
+
+    Added 2026-09-20 at the user's request: "if I can identify [sideway
+    consolidation] and miss that trade that will help increase the win
+    rate." Measured by bot/indicators/consolidation.py -- candle overlap
+    and range height in ATRs, both from CLOSED higher-timeframe candles.
+
+    `shadow_only` is the point of this class. With it True the engine
+    computes the verdict, writes it on every trade_entered line, and then
+    enters anyway -- so live2 keeps trading exactly as it does today
+    while building the forward evidence that decides whether the rule is
+    real. demo2 runs the same code with it False and actually skips.
+    Nothing else about the two accounts differs, which is what makes the
+    comparison worth anything.
+
+    A filter reaching live on backward-looking evidence alone cost $192
+    here (the colour filter) and the EMA50 trend filter was harmful 8
+    times out of 8 forward after passing every historical test. Hence:
+    shadow first, always.
+    """
+    enabled: bool = True
+    timeframe: str = "M15"        # the "zoom out" chart
+    lookback: int = 6             # HTF candles in the window (6 x M15 = 90 min)
+    overlap_min: float = 0.60     # candles covering the same prices
+    box_atr_max: float = 2.0      # range height, in ATRs
+    shadow_only: bool = True      # record the verdict, do not act on it
 
 
 @dataclass
@@ -399,6 +433,9 @@ class AppConfig:
     # Mandatory for strategy_variant=dual_cross_tight_exit_swap_confirm_adx
     # (None otherwise). See SwapAdxFilterConfig's own docstring.
     swap_adx_filter: SwapAdxFilterConfig | None = None
+    # Optional everywhere. Absent (None) = the engines behave exactly as
+    # they did before this existed. See ConsolidationFilterConfig.
+    consolidation_filter: ConsolidationFilterConfig | None = None
 
 
 def _float_or_default(raw: dict, key: str, default: float) -> float:
@@ -537,6 +574,22 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
                 f"stop_loss_usd is unset — the $ stop-loss is mandatory for this variant too."
             )
 
+    consolidation_filter_raw = raw.get("consolidation_filter")
+    consolidation_filter = (
+        ConsolidationFilterConfig(**consolidation_filter_raw)
+        if consolidation_filter_raw is not None else None
+    )
+    if consolidation_filter is not None:
+        if consolidation_filter.timeframe not in TIMEFRAME_MINUTES:
+            raise ValueError(
+                f"{settings_path}: consolidation_filter.timeframe "
+                f"{consolidation_filter.timeframe!r} is not a timeframe this bot knows."
+            )
+        if consolidation_filter.lookback < 2:
+            raise ValueError(
+                f"{settings_path}: consolidation_filter.lookback must be at least 2."
+            )
+
     swap_adx_filter_raw = raw.get("swap_adx_filter")
     swap_adx_filter = (
         SwapAdxFilterConfig(**swap_adx_filter_raw) if swap_adx_filter_raw is not None else None
@@ -647,6 +700,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         broker_backstop_usd=raw.get("broker_backstop_usd"),
         weekend_flat_utc=raw.get("weekend_flat_utc"),
         htf_trend_timeframe=raw.get("htf_trend_timeframe"),
+        consolidation_filter=consolidation_filter,
         htf_trend_take_profit_usd=raw.get("htf_trend_take_profit_usd"),
         swap_immediate=bool(raw.get("swap_immediate", False)),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),

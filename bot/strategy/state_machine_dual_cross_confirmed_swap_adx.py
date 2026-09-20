@@ -159,6 +159,7 @@ import pandas as pd
 from bot.config import AppConfig
 from bot.daily_loss import COLOMBO, daily_limit_reason
 from bot.execution.trade_executor import TradeExecutor
+from bot.indicators.consolidation import is_consolidating
 from bot.indicators.htf_trend import agrees_with_trend
 from bot.logging_setup.logger import log_decision
 from bot.mt5_connector import MT5Connector
@@ -391,6 +392,44 @@ class DualCrossConfirmedSwapAdxEngine:
     def _update_state(self) -> None:
         self.state = TradeState.IN_POSITION if self.position is not None else TradeState.IDLE
 
+    def _consolidation(self, candle) -> tuple:
+        """(verdict, the numbers to log). True = price is boxed in.
+
+        Read from the candle's own cons_* columns, which main.py and
+        scripts/backtest.py both compute -- they MUST stay in step: an
+        engine reading a column only one side provides is the 2026-08-21
+        fault that disabled a stop-loss. Missing columns give None, and
+        None means trade exactly as before.
+        """
+        overlap = candle.get("cons_overlap") if hasattr(candle, "get") else None
+        box_atr = candle.get("cons_box_atr") if hasattr(candle, "get") else None
+        verdict = is_consolidating(overlap, box_atr, self.config.consolidation_filter)
+        return verdict, {
+            # float()/bool() for the same json.dumps reason as the shadow
+            # fields below: these arrive as numpy scalars.
+            "cons_overlap": None if overlap is None or overlap != overlap else float(overlap),
+            "cons_box_atr": None if box_atr is None or box_atr != box_atr else float(box_atr),
+            "cons_is_box": verdict,
+        }
+
+    def _blocked_by_consolidation(self, direction: Direction, candle, when) -> bool:
+        """True only when the filter is enabled, NOT shadow_only, and this
+        really is a box. ENTRIES ONLY -- an exit is never blocked, which
+        keeps the opposite-cross exit (the real stop) untouched."""
+        cfg = self.config.consolidation_filter
+        verdict, info = self._consolidation(candle)
+        if verdict is not True or cfg is None or cfg.shadow_only:
+            return False
+        log_decision(
+            self.config.symbol, "entry_skipped_consolidation",
+            f"{direction.value} cross at {when} not taken: price is boxed in on "
+            f"{cfg.timeframe} (candles overlap {info['cons_overlap']:.2f} >= "
+            f"{cfg.overlap_min:.2f}, and the range is only {info['cons_box_atr']:.2f} "
+            f"<= {cfg.box_atr_max:.2f} ATR tall).",
+            **info,
+        )
+        return True
+
     def _shadow_filter_info(self, direction: Direction, candle, df_with_emas: pd.DataFrame) -> dict:
         """SHADOW-ONLY, 2026-09-01: computes (but never acts on) what the
         experimental demo3 entry filters
@@ -491,6 +530,11 @@ class DualCrossConfirmedSwapAdxEngine:
                 er_true_range = er_net / er_total_tr
 
         return {
+            # Consolidation, 2026-09-20: written on EVERY entry, on every
+            # account, whether or not the filter is acting. live2 runs it
+            # shadow_only and keeps trading as it does today -- these
+            # three fields are what its forward evidence is made of.
+            **self._consolidation(candle)[1],
             # bool()/float() here matter -- comparisons against a pandas
             # .quantile() result are numpy.bool_/numpy.float64, which
             # json.dumps() (used by log_decision) cannot serialize and
@@ -729,6 +773,8 @@ class DualCrossConfirmedSwapAdxEngine:
                                         f"{direction.value} swap re-entry SKIPPED by entry filter: {filter_reason}",
                                         **shadow_info,
                                     )
+                                elif self._blocked_by_consolidation(direction, last_closed, last_closed_time):
+                                    pass      # logged inside; the entry is withheld, exits are not
                                 else:
                                     opened = self._enter(
                                         direction,
@@ -894,6 +940,8 @@ class DualCrossConfirmedSwapAdxEngine:
                                 f"(cross was genuine: ema13={ema13:.2f}, ema21={ema21:.2f})",
                                 **shadow_info,
                             )
+                        elif self._blocked_by_consolidation(direction, last_closed, last_closed_time):
+                            pass      # logged inside; the entry is withheld, exits are not
                         else:
                             opened = self._maybe_enter_or_pend(
                                 direction, exit_price, ema13,
