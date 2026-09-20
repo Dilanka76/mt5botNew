@@ -70,6 +70,8 @@ def parse_args() -> argparse.Namespace:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--accounts", default="demo2_m3,demo2_m5,live2_m3,live2_m5")
     p.add_argument("--since", required=True, help='"YYYY-MM-DD HH:MM:SS", true UTC')
+    p.add_argument("--offset-hours", type=float, default=None,
+                   help="broker clock offset; needed when the market is closed (3)")
     return p.parse_args()
 
 
@@ -159,11 +161,12 @@ def main() -> None:
         connector = MT5Connector(config.mt5)
         connector.connect()
         try:
-            offset = mt5_utc_offset(connector, config.symbol)
+            offset = (timedelta(hours=args.offset_hours) if args.offset_hours is not None
+                      else mt5_utc_offset(connector, config.symbol))
             raw = get_closed_trades_range(config.symbol, config.execution.magic_number,
                                           since, now, offset)
             df = get_ohlc_range(connector, config.symbol, config.timeframe,
-                                since - timedelta(days=1), now)
+                                since - timedelta(days=1), now, offset)
         finally:
             connector.disconnect()
 
@@ -389,6 +392,6 @@ if __name__ == "__main__":
     try:
         main()
     except StaleTickError as exc:
-        print("\nMARKET CLOSED — the broker clock offset cannot be measured.")
+        print("\nMARKET CLOSED -- pass --offset-hours 3 to run this on a weekend.")
         print(f"  {exc}")
         raise SystemExit(1)

@@ -130,8 +130,10 @@ def main() -> None:
                       else mt5_utc_offset(connector, config.symbol))
             raw = get_closed_trades_range(config.symbol, config.execution.magic_number,
                                           since, now, offset)
+            # hand it the offset too: get_ohlc_range measures its own
+            # otherwise, which throws on a weekend even when one was given.
             df = get_ohlc_range(connector, config.symbol, config.timeframe,
-                                since - timedelta(days=1), now)
+                                since - timedelta(days=1), now, offset)
         finally:
             connector.disconnect()
 
