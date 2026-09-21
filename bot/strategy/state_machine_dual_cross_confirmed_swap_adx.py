@@ -150,7 +150,7 @@ from __future__ import annotations
 import logging
 import math
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 
 import MetaTrader5 as mt5
@@ -257,6 +257,9 @@ class DualCrossConfirmedSwapAdxEngine:
         # cross that fired while the bot was down is the safe direction.
         self._started_monotonic = time.monotonic()
         self._warmup_seconds = minutes_for(config.timeframe) * 60
+        # See _cross_is_stale(): which candle prev_ema13/21 belong to.
+        self._bar = timedelta(minutes=minutes_for(config.timeframe))
+        self.prev_candle_time = None
         self.prev_ema21: float | None = None
         self.current_ema5: float | None = None
         self.current_candle_time: pd.Timestamp | None = None
@@ -287,6 +290,48 @@ class DualCrossConfirmedSwapAdxEngine:
     def _warmed_up(self) -> bool:
         """True once a full candle period has passed since startup."""
         return (time.monotonic() - self._started_monotonic) >= self._warmup_seconds
+
+    def _cross_is_stale(self, direction: Direction, when) -> bool:
+        """True when the candle this cross is measured against is MORE than
+        one candle before `when` -- so the "cross" spans a gap the engine
+        was not watching, and must not be entered.
+
+        REAL INCIDENT, demo2, 2026-09-21: the MT5 terminal's Algo Trading
+        button was off, so at 16:09 order_send failed (retcode 10027). An
+        exception before the end of on_new_candle() leaves prev_ema13/21
+        unchanged, so EVERY later candle compared against the pre-16:09
+        values and re-detected the same cross -- 148 errors in 30 minutes,
+        and the moment the button came back on it would have opened a trade
+        on a cross hours old. That is the late, extended entry that carries
+        the monster losses (see project_entry_research_2026_09_21).
+
+        The same applies to any failure that outlives a candle: a lost
+        connection, a closed market, a margin refusal. Retrying WITHIN the
+        same candle is still allowed (the gap is exactly one candle), which
+        keeps a genuine transient refusal recoverable.
+
+        ENTRIES ONLY. The exit path never asks this: a position still
+        closes on the opposite cross however late the candle is -- the
+        same rule as the warm-up guard.
+        """
+        prev = getattr(self, "prev_candle_time", None)
+        bar = getattr(self, "_bar", None)
+        if prev is None or bar is None or when is None:
+            return False
+        try:
+            gap = when - prev
+        except TypeError:
+            return False
+        if gap <= bar:
+            return False
+        log_decision(
+            self.config.symbol, "entry_skipped_stale_cross",
+            f"{direction.value} cross at {when} not taken: it is measured against the candle "
+            f"at {prev}, {gap} earlier -- more than one {self.config.timeframe} candle, so it "
+            f"is not a fresh cross (an earlier failure, or a gap in the data, left it behind).",
+        )
+        return True
+
 
     def _active_sessions(self) -> list:
         return self.config.sessions["dual_cross_confirmed_swap_adx"]
@@ -773,6 +818,8 @@ class DualCrossConfirmedSwapAdxEngine:
                                         f"{direction.value} swap re-entry SKIPPED by entry filter: {filter_reason}",
                                         **shadow_info,
                                     )
+                                elif self._cross_is_stale(direction, last_closed_time):
+                                    pass      # logged inside; a cross older than one candle is history
                                 elif self._blocked_by_consolidation(direction, last_closed, last_closed_time):
                                     pass      # logged inside; the entry is withheld, exits are not
                                 else:
@@ -940,6 +987,8 @@ class DualCrossConfirmedSwapAdxEngine:
                                 f"(cross was genuine: ema13={ema13:.2f}, ema21={ema21:.2f})",
                                 **shadow_info,
                             )
+                        elif self._cross_is_stale(direction, last_closed_time):
+                            pass      # logged inside; a cross older than one candle is history
                         elif self._blocked_by_consolidation(direction, last_closed, last_closed_time):
                             pass      # logged inside; the entry is withheld, exits are not
                         else:
@@ -958,6 +1007,7 @@ class DualCrossConfirmedSwapAdxEngine:
 
         self.prev_ema13 = ema13
         self.prev_ema21 = ema21
+        self.prev_candle_time = last_closed_time
         self.current_ema5 = ema5
         self.current_candle_time = df_with_emas.index[-1]
         self._update_state()
