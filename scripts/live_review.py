@@ -145,6 +145,12 @@ def main() -> None:
             by_pos[d.position_id].append(d)
 
     trades, still_open = [], []
+    # Costs already charged on trades still open. This broker books the
+    # whole round-trip commission on the ENTRY deal, so an open trade has
+    # already moved the balance -- leaving it out made the books check
+    # report "-$0.48 missing" with two positions open (2026-09-21), which
+    # was simply their entry commission.
+    open_costs = 0.0
     for pid, ds in by_pos.items():
         entry = next((d for d in ds if d.entry == ENTRY_IN), None)
         exits = [d for d in ds if d.entry in (ENTRY_OUT, ENTRY_OUT_BY)]
@@ -154,6 +160,7 @@ def main() -> None:
                "dir": "BUY" if entry.type == 0 else "SELL", "lots": entry.volume,
                "open_px": entry.price, "opened": utc(entry.time)}
         if not exits:
+            open_costs += sum(d.commission + d.swap + getattr(d, "fee", 0.0) for d in ds)
             still_open.append(row)
             continue
         costs = sum(d.commission + d.swap + getattr(d, "fee", 0.0) for d in ds)
@@ -182,7 +189,9 @@ def main() -> None:
     print(f"    balance now           ${info.balance:,.2f}    equity ${info.equity:,.2f}")
     if deposited:
         print(f"    return on deposits    {100 * traded / deposited:+.1f}%")
-    gap = info.balance - (deposited + traded)
+    if abs(open_costs) >= 0.005:
+        print(f"    costs on open trades  {money(open_costs)}   (commission charged at entry)")
+    gap = info.balance - (deposited + traded + open_costs)
     if abs(gap) > 0.05:
         print(f"    *** BOOKS DO NOT BALANCE by {money(gap)}: something before {since:%Y-%m-%d} or")
         print("        outside this view moved money. Re-run with an earlier --since.")
