@@ -64,6 +64,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--since", default="2026-08-25 00:00:00", help="true UTC")
     p.add_argument("--offset-hours", type=float, default=None,
                    help="broker clock offset; needed when the market is closed (3)")
+    p.add_argument("--squeeze-cut", type=float, default=None,
+                   help="a FIXED EMA13-21 gap, in $, below which a cross counts as squeezed. "
+                        "For the forward test: 0.042, frozen 2026-09-21 from demo2_m3's own "
+                        "lowest quarter. Without it the cut is re-derived from the data, "
+                        "which is only fair on the data it was first noticed on.")
     return p.parse_args()
 
 
@@ -171,7 +176,8 @@ def main() -> None:
         # the lowest quarter of THIS account's own spreads -- set from the
         # spreads alone, never from outcomes
         seps = sorted(r["sep"] for r in rows)
-        cut = seps[len(seps) // 4] if seps else 0.0
+        cut = (args.squeeze_cut if args.squeeze_cut is not None
+               else (seps[len(seps) // 4] if seps else 0.0))
         for r in rows:
             r["squeezed"] = r["sep"] < cut
         ordered = sorted(rows, key=lambda r: r["entry_utc"])
@@ -179,7 +185,9 @@ def main() -> None:
         half = len(rows) // 2
         trapped_share = 100 * sum(1 for r in rows if r["trapped"]) / len(rows) if rows else 0
 
-        print(f"  squeezed = EMA13-21 gap below ${cut:.3f} (this account's lowest quarter)")
+        print(f"  squeezed = EMA13-21 gap below ${cut:.3f} "
+              + ("(FIXED -- the forward test's frozen cut)" if args.squeeze_cut is not None
+                 else "(this account's lowest quarter)"))
         print(f"  trapped  = {trapped_share:.0f}% of all entries happened inside the previous H1 candle")
         print(f"  whole account: {mean([r['oz'] for r in rows]):+.2f} $/oz per trade\n")
 
