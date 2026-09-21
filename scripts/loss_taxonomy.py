@@ -57,7 +57,11 @@ DEAD_ON_ARRIVAL_USD = 1.00  # never showed this much profit
 SHOCK_RANGE_MULT = 3.0      # entry candle vs the day's median candle range
 CHOP_GAP_CANDLES = 2        # entered within this many candles of the last exit
 
-BUCKETS = ["NEARLY WON", "DEAD ON ARRIVAL", "SHOCK", "CHOP CHURN", "SLOW BLEED"]
+# The first two are CONDITIONS, judged on winners and losers alike, so
+# their net says what avoiding them would really cost. The rest are
+# outcomes and can only describe the losses.
+BUCKETS = ["SHOCK", "CHOP CHURN", "won, normal conditions",
+           "NEARLY WON", "DEAD ON ARRIVAL", "SLOW BLEED"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -187,15 +191,28 @@ def main() -> None:
                    "since_prev": gap_candles, "gap": (logged or {}).get("gap"),
                    "aligned": (logged or {}).get("aligned"),
                    "minutes": (exit_utc - entry_utc).total_seconds() / 60}
-            # one bucket per trade, in this order
-            if mfe >= NEARLY_WON_SHARE * float(target):
+            # FIXED 2026-09-21. The first version ran this ladder over
+            # winners too, and every winner reached 70% of its target by
+            # definition -- so all of them landed in NEARLY WON and the
+            # other buckets held losers only. Their "net" was then negative
+            # by construction, which made the winners-cost check, the whole
+            # point of this script, meaningless.
+            # Now: the CONDITIONS (shock, chop churn) are judged on every
+            # trade, so a bucket shows what it really costs to avoid. Only
+            # the OUTCOME buckets (nearly won, dead on arrival, slow bleed)
+            # are losers-only, and they describe rather than propose.
+            is_shock = bool(normal_range and e_range >= SHOCK_RANGE_MULT * normal_range)
+            is_chop = gap_candles is not None and gap_candles <= CHOP_GAP_CANDLES
+            if is_shock:
+                row["bucket"] = "SHOCK"
+            elif is_chop:
+                row["bucket"] = "CHOP CHURN"
+            elif row["profit"] > 0:
+                row["bucket"] = "won, normal conditions"
+            elif mfe >= NEARLY_WON_SHARE * float(target):
                 row["bucket"] = "NEARLY WON"
             elif mfe < DEAD_ON_ARRIVAL_USD:
                 row["bucket"] = "DEAD ON ARRIVAL"
-            elif normal_range and e_range >= SHOCK_RANGE_MULT * normal_range:
-                row["bucket"] = "SHOCK"
-            elif gap_candles is not None and gap_candles <= CHOP_GAP_CANDLES:
-                row["bucket"] = "CHOP CHURN"
             else:
                 row["bucket"] = "SLOW BLEED"
             rows.append(row)
@@ -226,8 +243,9 @@ def main() -> None:
             print(f"  {b:<17} {len(bl):>7} {money(lost):>11} "
                   f"{money(lost / len(bl)) if bl else '-':>9} | "
                   f"{len(bw):>8} {money(won):>11} | {money(lost + won):>12}")
-        print("  A bucket is only worth attacking if its NET is negative -- avoiding a")
-        print("  bucket means giving up its winners too.")
+        print("  SHOCK and CHOP CHURN are conditions known at entry, so their NET is a real")
+        print("  answer to 'what would avoiding these have cost?'. The rest are outcomes --")
+        print("  you cannot filter on them, they only describe where the losses sit.")
 
         print(f"\n  {'entry type':<17} {'losers':>7} {'lost':>11} {'avg':>9} | "
               f"{'winners':>8} {'won':>11} | {'NET':>12}")
