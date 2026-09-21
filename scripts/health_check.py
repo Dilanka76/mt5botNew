@@ -104,6 +104,41 @@ def recent_decisions(account: str, since: datetime) -> list[dict]:
     return out
 
 
+# MT5 order refusals worth naming. The retcode sits on the traceback lines
+# AFTER the "[ERROR]" line, so a bare error count never shows it: on
+# 2026-09-21 demo2 reported "148 error(s)" all day while the real message
+# -- the terminal's Algo Trading button was off -- sat unread underneath,
+# and demo2 took no trades at all.
+KNOWN_REFUSALS = {
+    "10027": "ALGO TRADING IS OFF in this account's MT5 terminal -- every order is refused. "
+             "Stop the bots, switch Algo Trading on (green), THEN start them: a restart "
+             "clears the failed cross, otherwise it fires late the moment trading resumes.",
+    "10019": "the broker refused an order for lack of money / margin",
+    "10018": "the broker refused an order because the market is closed",
+    "10031": "no connection to the broker's trade server",
+}
+
+
+def recent_refusals(account: str, minutes: int) -> list[str]:
+    """Plain-language reasons for MT5 order refusals in the last `minutes`,
+    read from the traceback lines that follow each error."""
+    path = PROJECT_ROOT / "logs" / account / "app.log"
+    if not path.is_file():
+        return []
+    cutoff = datetime.now() - timedelta(minutes=minutes)
+    in_window, found = False, []
+    for line in path.read_text(errors="ignore").splitlines()[-4000:]:
+        m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
+        if m:            # continuation lines inherit the last timestamp
+            in_window = datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S") >= cutoff
+        if not in_window:
+            continue
+        for code, meaning in KNOWN_REFUSALS.items():
+            if f"retcode={code}" in line and meaning not in found:
+                found.append(meaning)
+    return found
+
+
 def recent_errors(account: str, minutes: int) -> int:
     """ERROR/CRITICAL lines in the last `minutes`, ignoring the expected
     single-instance refusal -- the main.py task retriggers every 5 minutes by
@@ -209,6 +244,9 @@ def main() -> None:
         if errors:
             flags.append(f"{errors} error(s) in the log in the last {args.minutes} min")
             problems.append(f"{account}: {errors} recent error(s)")
+            for meaning in recent_refusals(account, args.minutes):
+                flags.append(f"*** {meaning} ***")
+                problems.append(f"{account}: {meaning.split(' -- ')[0]}")
         if blocked:
             flags.append(f"{len(blocked)} entry(s) REFUSED — the broker held a position "
                          f"the engine had forgotten")
