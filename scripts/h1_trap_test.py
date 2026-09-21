@@ -221,7 +221,16 @@ def main() -> None:
     for account, verdict in verdicts.items():
         print(f"  {account:<10} {verdict}")
     passed = verdicts and all(v.startswith("LOSES") for v in verdicts.values()) and len(verdicts) >= 2
-    print(f"\n  OVERALL: {'PASSES -- worth shadow-logging on live2' if passed else 'DOES NOT PASS'}")
+    waiting = any(v.startswith("TOO FEW") for v in verdicts.values())
+    if passed:
+        overall = "PASSES -- worth shadow-logging on live2"
+    elif waiting:
+        # An early peek must never read as a failure: "does not pass" on one
+        # trade (2026-09-21) says something the data cannot say yet.
+        overall = "NOT ENOUGH TRADES YET -- no verdict either way, run again later"
+    else:
+        overall = "DOES NOT PASS"
+    print(f"\n  OVERALL: {overall}")
     print("\nCaveat: the squeeze half was noticed on this same data this morning, so this data")
     print("cannot confirm it by itself. The H1 trap is the genuinely new question.")
 
