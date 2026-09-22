@@ -160,6 +160,7 @@ from bot.config import AppConfig
 from bot.daily_loss import COLOMBO, daily_limit_reason
 from bot.execution.trade_executor import TradeExecutor
 from bot.indicators.consolidation import is_consolidating
+from bot.indicators.range_filter import in_range
 from bot.indicators.htf_trend import agrees_with_trend
 from bot.logging_setup.logger import log_decision
 from bot.mt5_connector import MT5Connector
@@ -475,6 +476,42 @@ class DualCrossConfirmedSwapAdxEngine:
         )
         return True
 
+    def _range_check(self, candle) -> tuple:
+        """(verdict, the numbers to log). True = this entry would be inside
+        a trader-drawn range. Read from the candle's range_* columns, which
+        main.py and scripts/backtest.py both compute (they MUST stay in
+        step). Missing columns or NaN give None: trade exactly as before."""
+        get = candle.get if hasattr(candle, "get") else (lambda k, d=None: d)
+        price, state = get("close"), get("range_state")
+        ceiling, floor = get("range_ceiling"), get("range_floor")
+        verdict = in_range(price, state, ceiling, floor, self.config.range_filter)
+
+        def num(v):
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            return None if f != f else f
+        return verdict, {"range_ceiling": num(ceiling), "range_floor": num(floor),
+                         "in_range": verdict}
+
+    def _blocked_by_range(self, direction: Direction, candle, when) -> bool:
+        """True only when the range filter is enabled, NOT shadow_only, and
+        the entry would be inside a range. ENTRIES ONLY -- an exit is never
+        blocked, so the opposite-cross exit is untouched."""
+        cfg = self.config.range_filter
+        verdict, info = self._range_check(candle)
+        if verdict is not True or cfg is None or cfg.shadow_only:
+            return False
+        log_decision(
+            self.config.symbol, "entry_skipped_range",
+            f"{direction.value} cross at {when} not taken: price {float(candle['close']):.2f} is "
+            f"inside a {cfg.timeframe} range (ceiling {info['range_ceiling']:.2f}, floor "
+            f"{info['range_floor']:.2f}, each touched twice in the last {cfg.lookback} candles).",
+            **info,
+        )
+        return True
+
     def _shadow_filter_info(self, direction: Direction, candle, df_with_emas: pd.DataFrame) -> dict:
         """SHADOW-ONLY, 2026-09-01: computes (but never acts on) what the
         experimental demo3 entry filters
@@ -580,6 +617,7 @@ class DualCrossConfirmedSwapAdxEngine:
             # shadow_only and keeps trading as it does today -- these
             # three fields are what its forward evidence is made of.
             **self._consolidation(candle)[1],
+            **self._range_check(candle)[1],
             # bool()/float() here matter -- comparisons against a pandas
             # .quantile() result are numpy.bool_/numpy.float64, which
             # json.dumps() (used by log_decision) cannot serialize and
@@ -820,6 +858,8 @@ class DualCrossConfirmedSwapAdxEngine:
                                     )
                                 elif self._cross_is_stale(direction, last_closed_time):
                                     pass      # logged inside; a cross older than one candle is history
+                                elif self._blocked_by_range(direction, last_closed, last_closed_time):
+                                    pass      # logged inside; the entry is withheld, exits are not
                                 elif self._blocked_by_consolidation(direction, last_closed, last_closed_time):
                                     pass      # logged inside; the entry is withheld, exits are not
                                 else:
@@ -989,6 +1029,8 @@ class DualCrossConfirmedSwapAdxEngine:
                             )
                         elif self._cross_is_stale(direction, last_closed_time):
                             pass      # logged inside; a cross older than one candle is history
+                        elif self._blocked_by_range(direction, last_closed, last_closed_time):
+                            pass      # logged inside; the entry is withheld, exits are not
                         elif self._blocked_by_consolidation(direction, last_closed, last_closed_time):
                             pass      # logged inside; the entry is withheld, exits are not
                         else:

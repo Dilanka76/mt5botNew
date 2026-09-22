@@ -49,6 +49,7 @@ from bot.data.market_data import get_ohlc
 from bot.execution.trade_executor import TradeExecutor
 from bot.indicators.adx import compute_adx
 from bot.indicators.consolidation import compute_consolidation
+from bot.indicators.range_filter import compute_range
 from bot.indicators.ema import compute_emas
 from bot.indicators.htf_trend import compute_htf_trend
 from bot.timeframes import minutes_for
@@ -317,6 +318,17 @@ def run() -> None:
                                               config.candles_to_fetch))
                     df = compute_consolidation(df, cons_htf, minutes_for(cons_tf),
                                                config.consolidation_filter.lookback)
+                if config.range_filter is not None:
+                    # Same conditional wiring, mirrored in scripts/backtest.py.
+                    # The engines read range_state/ceiling/floor through
+                    # _range_check(); with no column they trade as before.
+                    rf = config.range_filter
+                    rng_htf = (htf if htf is not None and rf.timeframe == config.htf_trend_timeframe
+                               else get_ohlc(connector, config.symbol, rf.timeframe,
+                                             config.candles_to_fetch))
+                    df = compute_range(df, rng_htf, minutes_for(rf.timeframe),
+                                       minutes_for(config.timeframe), rf.lookback, rf.fractal,
+                                       rf.level_tolerance_atr)
 
                 latest_closed_time = df.iloc[-2].name
                 if latest_closed_time != last_closed_candle_time:

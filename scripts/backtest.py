@@ -37,6 +37,7 @@ from bot.config import PROJECT_ROOT, load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
 from bot.indicators.adx import compute_adx
 from bot.indicators.consolidation import compute_consolidation
+from bot.indicators.range_filter import compute_range
 from bot.indicators.ema import compute_emas
 from bot.indicators.htf_trend import compute_htf_trend
 from bot.logging_setup.logger import setup_logging
@@ -202,6 +203,11 @@ def main() -> None:
         )
         # Same reason: the consolidation filter's own chart, fetched only
         # when it differs from the trend chart above.
+        rng_df = None
+        if config.range_filter is not None:
+            rng_df = (htf_df if config.range_filter.timeframe == config.htf_trend_timeframe
+                      else get_ohlc_range(connector, config.symbol, config.range_filter.timeframe,
+                                          warmup_start, date_to))
         cons_df = None
         if config.consolidation_filter is not None:
             cons_df = (htf_df if config.consolidation_filter.timeframe == config.htf_trend_timeframe
@@ -240,6 +246,12 @@ def main() -> None:
         df = compute_consolidation(df, cons_df,
                                    TIMEFRAME_MINUTES[config.consolidation_filter.timeframe],
                                    config.consolidation_filter.lookback)
+    if config.range_filter is not None:
+        # Mirrors main.py exactly -- see feedback_live_backtest_data_parity.
+        rf = config.range_filter
+        df = compute_range(df, rng_df, TIMEFRAME_MINUTES[rf.timeframe],
+                           TIMEFRAME_MINUTES[config.timeframe], rf.lookback, rf.fractal,
+                           rf.level_tolerance_atr)
     trades = run_backtest(config, df, date_from, contract_size, point, starting_balance, tick_provider=tick_provider)
 
     out_dir = PROJECT_ROOT / "reports" / "backtest" / args.account

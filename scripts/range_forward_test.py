@@ -52,6 +52,7 @@ import pandas as pd
 from bot.analytics import StaleTickError, get_closed_trades_range, mt5_utc_offset
 from bot.config import load_config, validate_account_name
 from bot.data.market_data import get_ohlc_range
+from bot.indicators.range_filter import range_levels, with_atr
 from bot.mt5_connector import MT5Connector
 
 OZ_PER_LOT = 100.0
@@ -88,49 +89,22 @@ def mean(xs: list) -> float:
     return statistics.mean(xs) if xs else float("nan")
 
 
-def with_atr(htf: pd.DataFrame) -> pd.DataFrame:
-    out = htf.copy()
-    prev_close = out["close"].shift(1)
-    tr = pd.concat([out["high"] - out["low"],
-                    (out["high"] - prev_close).abs(),
-                    (out["low"] - prev_close).abs()], axis=1).max(axis=1)
-    out["atr"] = tr.ewm(alpha=1 / 14, adjust=False).mean()
-    return out
-
-
-def paired_level(values: list, tol: float, pick) -> float | None:
-    """The most recent pair of swings within `tol` of each other; returns
-    `pick` of the pair (max for a ceiling, min for a floor)."""
-    for i in range(len(values) - 1, 0, -1):
-        for j in range(i - 1, -1, -1):
-            if abs(values[i] - values[j]) <= tol:
-                return pick(values[i], values[j])
-    return None
-
-
 def range_at(htf: pd.DataFrame, entry_utc: datetime, price: float):
-    """(in_range, ceiling, floor), or None when there is too little history."""
+    """(in_range, ceiling, floor), or None when there is too little history.
+
+    The range itself comes from bot.indicators.range_filter.range_levels --
+    the SAME function the bot uses -- so what this test measured is exactly
+    what the bot will act on.
+    """
     closed = htf[htf.index + timedelta(minutes=HTF_MINUTES) <= entry_utc].tail(LOOKBACK)
     if len(closed) < LOOKBACK:
         return None
     atr = float(closed["atr"].iloc[-1])
     if not atr or atr != atr:
         return None
-    tol = LEVEL_TOLERANCE * atr
-    highs, lows = [], []
-    hi, lo = closed["high"].tolist(), closed["low"].tolist()
-    # a fractal needs FRACTAL candles after it, all already closed
-    for i in range(FRACTAL, len(closed) - FRACTAL):
-        window_h = hi[i - FRACTAL:i + FRACTAL + 1]
-        window_l = lo[i - FRACTAL:i + FRACTAL + 1]
-        if hi[i] == max(window_h):
-            highs.append(hi[i])
-        if lo[i] == min(window_l):
-            lows.append(lo[i])
-    ceiling = paired_level(highs, tol, max)
-    floor = paired_level(lows, tol, min)
-    if ceiling is None or floor is None or ceiling <= floor + tol:
-        return False, ceiling, floor
+    ceiling, floor = range_levels(closed, FRACTAL, LEVEL_TOLERANCE)
+    if ceiling is None:
+        return False, None, None
     return floor <= price <= ceiling, ceiling, floor
 
 

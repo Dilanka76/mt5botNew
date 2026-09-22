@@ -229,6 +229,28 @@ class ConsolidationFilterConfig:
 
 
 @dataclass
+class RangeFilterConfig:
+    """Skip entries taken INSIDE a trader-drawn range on the higher timeframe.
+
+    Added 2026-09-22 at the user's request, after the backward test of the
+    frozen definition (scripts/range_forward_test.py) found range entries
+    worse than the rest on all six accounts. See
+    bot/indicators/range_filter.py for the definition; the defaults below
+    ARE that definition and must not be tuned to fit results.
+
+    shadow_only True = compute, log in_range on every trade_entered, enter
+    anyway (live2). False = really withhold the entry (demo2). Entries
+    only -- an exit is never blocked.
+    """
+    enabled: bool = True
+    timeframe: str = "M15"
+    lookback: int = 16                  # higher-timeframe candles (16 x M15 = 4h)
+    fractal: int = 2                    # candles each side of a swing
+    level_tolerance_atr: float = 0.35   # two touches this close are one level
+    shadow_only: bool = True
+
+
+@dataclass
 class SwapAdxFilterConfig:
     """Config specific to strategy_variant=dual_cross_tight_exit_swap_confirm_adx
     (bot/strategy/state_machine_dual_cross_tight_exit_swap_confirm_adx.py),
@@ -436,6 +458,9 @@ class AppConfig:
     # Optional everywhere. Absent (None) = the engines behave exactly as
     # they did before this existed. See ConsolidationFilterConfig.
     consolidation_filter: ConsolidationFilterConfig | None = None
+    # Optional everywhere; absent = the engines behave as before. See
+    # RangeFilterConfig.
+    range_filter: RangeFilterConfig | None = None
 
 
 def _float_or_default(raw: dict, key: str, default: float) -> float:
@@ -590,6 +615,16 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
                 f"{settings_path}: consolidation_filter.lookback must be at least 2."
             )
 
+    range_filter_raw = raw.get("range_filter")
+    range_filter = RangeFilterConfig(**range_filter_raw) if range_filter_raw is not None else None
+    if range_filter is not None:
+        if range_filter.timeframe not in TIMEFRAME_MINUTES:
+            raise ValueError(f"{settings_path}: range_filter.timeframe "
+                             f"{range_filter.timeframe!r} is not a timeframe this bot knows.")
+        if range_filter.lookback < 2 * range_filter.fractal + 2:
+            raise ValueError(f"{settings_path}: range_filter.lookback is too short for "
+                             f"fractal={range_filter.fractal} swings.")
+
     swap_adx_filter_raw = raw.get("swap_adx_filter")
     swap_adx_filter = (
         SwapAdxFilterConfig(**swap_adx_filter_raw) if swap_adx_filter_raw is not None else None
@@ -701,6 +736,7 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         weekend_flat_utc=raw.get("weekend_flat_utc"),
         htf_trend_timeframe=raw.get("htf_trend_timeframe"),
         consolidation_filter=consolidation_filter,
+        range_filter=range_filter,
         htf_trend_take_profit_usd=raw.get("htf_trend_take_profit_usd"),
         swap_immediate=bool(raw.get("swap_immediate", False)),
         early_entry_threshold_usd=raw.get("early_entry_threshold_usd"),
