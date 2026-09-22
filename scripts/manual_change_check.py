@@ -235,7 +235,7 @@ def main() -> None:
         if acct_actual or acct_untouched:
             print(f"  changed trades: really {money(acct_actual)}, untouched {money(acct_untouched)}"
                   f"  ->  the changes {'EARNED' if acct_actual >= acct_untouched else 'COST'} "
-                  f"{money(abs(acct_actual - acct_untouched))}")
+                  f"${abs(acct_actual - acct_untouched):,.2f}")
         grand_actual += acct_actual
         grand_untouched += acct_untouched
 
