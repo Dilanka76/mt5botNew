@@ -70,6 +70,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--accounts", default="demo2_m3,demo2_m5,live2_m3,live2_m5")
     p.add_argument("--since", default=FORWARD_START,
                    help="true UTC. The frozen forward window starts at " + FORWARD_START)
+    p.add_argument("--until", default=None,
+                   help="true UTC, exclusive. For the BACKWARD test: '2026-09-21 12:00:00' "
+                        "keeps out the evening the definition was written after.")
     p.add_argument("--offset-hours", type=float, default=None,
                    help="broker clock offset; needed when the market is closed (3)")
     return p.parse_args()
@@ -148,13 +151,25 @@ def main() -> None:
     args = parse_args()
     since = datetime.strptime(args.since, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     now = datetime.now(timezone.utc)
+    until = (datetime.strptime(args.until, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+             if args.until else None)
 
     print("=" * 104)
     print("RANGE TEST -- crosses inside a trader-drawn M15 range (ceiling + floor, each touched twice)")
-    print(f"trades since {since:%Y-%m-%d %H:%M} UTC.  Outcome in $/oz, so lot size tilts nothing.")
+    print(f"trades since {since:%Y-%m-%d %H:%M} UTC"
+          + (f" until {until:%Y-%m-%d %H:%M} UTC" if until else "")
+          + ".  Outcome in $/oz, so lot size tilts nothing.")
+    written = datetime(2026, 9, 21, 12, 0, tzinfo=timezone.utc)
     if since < datetime.strptime(FORWARD_START, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc):
-        print("*** --since is BEFORE the frozen forward window. Anything shown for earlier trades")
-        print("*** is already-seen data and CANNOT pass or fail the rule.")
+        if until is not None and until <= written:
+            # Fair, and said why: the definition and the pass rule were fixed
+            # on 2026-09-21 without ever being run on these trades. What must
+            # stay out is only what was looked at while writing it.
+            print("BACKWARD TEST: the definition was frozen 2026-09-21 without being run on these")
+            print("trades, so they are a fair test of it. The evening it was written after is excluded.")
+        else:
+            print("*** this window reaches past 2026-09-21 12:00 UTC, into trades that were SEEN")
+            print("*** while the definition was written. Use --until \"2026-09-21 12:00:00\".")
     print("=" * 104)
 
     verdicts = {}
@@ -176,7 +191,7 @@ def main() -> None:
         rows, unknown = [], 0
         for t in raw:
             entry_utc = t["entry_time"].astimezone(timezone.utc)
-            if entry_utc < since:
+            if entry_utc < since or (until is not None and entry_utc >= until):
                 continue
             got = range_at(htf, entry_utc, float(t["entry_price"]))
             if got is None:
