@@ -155,6 +155,60 @@ def day_bounds_utc(target_date: date_cls) -> tuple[datetime, datetime]:
     return day_start_local.astimezone(timezone.utc), day_end_local.astimezone(timezone.utc)
 
 
+def _our_closed_positions(deals, symbol: str, magic: int, offset: timedelta) -> list[dict]:
+    """Every FULLY closed position this bot opened, however it was closed.
+
+    A position is ours when its ENTRY deal carries our magic number -- but
+    its exit may not. FIXED 2026-09-22: both callers used to keep only
+    deals with our magic, and a close from the MT5 phone app, the desktop
+    terminal or the web carries magic 0. The exit was dropped, the pairing
+    found no exit, and the whole trade silently vanished -- live2 had 12
+    hand-closed trades the broker could see and every report built on
+    this function could not. It also cut partial closes short: a 0.03-lot
+    trade closed in parts showed as 0.01 lots and a third of its profit.
+
+    Now: ours = positions whose entry has our magic; then EVERY deal of
+    those positions counts, whatever its magic. Volume is the entry's,
+    the exit price is the volume-weighted average of the exits, profit
+    sums every leg, and a position still partly open is left out.
+    """
+    ours = {d.position_id for d in deals
+            if d.symbol == symbol and d.magic == magic and d.entry == mt5.DEAL_ENTRY_IN}
+    by_position: dict[int, list] = {}
+    for d in deals:
+        if d.symbol == symbol and d.position_id in ours:
+            by_position.setdefault(d.position_id, []).append(d)
+
+    out_entries = (mt5.DEAL_ENTRY_OUT, getattr(mt5, "DEAL_ENTRY_OUT_BY", 3))
+    trades = []
+    for position_id, deal_list in by_position.items():
+        entry_deal = next((d for d in deal_list if d.entry == mt5.DEAL_ENTRY_IN), None)
+        exits = sorted((d for d in deal_list if d.entry in out_entries), key=lambda d: d.time)
+        if entry_deal is None or not exits:
+            continue  # still open, or the entry fell outside the queried range
+        closed_volume = sum(d.volume for d in exits)
+        if closed_volume + 1e-9 < entry_deal.volume:
+            continue  # partly closed and still open
+        last = exits[-1]
+        exit_time_utc = datetime.fromtimestamp(last.time, tz=timezone.utc) - offset
+        trades.append({
+            "position_id": position_id,
+            "ticket": position_id,
+            "direction": "BUY" if entry_deal.type == mt5.ORDER_TYPE_BUY else "SELL",
+            "volume": entry_deal.volume,
+            "entry_time": (datetime.fromtimestamp(entry_deal.time, tz=timezone.utc) - offset).astimezone(COLOMBO),
+            "exit_time": exit_time_utc.astimezone(COLOMBO),
+            "exit_time_utc": exit_time_utc,
+            "entry_price": entry_deal.price,
+            "exit_price": sum(d.price * d.volume for d in exits) / closed_volume,
+            "profit": entry_deal.commission + sum(d.profit + d.swap + d.commission for d in exits),
+            "exit_reason": classify_exit_reason(last),
+            "exit_deals": len(exits),
+        })
+    trades.sort(key=lambda t: t["entry_time"])
+    return trades
+
+
 def get_closed_trades(symbol: str, magic: int, target_date: date_cls, offset: timedelta) -> list[dict]:
     """Pairs entry/exit deals (by position_id) for THIS bot's trades
     (filtered by symbol + magic number) whose EXIT fell on target_date.
@@ -178,38 +232,11 @@ def get_closed_trades(symbol: str, magic: int, target_date: date_cls, offset: ti
     if not deals:
         return []
 
-    relevant = [d for d in deals if d.symbol == symbol and d.magic == magic]
-
-    by_position: dict[int, list] = {}
-    for d in relevant:
-        by_position.setdefault(d.position_id, []).append(d)
-
     trades = []
-    for position_id, deal_list in by_position.items():
-        entry_deal = next((d for d in deal_list if d.entry == mt5.DEAL_ENTRY_IN), None)
-        exit_deal = next((d for d in deal_list if d.entry == mt5.DEAL_ENTRY_OUT), None)
-        if entry_deal is None or exit_deal is None:
-            continue  # still open, or entry fell outside our lookback window
-
-        exit_time_utc = datetime.fromtimestamp(exit_deal.time, tz=timezone.utc) - offset
-        if not (day_start_utc <= exit_time_utc < day_end_utc):
+    for t in _our_closed_positions(deals, symbol, magic, offset):
+        if not (day_start_utc <= t["exit_time_utc"] < day_end_utc):
             continue  # closed on a different day
-
-        direction = "BUY" if entry_deal.type == mt5.ORDER_TYPE_BUY else "SELL"
-
-        trades.append({
-            "position_id": position_id,
-            "direction": direction,
-            "volume": exit_deal.volume,
-            "entry_time": (datetime.fromtimestamp(entry_deal.time, tz=timezone.utc) - offset).astimezone(COLOMBO),
-            "exit_time": exit_time_utc.astimezone(COLOMBO),
-            "entry_price": entry_deal.price,
-            "exit_price": exit_deal.price,
-            "profit": trade_profit(exit_deal, entry_deal),
-            "exit_reason": classify_exit_reason(exit_deal),
-        })
-
-    trades.sort(key=lambda t: t["entry_time"])
+        trades.append(t)
     return trades
 
 
@@ -240,36 +267,7 @@ def get_closed_trades_range(
     if not deals:
         return []
 
-    relevant = [d for d in deals if d.symbol == symbol and d.magic == magic]
-
-    by_position: dict[int, list] = {}
-    for d in relevant:
-        by_position.setdefault(d.position_id, []).append(d)
-
-    trades = []
-    for position_id, deal_list in by_position.items():
-        entry_deal = next((d for d in deal_list if d.entry == mt5.DEAL_ENTRY_IN), None)
-        exit_deal = next((d for d in deal_list if d.entry == mt5.DEAL_ENTRY_OUT), None)
-        if entry_deal is None or exit_deal is None:
-            continue  # still open, or entry/exit fell outside the queried range
-
-        direction = "BUY" if entry_deal.type == mt5.ORDER_TYPE_BUY else "SELL"
-
-        trades.append({
-            "position_id": position_id,
-            "ticket": position_id,
-            "direction": direction,
-            "volume": exit_deal.volume,
-            "entry_time": (datetime.fromtimestamp(entry_deal.time, tz=timezone.utc) - offset).astimezone(COLOMBO),
-            "exit_time": (datetime.fromtimestamp(exit_deal.time, tz=timezone.utc) - offset).astimezone(COLOMBO),
-            "entry_price": entry_deal.price,
-            "exit_price": exit_deal.price,
-            "profit": trade_profit(exit_deal, entry_deal),
-            "exit_reason": classify_exit_reason(exit_deal),
-        })
-
-    trades.sort(key=lambda t: t["entry_time"])
-    return trades
+    return _our_closed_positions(deals, symbol, magic, offset)
 
 
 def get_balance_at(target_utc_moment: datetime, current_balance: float) -> float:

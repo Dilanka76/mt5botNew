@@ -57,6 +57,11 @@ from bot.timeframes import minutes_for
 COLOMBO = ZoneInfo("Asia/Colombo")
 OZ_PER_LOT = 100.0
 TP_MATCH = 0.30          # $ -- a TP fill this close to the bot's target is the bot's
+# A take-profit is sent as a market order when touched, so in a fast move it
+# can fill PAST the target. The first run (2026-09-22) called five fills
+# $0.33-$0.61 past target "TP MOVED" -- that is slippage, not a hand. A move
+# by hand is deliberate and lands well away from the bot's level.
+SLIPPAGE = 1.00
 REACHED_BY = 0.25        # $ -- beyond the target by this much, clear of spread noise
 MAX_REPLAY = timedelta(hours=48)
 
@@ -78,11 +83,18 @@ def money(v: float) -> str:
 
 
 def read_entries(account: str) -> list:
-    path = PROJECT_ROOT / "logs" / account / "decisions.jsonl"
+    """Every trade_entered line, INCLUDING the rotated files. decisions.jsonl
+    rolls over at 5 MB into decisions.jsonl.1 ... .5, so reading only the
+    current file lost the older entries (15 of 59 live2_m3 trades showed
+    'no entry record' on the first run)."""
+    base = PROJECT_ROOT / "logs" / account / "decisions.jsonl"
+    files = [base.with_name(f"decisions.jsonl.{i}") for i in range(5, 0, -1)] + [base]
+    lines: list[str] = []
+    for f in files:
+        if f.is_file():
+            lines.extend(f.read_text(errors="ignore").splitlines())
     out = []
-    if not path.is_file():
-        return out
-    for line in path.read_text(errors="ignore").splitlines():
+    for line in lines:
         try:
             e = json.loads(line)
         except json.JSONDecodeError:
@@ -100,12 +112,15 @@ def read_entries(account: str) -> list:
 
 
 def match(entries: list, direction: str, entry_price: float, when: datetime):
-    """The logged entry for this trade: same side, same price, same moment."""
+    """The logged entry for this trade: same side, same moment, about the
+    same price. The log records the price the bot ASKED for (the tick at
+    request), not the fill, so slippage moves them apart -- a 5-cent match
+    lost every slipped entry on the first run."""
     best, best_d = None, 120.0
     for e in entries:
         if e["direction"] != direction or e["entry"] is None:
             continue
-        if abs(float(e["entry"]) - entry_price) > 0.05:
+        if abs(float(e["entry"]) - entry_price) > 1.50:
             continue
         d = abs((e["ts"] - when).total_seconds())
         if d <= best_d:
@@ -199,7 +214,8 @@ def main() -> None:
                        ((sign > 0 and float(firm["high"].max()) >= tp + REACHED_BY) or
                         (sign < 0 and float(firm["low"].min()) <= tp - REACHED_BY)))
 
-            if how == "tp" and abs(exit_px - tp) <= TP_MATCH:
+            past = sign * (exit_px - tp)          # + = filled beyond the target
+            if how == "tp" and (abs(exit_px - tp) <= TP_MATCH or 0 <= past <= SLIPPAGE):
                 kind = "UNTOUCHED"
             elif how == "hand":
                 kind = "CLOSED BY HAND"
