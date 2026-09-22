@@ -113,6 +113,9 @@ KNOWN_REFUSALS = {
     "10027": "ALGO TRADING IS OFF in this account's MT5 terminal -- every order is refused. "
              "Stop the bots, switch Algo Trading on (green), THEN start them: a restart "
              "clears the failed cross, otherwise it fires late the moment trading resumes.",
+    "10026": "the BROKER'S SERVER has switched off algo trading on this account -- the "
+             "terminal button cannot fix it. Check the account in its MT5 terminal (a demo "
+             "account may have expired) or ask the broker.",
     "10019": "the broker refused an order for lack of money / margin",
     "10018": "the broker refused an order because the market is closed",
     "10031": "no connection to the broker's trade server",
