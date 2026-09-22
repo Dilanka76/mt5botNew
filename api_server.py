@@ -116,7 +116,12 @@ from fastapi.staticfiles import StaticFiles
 
 from bot.config import AppConfig, discover_configured_accounts, load_config, validate_account_name
 from bot.kill_switch import KillSwitch
-from bot.process_utils import find_account_process, launch_python_script
+from bot.process_utils import (
+    find_account_process,
+    launch_python_script,
+    run_scheduled_task,
+    scheduled_task_state,
+)
 from bot.status_writer import STATUS_STALE_THRESHOLD_SECONDS, read_status, status_file_path
 from bot.trade_ledger import trade_ledger_path
 from bot.trade_stats import COLOMBO, compute_daily_breakdown, compute_hourly_breakdown, compute_session_breakdown, read_trade_ledger
@@ -376,28 +381,73 @@ def content_research_log():
     return {"available": True, **data}
 
 
+def _task_name(account: str) -> str:
+    return f"MT5-Bot-{account}"
+
+
+def _launch_plan(account: str) -> tuple[str, str | None]:
+    """How this account should be started: ("task", name), ("gateway", None),
+    or ("refuse", reason).
+
+    A bot launched by the gateway itself is the gateway's child and DIES
+    WITH IT -- on 2026-09-22 restarting a stale gateway killed demo2_m3/m5.
+    Through its own scheduled task the bot belongs to Windows, so a gateway
+    restart, hang or crash can never take a live bot down mid-trade.
+
+    A DISABLED task means the account was switched off on purpose (every
+    retired M1 leg is disabled this way), so the start is refused rather
+    than routed around -- the app used to launch straight past Task
+    Scheduler, which is how "stopping a bot is not retiring it" happened.
+    No task at all falls back to the old direct launch.
+    """
+    task = _task_name(account)
+    state = scheduled_task_state(task)
+    if state is None:
+        return "gateway", None
+    if state.lower() == "disabled":
+        return "refuse", (f"its scheduled task {task} is DISABLED -- the account was switched "
+                          f"off on purpose. Enable the task first if it should run again.")
+    return "task", task
+
+
+def _launch(account: str, plan: tuple[str, str | None]) -> dict:
+    how, task = plan
+    if how == "task":
+        if run_scheduled_task(task):
+            return {"launched_via": "task_scheduler", "task": task, "launched_pid": None}
+        logger.warning("Task %s would not start; launching %s directly instead.", task, account)
+    pid = launch_python_script(MAIN_SCRIPT, PROJECT_ROOT, extra_args=["--account", account])
+    return {"launched_via": "gateway", "task": None, "launched_pid": pid}
+
+
 @router.post("/{account}/start")
 def start(config: AppConfig = Depends(get_account_config)):
     account = config.account
     kill_switch = app.state.kill_switches[account]
 
+    proc = find_account_process(MAIN_SCRIPT_MATCH, account)
+    plan = _launch_plan(account) if proc is None else ("running", None)
+    if plan[0] == "refuse":
+        # Decided BEFORE the kill switch is touched: a refused start must
+        # leave an account that was switched off on purpose exactly as it was.
+        raise HTTPException(status_code=409, detail=f"Not started: {plan[1]}")
+
     was_active = kill_switch.is_active()
     if was_active:
         kill_switch.deactivate()
 
-    proc = find_account_process(MAIN_SCRIPT_MATCH, account)
-    launched_pid = None
+    launch = {"launched_via": None, "task": None, "launched_pid": None}
     if proc is not None:
         logger.info("main.py --account %s already running (pid=%s), skipping launch.", account, proc["pid"])
     else:
-        launched_pid = launch_python_script(MAIN_SCRIPT, PROJECT_ROOT, extra_args=["--account", account])
+        launch = _launch(account, plan)
 
     return {
         "ok": True,
         "account": account,
         "kill_switch_was_active": was_active,
         "main_process_was_already_running": proc is not None,
-        "launched_pid": launched_pid,
+        **launch,
     }
 
 
@@ -493,7 +543,7 @@ def start_all(scope: str = "demo"):
             # a master switch must not be able to erase that.
             results.append({
                 "account": account,
-                "is_live": True,
+                "is_live": is_live,
                 "skipped": True,
                 "reason": f"out of scope (scope={scope})",
                 "kill_switch_was_active": was_active,
@@ -503,13 +553,20 @@ def start_all(scope: str = "demo"):
             })
             continue
 
+        proc = find_account_process(MAIN_SCRIPT_MATCH, account)
+        plan = _launch_plan(account) if proc is None else ("running", None)
+        if plan[0] == "refuse":
+            results.append({"account": account, "is_live": is_live, "skipped": True,
+                            "reason": plan[1], "kill_switch_was_active": was_active,
+                            "main_process_was_already_running": False, "launched_pid": None})
+            continue
+
         if was_active:
             kill_switch.deactivate()
 
-        proc = find_account_process(MAIN_SCRIPT_MATCH, account)
-        launched_pid = None
+        launch = {"launched_via": None, "task": None, "launched_pid": None}
         if proc is None:
-            launched_pid = launch_python_script(MAIN_SCRIPT, PROJECT_ROOT, extra_args=["--account", account])
+            launch = _launch(account, plan)
 
         results.append({
             "account": account,
@@ -517,7 +574,7 @@ def start_all(scope: str = "demo"):
             "skipped": False,
             "kill_switch_was_active": was_active,
             "main_process_was_already_running": proc is not None,
-            "launched_pid": launched_pid,
+            **launch,
         })
     return {"ok": True, "scope": scope, "accounts": results}
 

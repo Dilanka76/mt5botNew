@@ -16,6 +16,7 @@ detection matters now.
 """
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import os
@@ -108,3 +109,41 @@ def launch_python_script(script_path: Path, cwd: Path, extra_args: list[str] | N
     except Exception:
         logger.exception("Failed to launch %s", script_path.name)
         return None
+
+
+def scheduled_task_state(task_name: str) -> str | None:
+    """The Windows Task Scheduler state of `task_name` -- "Ready", "Running",
+    "Disabled", ... -- or None when there is no such task (or not Windows).
+
+    Added 2026-09-22. Bots launched by the gateway were CHILDREN of the
+    gateway, and died with it: restarting the gateway that morning killed
+    demo2_m3/m5 mid-session. A bot launched through its own scheduled task
+    belongs to Windows instead, and nothing the gateway does can touch it.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", task_name, "/FO", "CSV", "/NH"],
+                           capture_output=True, text=True, timeout=15)
+    except Exception:
+        logger.exception("schtasks /Query failed for %s", task_name)
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    rows = list(csv.reader(r.stdout.strip().splitlines()))
+    return rows[-1][-1].strip() if rows and rows[-1] else None
+
+
+def run_scheduled_task(task_name: str) -> bool:
+    """Starts `task_name` now. True when Task Scheduler accepted it."""
+    if os.name != "nt":
+        return False
+    try:
+        r = subprocess.run(["schtasks", "/Run", "/TN", task_name],
+                           capture_output=True, text=True, timeout=15)
+    except Exception:
+        logger.exception("schtasks /Run failed for %s", task_name)
+        return False
+    if r.returncode != 0:
+        logger.error("schtasks /Run %s refused: %s", task_name, (r.stderr or r.stdout).strip())
+    return r.returncode == 0

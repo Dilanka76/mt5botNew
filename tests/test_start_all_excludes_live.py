@@ -67,7 +67,7 @@ def main() -> None:
         gate = gate[:gate.index("continue")]
         check(f"{name} does nothing to an out-of-scope account",
               "deactivate" not in gate and "activate(" not in gate
-              and "launch_python_script" not in gate)
+              and "launch_python_script" not in gate and "_launch(" not in gate)
 
     print("\n_in_scope itself")
     check("scope 'live' selects only live", 'if scope == "live":\n        return is_live' in in_scope)
@@ -77,7 +77,9 @@ def main() -> None:
     after = start_all[start_all.index("continue"):]
     check("an in-scope account has its kill switch cleared",
           "kill_switch.deactivate()" in after)
-    check("an in-scope account is still launched", "launch_python_script" in after)
+    # 2026-09-22: launched through its scheduled task via _launch(), not as
+    # the gateway's own child -- see tests/test_start_via_task_scheduler.py
+    check("an in-scope account is still launched", "_launch(account, plan)" in after)
     check("it reports what it skipped", '"skipped": True' in start_all)
     check("stop-all still activates kill switches", "kill_switch.activate(" in stop_all)
 
