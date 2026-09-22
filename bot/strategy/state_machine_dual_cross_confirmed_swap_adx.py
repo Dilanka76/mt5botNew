@@ -1034,12 +1034,18 @@ class DualCrossConfirmedSwapAdxEngine:
             )
             self.pending = None
             return None
+        # ONE attempt per setup: cleared BEFORE the order, not after. It
+        # used to be cleared only once _enter() returned, so a refused order
+        # (2026-09-22, demo2: Algo Trading off, retcode 10027) left the setup
+        # in place and on_tick() retried it on EVERY tick -- and the moment
+        # trading resumed it opened on a setup hours old, the same late
+        # entry as the stale cross. A cleared setup cannot fire late.
+        self.pending = None
         opened = self._enter(
             pending.direction,
             reason=f"EMA5 touch at {tick.bid:.2f} for pending {pending.direction.value} setup ({pending.reason})",
             cross_candle_time_override=pending.cross_candle_time,
         )
-        self.pending = None
         return opened
 
     def on_tick(self, tick) -> list[OpenedTrade | ClosedTrade]:

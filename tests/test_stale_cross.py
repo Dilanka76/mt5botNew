@@ -94,6 +94,27 @@ def main() -> None:
         check(f"{name}: an open position still closes before the gate (exits never blocked)",
               src.index('category="swapped') < src.index("elif self._cross_is_stale("))
 
+    print("\nthe EMA5-touch setup gets ONE attempt")
+    for name, (mod, path) in ENGINES.items():
+        mod.log_decision = lambda *a, **k: None
+        mod.is_within_session = lambda sessions: True
+        e = engine(mod, None)
+        e.position = None
+        e.current_ema5 = 4350.0
+        e.config.sessions = {"dual_cross_confirmed_swap": [], "dual_cross_confirmed_swap_adx": []}
+        e.pending = types.SimpleNamespace(direction=Direction.BUY, reason="gap 8.1",
+                                          cross_candle_time=t0)
+        def refuse(*a, **k):
+            raise RuntimeError("order_send (open) failed: retcode=10027")
+        e._enter = refuse
+        raised = False
+        try:
+            e._check_ema5_touch(types.SimpleNamespace(bid=4349.5))
+        except RuntimeError:
+            raised = True
+        check(f"{name}: a refused order is still reported (the error surfaces)", raised)
+        check(f"{name}: ...and the setup is GONE, so it cannot fire late", e.pending is None)
+
     print()
     if failures:
         print(f"{len(failures)} FAILED")
