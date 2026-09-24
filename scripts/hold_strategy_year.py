@@ -72,6 +72,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--htf-target", type=float, default=8.0, help="$/oz running with it")
     p.add_argument("--backstop", type=float, default=30.0, help="$/oz; 0 = none")
     p.add_argument("--max-hold-hours", type=float, default=48.0)
+    p.add_argument("--exit-mode", default="hold",
+                   choices=("hold", "swap", "trend-hold", "range-hold"),
+                   help="hold = ignore the opposite cross (the user's idea); "
+                        "swap = the live rule, close and reverse on it; "
+                        "trend-hold = hold only when the trade runs WITH the M15 trend, "
+                        "otherwise take the small loss on the cross; "
+                        "range-hold = hold only when the entry is inside a range")
     p.add_argument("--offset-hours", type=float, default=None)
     return p.parse_args()
 
@@ -86,10 +93,15 @@ def mean(xs: list) -> float:
     return statistics.mean(xs) if xs else float("nan")
 
 
-def simulate(df, target, htf_target, backstop, max_hold):
+def simulate(df, target, htf_target, backstop, max_hold, exit_mode="hold"):
     """One position at a time. A cross confirms at a candle's CLOSE and is
     entered at the NEXT candle's open, so no price here is one the rule
-    could not have seen. While a trade is open every cross is ignored."""
+    could not have seen.
+
+    `exit_mode` decides, AT ENTRY, whether this trade ignores the opposite
+    cross ("hold") or closes on it ("swap"). The two hybrids choose per
+    trade from something known before the entry: the M15 trend, or whether
+    the entry sits inside a range. Nothing here reads a later candle."""
     o = df["open"].tolist()
     hi = df["high"].tolist()
     lo = df["low"].tolist()
@@ -98,6 +110,8 @@ def simulate(df, target, htf_target, backstop, max_hold):
     e21 = df["ema21"].tolist()
     trend = df["htf_trend"].tolist()
     times = list(df.index)
+    boxed = (df["range_state"].tolist() if "range_state" in getattr(df, "columns", [])
+             else [float("nan")] * len(times))
 
     trades: list = []
     position = None
@@ -111,20 +125,27 @@ def simulate(df, target, htf_target, backstop, max_hold):
             sign, stop, tp = position["sign"], position["stop"], position["tp"]
             hit_stop = stop is not None and ((lo[i] <= stop) if sign > 0 else (hi[i] >= stop))
             hit_tp = (hi[i] >= tp) if sign > 0 else (lo[i] <= tp)
+            # The live exit: this candle CLOSED with the EMAs against us.
+            against = (e13[i] < e21[i]) if sign > 0 else (e13[i] > e21[i])
             out = why = None
             if hit_stop:                       # the harsh assumption, on purpose
                 out, why = stop, "backstop"
             elif hit_tp:
                 out, why = tp, "target"
+            elif against and not position["hold"]:
+                out, why = cl[i], "opposite cross"
             elif times[i] - position["opened"] >= max_hold:
                 out, why = cl[i], "48h"
-            if out is not None:
-                gross = (out - position["entry"]) * sign
-                trades.append({"opened": position["opened"], "closed": times[i],
-                               "oz": gross - COSTS_PER_OZ, "reason": why,
-                               "direction": "BUY" if sign > 0 else "SELL"})
-                position = None
-            continue
+            if out is None:
+                continue
+            gross = (out - position["entry"]) * sign
+            trades.append({"opened": position["opened"], "closed": times[i],
+                           "oz": gross - COSTS_PER_OZ, "reason": why,
+                           "direction": "BUY" if sign > 0 else "SELL"})
+            position = None
+            # No `continue`: a cross exit happens ON the crossing candle, so
+            # the entry check below can reverse into it immediately -- which
+            # is exactly what the live engine does.
 
         # a CONFIRMED cross: the lines crossed and this candle closed on the new side
         up = e13[i] > e21[i] and e13[i - 1] <= e21[i - 1]
@@ -135,7 +156,10 @@ def simulate(df, target, htf_target, backstop, max_hold):
         entry = o[i + 1]
         agrees = trend[i] == trend[i] and ((trend[i] > 0) == (sign > 0))
         size = htf_target if agrees else target
-        position = {"sign": sign, "entry": entry, "opened": times[i + 1],
+        in_range = boxed[i] == 1.0
+        hold = {"hold": True, "swap": False,
+                "trend-hold": agrees, "range-hold": in_range}[exit_mode]
+        position = {"sign": sign, "entry": entry, "opened": times[i + 1], "hold": hold,
                     "tp": entry + sign * size,
                     "stop": (entry - sign * backstop) if backstop else None}
     return trades
@@ -175,12 +199,17 @@ def main() -> None:
                                     method="ffill").to_numpy()
     df = df[df.index >= since]
 
-    trades = simulate(df, args.target, args.htf_target, args.backstop, max_hold)
+    if args.exit_mode == "range-hold":
+        from bot.indicators.range_filter import compute_range
+        df = compute_range(df, m15, 15, bar_minutes, 16, 2, 0.35)
+
+    trades = simulate(df, args.target, args.htf_target, args.backstop, max_hold, args.exit_mode)
 
     print("=" * 92)
     print("HOLD THROUGH THE CROSS -- one trade at a time, a cross while in a trade is IGNORED")
     print(f"{config.symbol} {args.timeframe}   {since:%Y-%m-%d} to {until:%Y-%m-%d}   "
           f"{len(df):,} candles")
+    print(f"exit mode: {args.exit_mode}")
     print(f"target ${args.target:g} / ${args.htf_target:g} with the M15 trend   "
           f"backstop {('$' + format(args.backstop, 'g')) if args.backstop else 'NONE'}   "
           f"max hold {args.max_hold_hours:g}h   costs {COSTS_PER_OZ:.2f} $/oz")
@@ -205,7 +234,7 @@ def main() -> None:
     if wins and losses:
         print(f"  average win / loss  {mean([t['oz'] for t in wins]):+.2f} / {mean(losses):+.2f}"
               f"   ratio {abs(mean([t['oz'] for t in wins]) / mean(losses)):.2f}")
-    for reason in ("target", "backstop", "48h"):
+    for reason in ("target", "backstop", "opposite cross", "48h"):
         sel = [t for t in trades if t["reason"] == reason]
         if sel:
             print(f"  closed by {reason:<9} {len(sel):>4} ({100 * len(sel) / len(trades):>4.1f}%)"
