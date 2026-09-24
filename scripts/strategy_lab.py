@@ -89,6 +89,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--since", default="2025-09-01 00:00:00", help="true UTC")
     p.add_argument("--until", default=None)
     p.add_argument("--max-hold-hours", type=float, default=72.0)
+    p.add_argument("--orb-session-start", default="07:00",
+                   help="UTC start of the hour that sets the range. 07:00 (London) is the "
+                        "PRE-REGISTERED one; 12:00 (New York) exists as an independent check "
+                        "that the edge is a session effect and not one lucky hour. Changing "
+                        "this until a number improves is tuning, not testing.")
     p.add_argument("--offset-hours", type=float, default=None)
     return p.parse_args()
 
@@ -133,7 +138,7 @@ def add_indicators(df):
     return df
 
 
-def signals_orb(df):
+def signals_orb(df, session_start=ORB_SESSION_START):
     """The first hour of the London session sets the day's range; the
     first close outside it trades that way, once per day per side."""
     import pandas as pd
@@ -141,7 +146,7 @@ def signals_orb(df):
     out = [None] * len(df)
     idx = list(df.index)
     hi, lo, cl = df["high"].tolist(), df["low"].tolist(), df["close"].tolist()
-    end = (datetime.combine(datetime(2000, 1, 1), ORB_SESSION_START)
+    end = (datetime.combine(datetime(2000, 1, 1), session_start)
            + timedelta(minutes=ORB_RANGE_MINUTES)).time()
 
     day_range: dict = {}
@@ -149,7 +154,7 @@ def signals_orb(df):
     for i, ts in enumerate(idx):
         day = ts.date()
         t = ts.time()
-        if ORB_SESSION_START <= t < end:
+        if session_start <= t < end:
             h, l = day_range.get(day, (float("-inf"), float("inf")))
             day_range[day] = (max(h, hi[i]), min(l, lo[i]))
             continue
@@ -362,14 +367,19 @@ def main() -> None:
 
     df = add_indicators(df)
     df = df[df.index >= since]
-    signals = SIGNALS[args.strategy](df)
+    if args.strategy == "orb":
+        hh, mm = (int(x) for x in args.orb_session_start.split(":"))
+        signals = signals_orb(df, time(hh, mm))
+    else:
+        signals = SIGNALS[args.strategy](df)
     trades = simulate(df, signals, args.strategy, timedelta(hours=args.max_hold_hours))
 
     report(trades, f"STRATEGY LAB -- {args.strategy.upper()}", [
         f"{config.symbol} {args.timeframe}   {since:%Y-%m-%d} to {until:%Y-%m-%d}   "
         f"{len(df):,} candles",
         f"costs {COSTS_PER_OZ:.2f} $/oz a trade   a candle touching both stop and target "
-        f"counts as the STOP",
+        f"counts as the STOP"
+        + (f"   range hour {args.orb_session_start} UTC" if args.strategy == "orb" else ""),
     ])
     print("\nWhat this canNOT tell you: candles hide the order of moves inside one candle,")
     print("the spread is assumed constant, and a real fill is not guaranteed at the modelled")
