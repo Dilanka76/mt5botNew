@@ -43,6 +43,7 @@ import pandas as pd                                    # noqa: E402
 from bot.backtest.runner import run_backtest           # noqa: E402
 from bot.config import load_config                     # noqa: E402
 from bot.indicators.ema import compute_emas            # noqa: E402
+from bot.logging_setup.logger import setup_logging     # noqa: E402
 
 failures: list[str] = []
 CANDLES = 1200
@@ -78,6 +79,11 @@ config = load_config("demo2_m3")
 # test for a reason that has nothing to do with the warm-up guard.
 config = replace(config, htf_trend_timeframe=None, htf_trend_take_profit_usd=None,
                  range_filter=None, consolidation_filter=None)
+# Its OWN log directory, never the real account's: the engine writes a
+# trade_entered line per entry, and every research script in this project
+# reads logs/demo2_m3/decisions.jsonl. A test must not put fake trades in
+# there. WARNING level keeps the replay quiet on screen.
+setup_logging(replace(config.logging, level="WARNING"), "test-backtest-warmup")
 df = compute_emas(zigzag(), config.ema_periods)
 crosses = int(((df["ema13"] > df["ema21"]) != (df["ema13"] > df["ema21"]).shift(1)).iloc[1:].sum())
 check(f"the test data really does cross ({crosses} times)", crosses >= 10)
