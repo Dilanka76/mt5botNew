@@ -1,0 +1,81 @@
+# EXPERIMENT ONLY — never run a bot on this file.
+#
+# The question (2026-09-24): the live M3 rule wins 51.5% of 3,126 trades a
+# year and still loses, because the average loss ($16.87) is bigger than
+# the average win ($15.63) and commission takes $482 more. It needs a
+# 52.4% win rate to break even and delivers 51.5%.
+#
+# Commission is more than half that deficit, and it is charged per trade.
+# So this is the same rule -- EMA13/21 confirmed cross, swap on the
+# opposite cross, no software stop, a broker backstop -- moved to H1,
+# where it should trade roughly a twentieth as often for roughly four
+# times the distance. Nothing else changes.
+#
+# Targets are scaled by volatility, not taste: gold's range grows with
+# the square root of time, so M3 -> H1 is 20x the time and about 4.5x the
+# range. $6/$8 becomes $30/$38, and the $30 backstop becomes $140.
+#
+# Run it against a year (H1 history is complete):
+#   python scripts/backtest.py --account demo2_m3 \
+#       --settings-path config/settings.experiment_h1.yaml \
+#       --from 2025-09-01 --to 2026-09-01
+#   python scripts/backtest_equity.py \
+#       reports/backtest/demo2_m3/2025-09-01_2026-09-01_settings.experiment_h1.trades.jsonl \
+#       --start-balance 300 --backstop-usd 140
+#
+# It borrows demo2_m3's .env for the MT5 connection (read-only history
+# fetch) and its magic number is deliberately one nothing else uses.
+
+mt5:
+  timeout_ms: 10000
+
+symbol: XAUUSDp
+timeframe: H1
+candles_to_fetch: 500
+tick_poll_interval_seconds: 1
+
+ema_periods:
+  fast: 5
+  mid: 13
+  slow: 21
+
+# Large on purpose: the gap/EMA5-pullback wait was removed from the live
+# strategy, so every confirmed cross enters immediately. A small number
+# here would quietly test a different rule.
+gap_threshold_usd: 999.0
+
+take_profit_usd: 30.0          # against the higher-timeframe trend
+htf_trend_timeframe: H4        # H1's parent
+htf_trend_take_profit_usd: 38.0  # running with it
+stop_loss_usd: null            # the opposite cross IS the stop
+broker_backstop_usd: 140.0
+breakeven_trigger_usd: null
+
+strategy_variant: dual_cross_confirmed_swap
+
+sessions:
+  dual_cross_confirmed_swap:
+    - {start: "04:00", end: "01:29"}
+
+position_sizing:
+  - {max_balance: 50, lots: 0.01}
+  - {max_balance: 100, lots: 0.02}
+  - {max_balance: 200, lots: 0.03}
+  - {max_balance: 300, lots: 0.04}
+  - {max_balance: 1000, lots: 0.06}
+  - {max_balance: null, lots: 0.12}
+
+execution:
+  mode: shadow                 # run_backtest forces this anyway; belt and braces
+  require_demo_account: true
+  magic_number: 990060         # used by nothing
+  order_deviation_points: 20
+  order_comment: experiment-h1
+  reject_manual_trades: false
+
+logging:
+  log_dir: logs
+  level: WARNING
+
+kill_switch:
+  file_path: KILL_SWITCH
