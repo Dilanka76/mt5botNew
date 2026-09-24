@@ -20,6 +20,11 @@ nothing is tuned to this data:
              Target: the middle band. Stop 2 ATR.
   rsi        RSI(14) below 30 buys, above 70 sells. Exit when RSI crosses
              back through 50. Stop 2 ATR.
+  nr7        VOLATILITY CONTRACTION. The narrowest candle of the last 7
+             sets a high and a low; the first break within 3 candles
+             trades that way. Stop: the other side of that candle.
+             Target: twice its height. A different mechanism again --
+             quiet before a move, rather than a trend or a level.
 
 HOW EVERY ONE IS SCORED, identically:
   - sequential, ONE position at a time, exactly as a real account works
@@ -77,13 +82,14 @@ STOP_ATRS = 2.0
 ORB_SESSION_START = time(7, 0)      # London, UTC
 ORB_RANGE_MINUTES = 60
 ORB_TARGET_MULTIPLE = 2.0
+NR7_LOOKBACK, NR7_VALID_CANDLES, NR7_TARGET_MULTIPLE = 7, 3, 2.0
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--strategy", required=True,
-                   choices=("orb", "donchian", "bollinger", "rsi"))
+                   choices=("orb", "donchian", "bollinger", "rsi", "nr7"))
     p.add_argument("--account", default="demo2_m3", help="only for the symbol and connection")
     p.add_argument("--timeframe", default="M15")
     p.add_argument("--since", default="2025-09-01 00:00:00", help="true UTC")
@@ -218,8 +224,36 @@ def signals_rsi(df):
     return out
 
 
+def signals_nr7(df):
+    """The narrowest candle of the last 7 is a market holding its breath.
+    The first break of that candle, within the next 3, is the trade."""
+    out = [None] * len(df)
+    hi, lo = df["high"].tolist(), df["low"].tolist()
+    setup = None                      # (high, low, candles_left)
+    for i in range(len(df)):
+        if setup is not None:
+            top, bottom, left = setup
+            height = top - bottom
+            if hi[i] > top:
+                out[i] = (1, hi[i] - bottom, NR7_TARGET_MULTIPLE * height)
+                setup = None
+            elif lo[i] < bottom:
+                out[i] = (-1, top - lo[i], NR7_TARGET_MULTIPLE * height)
+                setup = None
+            elif left <= 1:
+                setup = None
+            else:
+                setup = (top, bottom, left - 1)
+        if i + 1 < NR7_LOOKBACK:
+            continue
+        ranges = [hi[j] - lo[j] for j in range(i + 1 - NR7_LOOKBACK, i + 1)]
+        if ranges[-1] <= min(ranges) and ranges[-1] > 0 and setup is None:
+            setup = (hi[i], lo[i], NR7_VALID_CANDLES)
+    return out
+
+
 SIGNALS = {"orb": signals_orb, "donchian": signals_donchian,
-           "bollinger": signals_bollinger, "rsi": signals_rsi}
+           "bollinger": signals_bollinger, "rsi": signals_rsi, "nr7": signals_nr7}
 
 
 def simulate(df, signals, strategy, max_hold):
