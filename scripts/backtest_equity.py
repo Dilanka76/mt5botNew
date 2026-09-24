@@ -40,6 +40,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--start-balance", type=float, default=300.0)
     p.add_argument("--commission-per-lot", type=float, default=6.0,
                    help="charged per lot at entry; the backtest itself charges nothing")
+    p.add_argument("--backstop-usd", type=float, default=None,
+                   help="the broker stop the backtest does NOT simulate, in $/oz "
+                        "(live2/demo2: 30 on M3, 35 on M5). Caps every loss at that "
+                        "distance -- an UPPER BOUND on what the backstop could save.")
     return p.parse_args()
 
 
@@ -60,18 +64,38 @@ def main() -> None:
         if not line.strip():
             continue
         t = json.loads(line)
-        cost = float(t.get("volume", 0.0)) * args.commission_per_lot
+        volume = float(t.get("volume", 0.0))
+        cost = volume * args.commission_per_lot
+        profit = float(t["profit"])
+        # The runner never places the broker backstop the live engine sends
+        # with every order (grep: no "backstop" in bot/backtest/runner.py),
+        # so a replayed loss can run far past it -- the M3 year shows a
+        # -$245 single loss behind a $30/oz stop. Capping is an UPPER BOUND
+        # on the rescue: in reality the stop would have closed the trade
+        # EARLIER, and the bot would then have gone on to take different
+        # trades. That alternative history is not simulated.
+        capped = profit
+        if args.backstop_usd and volume > 0:
+            floor = -args.backstop_usd * volume * 100.0
+            capped = max(profit, floor)
         trades.append({"when": datetime.fromisoformat(t["close_time"]),
-                       "raw": float(t["profit"]),
-                       "net": float(t["profit"]) - cost,
+                       "raw": profit,
+                       "net": profit - cost,
+                       "capped": capped - cost,
                        "cost": cost,
-                       "volume": float(t.get("volume", 0.0))})
+                       "rescued": capped - profit,
+                       "volume": volume})
     if not trades:
         raise SystemExit("no trades in that file")
     trades.sort(key=lambda t: t["when"])
 
-    for label, key in (("as the backtest reports it (no commission)", "raw"),
-                       (f"with commission at ${args.commission_per_lot:g} a lot", "net")):
+    views = [("as the backtest reports it (no commission)", "raw"),
+             (f"with commission at ${args.commission_per_lot:g} a lot", "net")]
+    if args.backstop_usd:
+        views.append((f"with commission AND the ${args.backstop_usd:g}/oz broker backstop "
+                      f"the backtest never placed", "capped"))
+
+    for label, key in views:
         balance = args.start_balance
         peak = balance
         worst, worst_pct, low = 0.0, 0.0, balance
@@ -100,9 +124,14 @@ def main() -> None:
         print(f"  worst fall          -${worst:,.2f} ({worst_pct:.0f}% of the peak)")
         print(f"  longest losing run  {best_streak} trades in a row")
         print(f"  biggest single loss {money(min(t[key] for t in trades))}")
+        print(f"  per trade           {money(sum(t[key] for t in trades) / len(trades))}")
         if key == "raw":
             print(f"  commission it ignores {money(-sum(t['cost'] for t in trades))} "
                   f"over {sum(t['volume'] for t in trades):.2f} lots")
+        if key == "capped":
+            hit = sum(1 for t in trades if t["rescued"] > 0.005)
+            print(f"  the backstop would have caught {hit} trades, saving "
+                  f"{money(sum(t['rescued'] for t in trades))} -- an upper bound")
         print()
 
     months: OrderedDict = OrderedDict()
