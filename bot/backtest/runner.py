@@ -193,6 +193,20 @@ def run_backtest(
     # Deliberately no reconcile_on_startup() — a backtest always starts
     # flat, and that method's get_open_position() would hit real MT5.
 
+    # The live warm-up guard (commit 35dfc72, 2026-09-17) refuses entries
+    # until one real candle period of WALL-CLOCK time has passed since the
+    # engine was built, so a restart cannot fire on a cross that closed
+    # while the bot was down. A backtest replays a year in under two
+    # minutes, which is less than one M3 candle — so that guard silently
+    # refused EVERY entry and a full year of data reported 0 trades
+    # (found 2026-09-24, when the first long backtest since 09-17 came
+    # back empty on both demo2 legs). There is no "while the bot was
+    # down" in a replay: the engine is handed every candle in order, so
+    # the guard has nothing to protect against here. Start it already
+    # warmed up, and leave the live behaviour untouched.
+    if hasattr(engine, "_started_monotonic") and hasattr(engine, "_warmup_seconds"):
+        engine._started_monotonic -= engine._warmup_seconds
+
     sessions = backtest_config.sessions[backtest_config.strategy_variant]
     simulated_now: dict[str, datetime] = {"value": date_from}
 
