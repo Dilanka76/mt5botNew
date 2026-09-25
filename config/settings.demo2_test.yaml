@@ -1,0 +1,78 @@
+# demo2_test — the user's own strategy, run live on DEMO to be watched.
+#
+# 2026-09-25. His rule, in his words: "1m, the EMA 9 and 5 cross, enter the
+# same way, and the TP is $1, only this."
+#
+# The year simulation says it loses: 9,262 trades over four months, 67.1%
+# won, average win $0.82 against an average loss of $2.39, -$2,170 in
+# total, and all four months negative. It needs a 75% win rate to break
+# even and delivers 67%. Even with ZERO commission and spread it still
+# loses $503.
+#
+# It is deployed anyway, on DEMO, because he asked to watch it happen and
+# watching costs nothing. Seeing 77 trades a day and a slow bleed is worth
+# more than being told about it. If the live result matches the
+# simulation, that also proves the simulator honest -- which is worth
+# having for the NEXT idea.
+#
+# NO REAL MONEY. This file is demo-only by three separate locks:
+# mode demo_execute, require_demo_account true, and a magic number
+# nothing else uses.
+#
+# IMPORTANT, BEFORE STARTING IT: demo2_m3 and demo2_m5 must stay STOPPED.
+# They share this MT5 login, and reject_manual_trades closes any position
+# whose magic is not theirs or a listed sibling -- they would close this
+# bot's trades on sight. This config has reject_manual_trades OFF so it
+# never does that to anyone else.
+
+mt5:
+  timeout_ms: 10000
+
+symbol: XAUUSDp
+timeframe: M1
+candles_to_fetch: 500
+tick_poll_interval_seconds: 1
+
+# mid/slow ARE the cross. Setting them to 5 and 9 makes this his EMA5/EMA9
+# rule with no code change -- bot/indicators/ema.py names the columns
+# ema13/ema21 but computes them from these periods.
+ema_periods:
+  fast: 3
+  mid: 5
+  slow: 9
+  reversal_slow: 9
+
+# Large on purpose: every confirmed cross enters immediately, no waiting
+# for a pullback. That is "enter the same way".
+gap_threshold_usd: 999.0
+
+take_profit_usd: 1.0
+stop_loss_usd: null          # "only this" -- no stop; the opposite cross is the exit
+broker_backstop_usd: 30.0    # disaster insurance only, and the config requires one
+breakeven_trigger_usd: null
+
+strategy_variant: dual_cross_confirmed_swap
+
+sessions:
+  dual_cross_confirmed_swap:
+    - {start: "04:00", end: "01:29"}
+
+# Flat 0.01 lots: this is a measurement, not an attempt to grow anything,
+# and a fixed size keeps the result readable.
+position_sizing:
+  - {max_balance: null, lots: 0.01}
+
+execution:
+  mode: demo_execute
+  require_demo_account: true
+  magic_number: 920099
+  order_deviation_points: 20
+  order_comment: demo2-test-ema59
+  reject_manual_trades: false
+
+logging:
+  log_dir: logs
+  level: INFO
+
+kill_switch:
+  file_path: KILL_SWITCH
