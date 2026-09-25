@@ -358,7 +358,19 @@ def report(trades, title, lines):
             print(f"  closed by {reason:<9} {len(sel):>4} ({100 * len(sel) / len(trades):>4.1f}%)"
                   f"  {sum(t['oz'] for t in sel):+9.2f} $/oz")
     held = [(t["closed"] - t["opened"]).total_seconds() / 3600 for t in trades]
-    print(f"  time in a trade     median {statistics.median(held):.1f}h, longest {max(held):.1f}h")
+    print(f"  time in a trade     median {statistics.median(held):.1f}h, "
+          f"mean {mean(held):.1f}h, longest {max(held):.1f}h")
+    # Financing on gold is lopsided -- longs pay, shorts are paid -- so a
+    # total can hide a strategy whose whole edge sits on the expensive side.
+    for side in ("BUY", "SELL"):
+        sel = [t for t in trades if t["direction"] == side]
+        if not sel:
+            continue
+        w = sum(1 for t in sel if t["oz"] > 0)
+        nights = mean([(t["closed"] - t["opened"]).total_seconds() / 86400 for t in sel])
+        print(f"  {side:<4} {len(sel):>4} trades {100 * w / len(sel):>4.0f}% won  "
+              f"{mean([t['oz'] for t in sel]):+7.2f} $/oz each  "
+              f"{sum(t['oz'] for t in sel):+9.2f} total   held {nights:.1f} nights on average")
 
     balance = peak = worst = 0.0
     streak = longest = 0
