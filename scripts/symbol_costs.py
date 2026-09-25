@@ -60,6 +60,12 @@ def main() -> None:
     try:
         info = mt5.symbol_info(config.symbol)
         tick = mt5.symbol_info_tick(config.symbol)
+        account = mt5.account_info()
+        # The broker's OWN margin answer for each size, not my arithmetic.
+        price = tick.ask if tick is not None else 0.0
+        sizes = [0.01, 0.05, 0.10, 0.20, 0.40, 0.58, 1.00]
+        margins = {v: mt5.order_calc_margin(mt5.ORDER_TYPE_BUY, config.symbol, v, price)
+                   for v in sizes} if price else {}
     finally:
         connector.disconnect()
 
@@ -110,6 +116,30 @@ def main() -> None:
         print(f"    python scripts\\strategy_lab.py --strategy donchian --timeframe H4 \\")
         print(f"        --since \"2020-01-01 00:00:00\" --max-hold-hours 2000 \\")
         print(f"        --swap-long {long_oz:.4f} --swap-short {short_oz:.4f}")
+
+    if account is not None:
+        print("\n" + "=" * 84)
+        print("WHAT THIS ACCOUNT CAN ACTUALLY OPEN")
+        print("=" * 84)
+        print(f"  login {account.login}   leverage 1:{account.leverage}")
+        print(f"  balance ${account.balance:,.2f}   equity ${account.equity:,.2f}   "
+              f"free margin ${account.margin_free:,.2f}")
+        if margins:
+            print(f"\n  {'lots':>6} {'margin needed':>15}   affordable on today's free margin?")
+            for v, m in margins.items():
+                if m is None:
+                    print(f"  {v:>6.2f} {'(broker declined to quote)':>15}")
+                    continue
+                ok = "yes" if m <= account.margin_free else "NO"
+                print(f"  {v:>6.2f} {'$' + format(m, ',.2f'):>15}   {ok}")
+            biggest = max((v for v, m in margins.items()
+                           if m is not None and m <= account.margin_free), default=None)
+            print(f"\n  the largest of these this account can open right now: "
+                  f"{biggest if biggest else 'none -- not even 0.01 lots'}")
+        print("\n  THE LADDER IN QUESTION: 0.01 lots per $10 of balance is one ounce of gold")
+        print("  for every $10 -- around 425:1 leverage. Compare that with the line above:")
+        print("  if this account is 1:100, that ladder is refused at EVERY balance, and")
+        print("  topping the account up does not change the ratio.")
 
     print("\n" + "=" * 84)
     print("A caution: a swap rate is not a constant. Brokers change it, and one day a week")
