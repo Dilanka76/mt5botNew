@@ -328,6 +328,19 @@ def simulate(df, signals, strategy, max_hold, swap_long=0.0, swap_short=0.0):
     return trades
 
 
+def buy_and_hold(df, swap_long):
+    """The only benchmark that matters for a long-biased result: buy at the
+    start, hold to the end, pay financing every night and one round trip of
+    costs. If a strategy cannot beat this, its "edge" is just being long."""
+    first_open = float(df["open"].iloc[0])
+    last_close = float(df["close"].iloc[-1])
+    nights = (df.index[-1] - df.index[0]).total_seconds() / 86400.0
+    return {"move": last_close - first_open,
+            "swap": nights * swap_long,
+            "net": (last_close - first_open) + nights * swap_long - COSTS_PER_OZ,
+            "nights": nights, "from": first_open, "to": last_close}
+
+
 def report(trades, title, lines):
     print("=" * 92)
     print(title)
@@ -382,6 +395,8 @@ def report(trades, title, lines):
         longest = max(longest, streak)
     print(f"  worst drawdown      -{worst:.2f} $/oz  ({money(-worst)} at 0.01 lots)")
     print(f"  longest losing run  {longest} trades")
+    in_market = sum((t["closed"] - t["opened"]).total_seconds() for t in trades)
+    print(f"  time in the market  {in_market / 3600:,.0f} hours across {len(trades)} trades")
 
     months: OrderedDict = OrderedDict()
     for t in trades:
@@ -436,6 +451,7 @@ def main() -> None:
     trades = simulate(df, signals, args.strategy, timedelta(hours=args.max_hold_hours),
                       args.swap_long, args.swap_short)
 
+    bh = buy_and_hold(df, args.swap_long)
     report(trades, f"STRATEGY LAB -- {args.strategy.upper()}", [
         f"{config.symbol} {args.timeframe}   {since:%Y-%m-%d} to {until:%Y-%m-%d}   "
         f"{len(df):,} candles",
@@ -448,6 +464,21 @@ def main() -> None:
         f"counts as the STOP"
         + (f"   range hour {args.orb_session_start} UTC" if args.strategy == "orb" else ""),
     ])
+    print("\n" + "=" * 92)
+    print("THE BENCHMARK -- what simply BUYING AND HOLDING would have done, same window")
+    print("=" * 92)
+    print(f"  gold moved          ${bh['from']:,.2f} -> ${bh['to']:,.2f}  "
+          f"= {bh['move']:+,.2f} $/oz")
+    print(f"  financing on that   {bh['swap']:+,.2f} $/oz over {bh['nights']:,.0f} nights")
+    print(f"  buy and hold NET    {bh['net']:+,.2f} $/oz")
+    if trades:
+        edge = sum(t["oz"] for t in trades) - bh["net"]
+        print(f"  the strategy        {sum(t['oz'] for t in trades):+,.2f} $/oz"
+              f"   ->  {edge:+,.2f} against buy-and-hold")
+        print("\n  A long-biased strategy that cannot beat this is not a strategy: it is")
+        print("  expensive exposure to a market that went up. Judge it on THIS line, and on")
+        print("  whether the short side earns anything at all.")
+
     print("\nWhat this canNOT tell you: candles hide the order of moves inside one candle,")
     print("the spread is assumed constant, and a real fill is not guaranteed at the modelled")
     print("price in a fast market.")
