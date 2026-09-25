@@ -100,6 +100,16 @@ def parse_args() -> argparse.Namespace:
                         "PRE-REGISTERED one; 12:00 (New York) exists as an independent check "
                         "that the edge is a session effect and not one lucky hour. Changing "
                         "this until a number improves is tuning, not testing.")
+    p.add_argument("--donchian-lookback", type=int, default=DONCHIAN_LOOKBACK,
+                   help="20 is the Turtle standard and the PRE-REGISTERED value. Other values "
+                        "exist to check the edge is BROAD, not a spike: a real one earns across "
+                        "the neighbourhood. Picking the best of them would be curve-fitting.")
+    p.add_argument("--swap-long", type=float, default=0.0,
+                   help="financing paid per ounce per night HELD LONG, as a negative number "
+                        "(MT5: right-click the symbol -> Specification -> Swap Long). This "
+                        "strategy holds for days and the default of 0 FLATTERS it.")
+    p.add_argument("--swap-short", type=float, default=0.0,
+                   help="the same for shorts; on gold this is often positive (you are paid).")
     p.add_argument("--offset-hours", type=float, default=None)
     return p.parse_args()
 
@@ -114,7 +124,7 @@ def mean(xs: list) -> float:
     return statistics.mean(xs) if xs else float("nan")
 
 
-def add_indicators(df):
+def add_indicators(df, lookback=DONCHIAN_LOOKBACK):
     """Everything a strategy might read, all backward-looking. A rolling
     window in pandas ends at the current candle, and anything that must
     exclude the current candle is shifted explicitly."""
@@ -128,8 +138,8 @@ def add_indicators(df):
 
     # Donchian: the highest high of the PREVIOUS n candles, so a break of
     # it on this candle is a real break and not a comparison with itself.
-    df["dc_high"] = high.rolling(DONCHIAN_LOOKBACK).max().shift(1)
-    df["dc_low"] = low.rolling(DONCHIAN_LOOKBACK).min().shift(1)
+    df["dc_high"] = high.rolling(lookback).max().shift(1)
+    df["dc_low"] = low.rolling(lookback).min().shift(1)
 
     mid = close.rolling(BOLLINGER_PERIOD).mean()
     sd = close.rolling(BOLLINGER_PERIOD).std()
@@ -256,7 +266,7 @@ SIGNALS = {"orb": signals_orb, "donchian": signals_donchian,
            "bollinger": signals_bollinger, "rsi": signals_rsi, "nr7": signals_nr7}
 
 
-def simulate(df, signals, strategy, max_hold):
+def simulate(df, signals, strategy, max_hold, swap_long=0.0, swap_short=0.0):
     """One position at a time. A signal confirms at a candle's CLOSE and is
     entered at the NEXT candle's open, so nothing reads a price the rule
     could not have seen. A candle touching both stop and target is scored
@@ -295,8 +305,13 @@ def simulate(df, signals, strategy, max_hold):
                 out, why = cl[i], "max hold"
             if out is None:
                 continue
+            # Financing is charged per night the position was open. A
+            # multi-day trend trade pays it repeatedly, and leaving it out
+            # would flatter exactly the strategies that hold longest.
+            nights = max(0.0, (times[i] - position["opened"]).total_seconds() / 86400.0)
+            swap = nights * (swap_long if sign > 0 else swap_short)
             trades.append({"opened": position["opened"], "closed": times[i],
-                           "oz": (out - position["entry"]) * sign - COSTS_PER_OZ,
+                           "oz": (out - position["entry"]) * sign - COSTS_PER_OZ + swap,
                            "reason": why, "direction": "BUY" if sign > 0 else "SELL"})
             position = None
 
@@ -399,19 +414,25 @@ def main() -> None:
     finally:
         connector.disconnect()
 
-    df = add_indicators(df)
+    df = add_indicators(df, args.donchian_lookback)
     df = df[df.index >= since]
     if args.strategy == "orb":
         hh, mm = (int(x) for x in args.orb_session_start.split(":"))
         signals = signals_orb(df, time(hh, mm))
     else:
         signals = SIGNALS[args.strategy](df)
-    trades = simulate(df, signals, args.strategy, timedelta(hours=args.max_hold_hours))
+    trades = simulate(df, signals, args.strategy, timedelta(hours=args.max_hold_hours),
+                      args.swap_long, args.swap_short)
 
     report(trades, f"STRATEGY LAB -- {args.strategy.upper()}", [
         f"{config.symbol} {args.timeframe}   {since:%Y-%m-%d} to {until:%Y-%m-%d}   "
         f"{len(df):,} candles",
-        f"costs {COSTS_PER_OZ:.2f} $/oz a trade   a candle touching both stop and target "
+        f"costs {COSTS_PER_OZ:.2f} $/oz a trade"
+        + (f"   swap {args.swap_long:+g}/{args.swap_short:+g} $/oz a night"
+           if (args.swap_long or args.swap_short) else "   NO SWAP CHARGED")
+        + (f"   donchian lookback {args.donchian_lookback}"
+           if args.strategy == "donchian" else "")
+        + f"   a candle touching both stop and target "
         f"counts as the STOP"
         + (f"   range hour {args.orb_session_start} UTC" if args.strategy == "orb" else ""),
     ])
