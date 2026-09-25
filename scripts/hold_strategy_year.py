@@ -79,6 +79,10 @@ def parse_args() -> argparse.Namespace:
                         "trend-hold = hold only when the trade runs WITH the M15 trend, "
                         "otherwise take the small loss on the cross; "
                         "range-hold = hold only when the entry is inside a range")
+    p.add_argument("--fast-ema", type=int, default=13,
+                   help="the faster line of the cross (13 is the live rule)")
+    p.add_argument("--slow-ema", type=int, default=21,
+                   help="the slower line (21 is the live rule)")
     p.add_argument("--offset-hours", type=float, default=None)
     return p.parse_args()
 
@@ -185,7 +189,10 @@ def main() -> None:
     finally:
         connector.disconnect()
 
-    df = compute_emas(df, config.ema_periods)
+    # The pair is a parameter, not the config's, so any EMA cross can be
+    # tested -- the columns keep the names the simulator already reads.
+    df["ema13"] = df["close"].ewm(span=args.fast_ema, adjust=False).mean()
+    df["ema21"] = df["close"].ewm(span=args.slow_ema, adjust=False).mean()
     m15 = compute_emas(m15, config.ema_periods)
     # The M15 verdict is only known once its candle has CLOSED, so stamp it
     # at close time and carry it forward -- the same treatment the range
@@ -208,7 +215,7 @@ def main() -> None:
     print("=" * 92)
     print("HOLD THROUGH THE CROSS -- one trade at a time, a cross while in a trade is IGNORED")
     print(f"{config.symbol} {args.timeframe}   {since:%Y-%m-%d} to {until:%Y-%m-%d}   "
-          f"{len(df):,} candles")
+          f"{len(df):,} candles   EMA{args.fast_ema}/{args.slow_ema} cross")
     print(f"exit mode: {args.exit_mode}")
     print(f"target ${args.target:g} / ${args.htf_target:g} with the M15 trend   "
           f"backstop {('$' + format(args.backstop, 'g')) if args.backstop else 'NONE'}   "
