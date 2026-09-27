@@ -1,30 +1,24 @@
-# demo2_test — the user's own strategy, run live on DEMO to be watched.
+# demo1_test — the SAME rule as demo2_test with ONE difference: the target.
 #
-# 2026-09-25. His rule, in his words: "1m, the EMA 9 and 5 cross, enter the
-# same way, and the TP is $1, only this."
+# 2026-09-27. The two demo accounts are now an A/B test instead of two
+# copies of the same thing, which is the only way two accounts are worth
+# more than one:
 #
-# The year simulation says it loses: 9,262 trades over four months, 67.1%
-# won, average win $0.82 against an average loss of $2.39, -$2,170 in
-# total, and all four months negative. It needs a 75% win rate to break
-# even and delivers 67%. Even with ZERO commission and spread it still
-# loses $503.
+#     demo2_test   EMA5/9 on M1, target $1.00, stop $2.50
+#     demo1_test   EMA5/9 on M1, target $1.50, stop $2.50
 #
-# It is deployed anyway, on DEMO, because he asked to watch it happen and
-# watching costs nothing. Seeing 77 trades a day and a slow bleed is worth
-# more than being told about it. If the live result matches the
-# simulation, that also proves the simulator honest -- which is worth
-# having for the NEXT idea.
+# Everything else is identical -- same entry, same stop, same lot ladder,
+# same hours. So any difference between the two accounts in a week's time
+# is the TARGET and nothing else.
 #
-# NO REAL MONEY. This file is demo-only by three separate locks:
-# mode demo_execute, require_demo_account true, and a magic number
-# nothing else uses.
+# What the difference should do, written down before it runs: a bigger
+# target is hit less often but pays more when it lands. $1.00 wins more
+# trades; $1.50 wins fewer. Which is better depends on whether the extra
+# 50c arrives more often than the extra misses cost -- and the $2.50 stop
+# is the same on both, so the losses should be comparable.
 #
-# IMPORTANT, BEFORE STARTING IT: demo2_m3 and demo2_m5 must stay STOPPED.
-# They share this MT5 login, and reject_manual_trades closes any position
-# whose magic is not theirs or a listed sibling -- they would close this
-# bot's trades on sight. This config has reject_manual_trades OFF so it
-# never does that to anyone else.
-
+# NO REAL MONEY. Demo-only by three locks: mode demo_execute,
+# require_demo_account true, and a magic number nothing else uses.
 mt5:
   timeout_ms: 10000
 
@@ -46,7 +40,7 @@ ema_periods:
 # for a pullback. That is "enter the same way".
 gap_threshold_usd: 999.0
 
-take_profit_usd: 1.0
+take_profit_usd: 1.5
 # A $2.50 stop, added 2026-09-27 at his request. It is the FIRST stop this
 # rule has ever had: before, a loser ran until the opposite cross, which
 # the simulation measured at an average of -$2.39 and sometimes far worse.
@@ -291,9 +285,9 @@ position_sizing:
 execution:
   mode: demo_execute
   require_demo_account: true
-  magic_number: 920099
+  magic_number: 910099
   order_deviation_points: 20
-  order_comment: demo2-test-ema59
+  order_comment: demo1-test-ema59
   reject_manual_trades: false
 
 logging:
