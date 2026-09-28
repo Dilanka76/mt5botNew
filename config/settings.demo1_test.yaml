@@ -40,7 +40,7 @@ ema_periods:
 # for a pullback. That is "enter the same way".
 gap_threshold_usd: 999.0
 
-take_profit_usd: 1.5
+take_profit_usd: 1.0
 # A $2.50 stop, added 2026-09-27 at his request. It is the FIRST stop this
 # rule has ever had: before, a loser ran until the opposite cross, which
 # the simulation measured at an average of -$2.39 and sometimes far worse.
@@ -56,231 +56,78 @@ sessions:
   dual_cross_confirmed_swap:
     - {start: "04:00", end: "01:29"}
 
-# THE USER'S OWN LADDER, set 2026-09-25, exactly as he specified it:
-#   $0 - $20   -> 0.01      $20 - $30 -> 0.02      $30 - $40 -> 0.03
-#   $40 - $50  -> 0.04      $100 - $110 -> 0.10    and so on.
-# In one line: 0.01 lots for every whole $10 of balance, minimum 0.01.
+# demo1's OWN LADDER, set 2026-09-28 at his request -- deliberately
+# different from demo2's, which keeps 0.01 per $10:
 #
-# WHY THE .99 VALUES. calculate_lots() takes the first tier whose
-# max_balance is >= the balance, so a tier's top is INCLUSIVE. Writing
-# 49.99 is what makes the band [40, 50) return 0.04. An earlier version
-# used round tens and handed out the size for the step the balance was
-# heading toward: at $40.86 it asked for 0.05 lots, $42.90 of margin
-# against $40.86 free, and the broker refused it -- "No money", retcode
-# 10019. This table asks for 0.04 and $34.32, which fits.
+#     $0 - $50     -> 0.02
+#     $50 - $100   -> 0.05
+#     $100 - $200  -> 0.07
+#     then +0.02 for every further $100:
+#     $200-300 -> 0.09, $300-400 -> 0.11, $400-500 -> 0.13, ...
 #
-# THE MARGIN IT USES, at 1:500 where 0.01 lots costs $8.58: about 84% of
-# the balance at every level, leaving roughly 16% free. The margin level
-# sits near 119% the moment a trade opens, so a move of a dollar or two
-# an ounce against it triggers a broker STOP-OUT -- which is what closed
-# seven positions at 4257.98 on 25 September. The strategy's own average
-# loss is $2.39 an ounce, so stop-outs are the expected behaviour here,
-# not a risk. It is demo money and he asked to watch exactly this.
+# The .99 tops are there because calculate_lots() takes the first tier
+# whose max_balance is >= the balance, so a tier's top is INCLUSIVE.
 #
-# The table ends at $2,000 because position_sizing takes a list, not a
-# formula. Extend it if the balance ever climbs.
+# MARGIN, at this account's 1:500 where 0.01 lots costs $8.58:
+#   $56  -> 0.05 = $42.90 of $56    (77%)
+#   $150 -> 0.07 = $60.06 of $150   (40%)
+#   $250 -> 0.09 = $77.22 of $250   (31%)
+# It starts tight and gets steadily safer, which is the opposite of
+# demo2's ladder -- that one holds 84% of the balance in margin at EVERY
+# level and stops out on a move of a dollar or two an ounce.
 position_sizing:
-  - {max_balance: 19.99, lots: 0.01}
-  - {max_balance: 29.99, lots: 0.02}
-  - {max_balance: 39.99, lots: 0.03}
-  - {max_balance: 49.99, lots: 0.04}
-  - {max_balance: 59.99, lots: 0.05}
-  - {max_balance: 69.99, lots: 0.06}
-  - {max_balance: 79.99, lots: 0.07}
-  - {max_balance: 89.99, lots: 0.08}
-  - {max_balance: 99.99, lots: 0.09}
-  - {max_balance: 109.99, lots: 0.10}
-  - {max_balance: 119.99, lots: 0.11}
-  - {max_balance: 129.99, lots: 0.12}
-  - {max_balance: 139.99, lots: 0.13}
-  - {max_balance: 149.99, lots: 0.14}
-  - {max_balance: 159.99, lots: 0.15}
-  - {max_balance: 169.99, lots: 0.16}
-  - {max_balance: 179.99, lots: 0.17}
-  - {max_balance: 189.99, lots: 0.18}
-  - {max_balance: 199.99, lots: 0.19}
-  - {max_balance: 209.99, lots: 0.20}
-  - {max_balance: 219.99, lots: 0.21}
-  - {max_balance: 229.99, lots: 0.22}
-  - {max_balance: 239.99, lots: 0.23}
-  - {max_balance: 249.99, lots: 0.24}
-  - {max_balance: 259.99, lots: 0.25}
-  - {max_balance: 269.99, lots: 0.26}
-  - {max_balance: 279.99, lots: 0.27}
-  - {max_balance: 289.99, lots: 0.28}
-  - {max_balance: 299.99, lots: 0.29}
-  - {max_balance: 309.99, lots: 0.30}
-  - {max_balance: 319.99, lots: 0.31}
-  - {max_balance: 329.99, lots: 0.32}
-  - {max_balance: 339.99, lots: 0.33}
-  - {max_balance: 349.99, lots: 0.34}
-  - {max_balance: 359.99, lots: 0.35}
-  - {max_balance: 369.99, lots: 0.36}
-  - {max_balance: 379.99, lots: 0.37}
-  - {max_balance: 389.99, lots: 0.38}
-  - {max_balance: 399.99, lots: 0.39}
-  - {max_balance: 409.99, lots: 0.40}
-  - {max_balance: 419.99, lots: 0.41}
-  - {max_balance: 429.99, lots: 0.42}
-  - {max_balance: 439.99, lots: 0.43}
-  - {max_balance: 449.99, lots: 0.44}
-  - {max_balance: 459.99, lots: 0.45}
-  - {max_balance: 469.99, lots: 0.46}
-  - {max_balance: 479.99, lots: 0.47}
-  - {max_balance: 489.99, lots: 0.48}
-  - {max_balance: 499.99, lots: 0.49}
-  - {max_balance: 509.99, lots: 0.50}
-  - {max_balance: 519.99, lots: 0.51}
-  - {max_balance: 529.99, lots: 0.52}
-  - {max_balance: 539.99, lots: 0.53}
-  - {max_balance: 549.99, lots: 0.54}
-  - {max_balance: 559.99, lots: 0.55}
-  - {max_balance: 569.99, lots: 0.56}
-  - {max_balance: 579.99, lots: 0.57}
-  - {max_balance: 589.99, lots: 0.58}
-  - {max_balance: 599.99, lots: 0.59}
-  - {max_balance: 609.99, lots: 0.60}
-  - {max_balance: 619.99, lots: 0.61}
-  - {max_balance: 629.99, lots: 0.62}
-  - {max_balance: 639.99, lots: 0.63}
-  - {max_balance: 649.99, lots: 0.64}
-  - {max_balance: 659.99, lots: 0.65}
-  - {max_balance: 669.99, lots: 0.66}
-  - {max_balance: 679.99, lots: 0.67}
-  - {max_balance: 689.99, lots: 0.68}
-  - {max_balance: 699.99, lots: 0.69}
-  - {max_balance: 709.99, lots: 0.70}
-  - {max_balance: 719.99, lots: 0.71}
-  - {max_balance: 729.99, lots: 0.72}
-  - {max_balance: 739.99, lots: 0.73}
-  - {max_balance: 749.99, lots: 0.74}
-  - {max_balance: 759.99, lots: 0.75}
-  - {max_balance: 769.99, lots: 0.76}
-  - {max_balance: 779.99, lots: 0.77}
-  - {max_balance: 789.99, lots: 0.78}
-  - {max_balance: 799.99, lots: 0.79}
-  - {max_balance: 809.99, lots: 0.80}
-  - {max_balance: 819.99, lots: 0.81}
-  - {max_balance: 829.99, lots: 0.82}
-  - {max_balance: 839.99, lots: 0.83}
-  - {max_balance: 849.99, lots: 0.84}
-  - {max_balance: 859.99, lots: 0.85}
-  - {max_balance: 869.99, lots: 0.86}
-  - {max_balance: 879.99, lots: 0.87}
-  - {max_balance: 889.99, lots: 0.88}
-  - {max_balance: 899.99, lots: 0.89}
-  - {max_balance: 909.99, lots: 0.90}
-  - {max_balance: 919.99, lots: 0.91}
-  - {max_balance: 929.99, lots: 0.92}
-  - {max_balance: 939.99, lots: 0.93}
-  - {max_balance: 949.99, lots: 0.94}
-  - {max_balance: 959.99, lots: 0.95}
-  - {max_balance: 969.99, lots: 0.96}
-  - {max_balance: 979.99, lots: 0.97}
-  - {max_balance: 989.99, lots: 0.98}
-  - {max_balance: 999.99, lots: 0.99}
-  - {max_balance: 1009.99, lots: 1.00}
-  - {max_balance: 1019.99, lots: 1.01}
-  - {max_balance: 1029.99, lots: 1.02}
-  - {max_balance: 1039.99, lots: 1.03}
-  - {max_balance: 1049.99, lots: 1.04}
-  - {max_balance: 1059.99, lots: 1.05}
-  - {max_balance: 1069.99, lots: 1.06}
-  - {max_balance: 1079.99, lots: 1.07}
-  - {max_balance: 1089.99, lots: 1.08}
-  - {max_balance: 1099.99, lots: 1.09}
-  - {max_balance: 1109.99, lots: 1.10}
-  - {max_balance: 1119.99, lots: 1.11}
-  - {max_balance: 1129.99, lots: 1.12}
-  - {max_balance: 1139.99, lots: 1.13}
-  - {max_balance: 1149.99, lots: 1.14}
-  - {max_balance: 1159.99, lots: 1.15}
-  - {max_balance: 1169.99, lots: 1.16}
-  - {max_balance: 1179.99, lots: 1.17}
-  - {max_balance: 1189.99, lots: 1.18}
-  - {max_balance: 1199.99, lots: 1.19}
-  - {max_balance: 1209.99, lots: 1.20}
-  - {max_balance: 1219.99, lots: 1.21}
-  - {max_balance: 1229.99, lots: 1.22}
-  - {max_balance: 1239.99, lots: 1.23}
-  - {max_balance: 1249.99, lots: 1.24}
-  - {max_balance: 1259.99, lots: 1.25}
-  - {max_balance: 1269.99, lots: 1.26}
-  - {max_balance: 1279.99, lots: 1.27}
-  - {max_balance: 1289.99, lots: 1.28}
-  - {max_balance: 1299.99, lots: 1.29}
-  - {max_balance: 1309.99, lots: 1.30}
-  - {max_balance: 1319.99, lots: 1.31}
-  - {max_balance: 1329.99, lots: 1.32}
-  - {max_balance: 1339.99, lots: 1.33}
-  - {max_balance: 1349.99, lots: 1.34}
-  - {max_balance: 1359.99, lots: 1.35}
-  - {max_balance: 1369.99, lots: 1.36}
-  - {max_balance: 1379.99, lots: 1.37}
-  - {max_balance: 1389.99, lots: 1.38}
-  - {max_balance: 1399.99, lots: 1.39}
-  - {max_balance: 1409.99, lots: 1.40}
-  - {max_balance: 1419.99, lots: 1.41}
-  - {max_balance: 1429.99, lots: 1.42}
-  - {max_balance: 1439.99, lots: 1.43}
-  - {max_balance: 1449.99, lots: 1.44}
-  - {max_balance: 1459.99, lots: 1.45}
-  - {max_balance: 1469.99, lots: 1.46}
-  - {max_balance: 1479.99, lots: 1.47}
-  - {max_balance: 1489.99, lots: 1.48}
-  - {max_balance: 1499.99, lots: 1.49}
-  - {max_balance: 1509.99, lots: 1.50}
-  - {max_balance: 1519.99, lots: 1.51}
-  - {max_balance: 1529.99, lots: 1.52}
-  - {max_balance: 1539.99, lots: 1.53}
-  - {max_balance: 1549.99, lots: 1.54}
-  - {max_balance: 1559.99, lots: 1.55}
-  - {max_balance: 1569.99, lots: 1.56}
-  - {max_balance: 1579.99, lots: 1.57}
-  - {max_balance: 1589.99, lots: 1.58}
-  - {max_balance: 1599.99, lots: 1.59}
-  - {max_balance: 1609.99, lots: 1.60}
-  - {max_balance: 1619.99, lots: 1.61}
-  - {max_balance: 1629.99, lots: 1.62}
-  - {max_balance: 1639.99, lots: 1.63}
-  - {max_balance: 1649.99, lots: 1.64}
-  - {max_balance: 1659.99, lots: 1.65}
-  - {max_balance: 1669.99, lots: 1.66}
-  - {max_balance: 1679.99, lots: 1.67}
-  - {max_balance: 1689.99, lots: 1.68}
-  - {max_balance: 1699.99, lots: 1.69}
-  - {max_balance: 1709.99, lots: 1.70}
-  - {max_balance: 1719.99, lots: 1.71}
-  - {max_balance: 1729.99, lots: 1.72}
-  - {max_balance: 1739.99, lots: 1.73}
-  - {max_balance: 1749.99, lots: 1.74}
-  - {max_balance: 1759.99, lots: 1.75}
-  - {max_balance: 1769.99, lots: 1.76}
-  - {max_balance: 1779.99, lots: 1.77}
-  - {max_balance: 1789.99, lots: 1.78}
-  - {max_balance: 1799.99, lots: 1.79}
-  - {max_balance: 1809.99, lots: 1.80}
-  - {max_balance: 1819.99, lots: 1.81}
-  - {max_balance: 1829.99, lots: 1.82}
-  - {max_balance: 1839.99, lots: 1.83}
-  - {max_balance: 1849.99, lots: 1.84}
-  - {max_balance: 1859.99, lots: 1.85}
-  - {max_balance: 1869.99, lots: 1.86}
-  - {max_balance: 1879.99, lots: 1.87}
-  - {max_balance: 1889.99, lots: 1.88}
-  - {max_balance: 1899.99, lots: 1.89}
-  - {max_balance: 1909.99, lots: 1.90}
-  - {max_balance: 1919.99, lots: 1.91}
-  - {max_balance: 1929.99, lots: 1.92}
-  - {max_balance: 1939.99, lots: 1.93}
-  - {max_balance: 1949.99, lots: 1.94}
-  - {max_balance: 1959.99, lots: 1.95}
-  - {max_balance: 1969.99, lots: 1.96}
-  - {max_balance: 1979.99, lots: 1.97}
-  - {max_balance: 1989.99, lots: 1.98}
-  - {max_balance: 1999.99, lots: 1.99}
-  - {max_balance: 2009.99, lots: 2.00}
-  - {max_balance: null, lots: 2.00}
+  - {max_balance: 49.99, lots: 0.02}
+  - {max_balance: 99.99, lots: 0.05}
+  - {max_balance: 199.99, lots: 0.07}
+  - {max_balance: 299.99, lots: 0.09}
+  - {max_balance: 399.99, lots: 0.11}
+  - {max_balance: 499.99, lots: 0.13}
+  - {max_balance: 599.99, lots: 0.15}
+  - {max_balance: 699.99, lots: 0.17}
+  - {max_balance: 799.99, lots: 0.19}
+  - {max_balance: 899.99, lots: 0.21}
+  - {max_balance: 999.99, lots: 0.23}
+  - {max_balance: 1099.99, lots: 0.25}
+  - {max_balance: 1199.99, lots: 0.27}
+  - {max_balance: 1299.99, lots: 0.29}
+  - {max_balance: 1399.99, lots: 0.31}
+  - {max_balance: 1499.99, lots: 0.33}
+  - {max_balance: 1599.99, lots: 0.35}
+  - {max_balance: 1699.99, lots: 0.37}
+  - {max_balance: 1799.99, lots: 0.39}
+  - {max_balance: 1899.99, lots: 0.41}
+  - {max_balance: 1999.99, lots: 0.43}
+  - {max_balance: 2099.99, lots: 0.45}
+  - {max_balance: 2199.99, lots: 0.47}
+  - {max_balance: 2299.99, lots: 0.49}
+  - {max_balance: 2399.99, lots: 0.51}
+  - {max_balance: 2499.99, lots: 0.53}
+  - {max_balance: 2599.99, lots: 0.55}
+  - {max_balance: 2699.99, lots: 0.57}
+  - {max_balance: 2799.99, lots: 0.59}
+  - {max_balance: 2899.99, lots: 0.61}
+  - {max_balance: 2999.99, lots: 0.63}
+  - {max_balance: 3099.99, lots: 0.65}
+  - {max_balance: 3199.99, lots: 0.67}
+  - {max_balance: 3299.99, lots: 0.69}
+  - {max_balance: 3399.99, lots: 0.71}
+  - {max_balance: 3499.99, lots: 0.73}
+  - {max_balance: 3599.99, lots: 0.75}
+  - {max_balance: 3699.99, lots: 0.77}
+  - {max_balance: 3799.99, lots: 0.79}
+  - {max_balance: 3899.99, lots: 0.81}
+  - {max_balance: 3999.99, lots: 0.83}
+  - {max_balance: 4099.99, lots: 0.85}
+  - {max_balance: 4199.99, lots: 0.87}
+  - {max_balance: 4299.99, lots: 0.89}
+  - {max_balance: 4399.99, lots: 0.91}
+  - {max_balance: 4499.99, lots: 0.93}
+  - {max_balance: 4599.99, lots: 0.95}
+  - {max_balance: 4699.99, lots: 0.97}
+  - {max_balance: 4799.99, lots: 0.99}
+  - {max_balance: 4899.99, lots: 1.01}
+  - {max_balance: 4999.99, lots: 1.03}
+  - {max_balance: null, lots: 1.03}
 
 execution:
   mode: demo_execute
