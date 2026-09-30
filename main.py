@@ -245,7 +245,7 @@ def run() -> None:
         "tp_runner_trail_usd=%s tp_runner_arm_before_usd=%s tp_runner_lock_below_usd=%s "
         "swap_immediate=%s daily_loss_limit_usd=%s "
         "htf_trend_timeframe=%s htf_trend_take_profit_usd=%s "
-        "broker_backstop_usd=%s weekend_flat_utc=%s lots_now=%s ladder=%s",
+        "broker_backstop_usd=%s weekend_flat_utc=%s partial_close_before_target_usd=%s partial_close_fraction=%s lots_now=%s ladder=%s",
         args.account, config.symbol, config.timeframe, config.execution.mode, config.strategy_variant, engine.state.value,
         config.execution.reject_manual_trades, config.stop_loss_usd, config.take_profit_usd,
         config.breakeven_trigger_usd, config.breakeven_lock_usd,
@@ -262,6 +262,12 @@ def run() -> None:
         # or a Friday. This line is the only evidence they were loaded at
         # all, so they have to be on it.
         config.broker_backstop_usd, config.weekend_flat_utc,
+        # The scale-out, added 2026-09-30. It changes how much of a winner
+        # is banked early, so by this line's own rule it has to be here --
+        # otherwise there is no way to prove a running process picked the
+        # config up, which is exactly the check that caught a stale ladder
+        # on 2026-09-25.
+        config.partial_close_before_target_usd, config.partial_close_fraction,
         # THE LOT SIZE, and the ladder it came from. Every other setting on
         # this line is a price; this one decides what every one of those
         # prices is worth. It was the only consequential setting NOT
