@@ -55,21 +55,18 @@ take_profit_usd: 1.0
 # the cross.
 stop_loss_usd: 2.5
 broker_backstop_usd: 30.0    # disaster insurance only, and the config requires one
-# Once floating profit reaches $0.90, the stop moves to entry + $0.10 --
-# one-way, it never un-arms. The $2.50 stop is the only protection before
-# that point.
+# REMOVED 2026-09-30, same day it was added, at his request. It armed at
+# +$0.90 and moved the stop to entry + $0.10. The $2.50 stop is once again
+# the only protection, and the only exits are the target, that stop, and
+# the opposite cross.
 #
-# READ THIS BEFORE TRUSTING THE $0.10: both the trigger and the exit are
-# checked by the BOT, once per second, and the stop lives in the bot's
-# memory rather than at the broker. So a spike to +$0.95 that retreats
-# inside one second is missed, the close is a market order that can fill a
-# few cents worse, and nothing arms in the first 5 seconds of a trade
-# (POSITION_CLOSE_GRACE_PERIOD_SECONDS in bot/strategy/state_machine.py).
-# With a $0.12 spread and $0.06/oz commission already paid, +$0.10 gross is
-# about +$0.04 net -- the value here is escaping a -$2.50 loss, not banking
-# ten cents.
-breakeven_trigger_usd: 0.9
-breakeven_lock_usd: 0.1
+# If it comes back, the honest caveats still apply: the trigger and the
+# exit are both checked by the BOT once per second, the level lives in the
+# bot's memory rather than at the broker, nothing arms in a trade's first
+# 5 seconds, and +$0.10 gross is about +$0.04 after the $0.12 spread and
+# $0.06/oz commission.
+breakeven_trigger_usd: null
+breakeven_lock_usd: null
 
 strategy_variant: dual_cross_confirmed_swap
 
