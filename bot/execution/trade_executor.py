@@ -50,6 +50,27 @@ class OrderResult:
     take_profit: float
 
 
+def partial_volume(total: float, fraction: float, volume_min: float,
+                   volume_step: float) -> float | None:
+    """How much of `total` to close, or None when a partial is impossible.
+
+    A broker will not accept a volume below its minimum, or one that is not
+    a whole number of steps -- and it will not leave a remainder below the
+    minimum either. At 0.06 lots half is 0.03 and both sides are legal; at
+    0.01 lots half is 0.005 and NEITHER side is, so the only honest answer
+    is to leave the position alone. Rounds DOWN to a step, so the piece
+    closed is never larger than asked for.
+    """
+    if total <= 0 or not 0 < fraction < 1 or volume_step <= 0:
+        return None
+    steps = int((total * fraction) / volume_step + 1e-9)
+    part = round(steps * volume_step, 8)
+    remainder = round(total - part, 8)
+    if part < volume_min or remainder < volume_min:
+        return None
+    return part
+
+
 class TradeExecutor:
     def __init__(self, config: ExecutionConfig, connector: MT5Connector, symbol: str):
         self.config = config
@@ -206,6 +227,66 @@ class TradeExecutor:
 
         logger.info("set_sltp: ticket=%s sl=%s tp=%s", ticket, request["sl"], request["tp"])
         return True
+
+    def close_partial(self, ticket: int | None, fraction: float) -> float | None:
+        """Closes `fraction` of an open position at market, leaving the rest
+        running with its broker take-profit intact. Returns the volume
+        actually closed, or None when the broker's minimum makes a partial
+        impossible (see partial_volume).
+
+        Deliberately looks the position up itself rather than trusting a
+        remembered size: the engine does not track volume, and the position
+        may already have been partially closed.
+        """
+        if self.config.mode == "shadow":
+            logger.info("[SHADOW] Would close %.0f%% of ticket=%s", fraction * 100, ticket)
+            return None
+
+        positions = mt5.positions_get(ticket=ticket)
+        if not positions:
+            logger.warning("close_partial: ticket %s not found (already closed?)", ticket)
+            return None
+        position = positions[0]
+
+        info = mt5.symbol_info(position.symbol)
+        if info is None:
+            raise ExecutionError(f"close_partial: no symbol info for {position.symbol}")
+        volume = partial_volume(position.volume, fraction, info.volume_min, info.volume_step)
+        if volume is None:
+            logger.info(
+                "close_partial: %.2f lots cannot be split at %.0f%% (min %.2f, step %.2f) "
+                "-- leaving the position whole",
+                position.volume, fraction * 100, info.volume_min, info.volume_step,
+            )
+            return None
+
+        close_type = mt5.ORDER_TYPE_SELL if position.type == mt5.ORDER_TYPE_BUY else mt5.ORDER_TYPE_BUY
+        tick = self.connector.get_tick(position.symbol)
+        price = tick.bid if close_type == mt5.ORDER_TYPE_SELL else tick.ask
+
+        # No "sl"/"tp" on a close request -- see close_position's note. The
+        # REMAINING position keeps the take-profit it was opened with, which
+        # is the whole point: the second half still exits by itself.
+        result = mt5.order_send({
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": position.symbol,
+            "volume": volume,
+            "type": close_type,
+            "position": ticket,
+            "price": price,
+            "deviation": self.config.order_deviation_points,
+            "magic": self.config.magic_number,
+            "comment": _safe_comment(self.config.order_comment, suffix="-part"),
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        })
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            raise ExecutionError(
+                f"order_send (partial close) failed: {result}; mt5.last_error()={mt5.last_error()}"
+            )
+        logger.info("Partial close: ticket=%s closed %.2f of %.2f lots at %.2f",
+                    ticket, volume, position.volume, price)
+        return volume
 
     def close_position(self, ticket: int | None) -> None:
         """Force-closes the position at market. Used for the opposite-EMA-cross exit."""

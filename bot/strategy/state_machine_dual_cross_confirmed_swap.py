@@ -822,6 +822,47 @@ class DualCrossConfirmedSwapEngine:
                 # once this close to take-profit. Checked BEFORE the
                 # stop_hit check below so the same tick can act on the
                 # freshly-moved stop.
+                # SCALE OUT: close part of the position a fixed distance
+                # BEFORE its target and let the rest run to the target. The
+                # distance is taken from THIS position's own take-profit, so
+                # it follows whichever target the M15 trend chose at entry --
+                # $8 with the trend scales at $6, $6 against it scales at $4,
+                # from one config number.
+                #
+                # The flag is set BEFORE the order, never after. A refused
+                # partial (market closed, Algo Trading off, margin) would
+                # otherwise be retried on EVERY tick -- the same retry storm
+                # that a failed entry caused on 2026-09-22.
+                if (self.config.partial_close_before_target_usd is not None
+                        and not position.partial_closed and position.ticket is not None):
+                    target_distance = abs(position.take_profit - position.entry_price)
+                    trigger = target_distance - self.config.partial_close_before_target_usd
+                    favorable = (
+                        tick.bid - position.entry_price if position.direction == Direction.BUY
+                        else position.entry_price - tick.bid
+                    )
+                    if trigger > 0 and favorable >= trigger:
+                        position.partial_closed = True
+                        try:
+                            closed = self.executor.close_partial(
+                                position.ticket, self.config.partial_close_fraction)
+                        except Exception:
+                            logger.exception(
+                                "Partial close failed for ticket=%s -- the position keeps its "
+                                "full size and its take-profit; not retried", position.ticket)
+                            closed = None
+                        if closed:
+                            log_decision(
+                                self.config.symbol, "partial_closed",
+                                f"Floating profit reached ${favorable:.2f} (>= ${trigger:.2f}, "
+                                f"${self.config.partial_close_before_target_usd:.2f} before the "
+                                f"${target_distance:.2f} target) -> closed {closed:.2f} lots, "
+                                f"the rest runs to the target",
+                                direction=position.direction.value,
+                                ticket=position.ticket,
+                                lots_closed=closed,
+                            )
+
                 if self.config.breakeven_trigger_usd is not None and not position.breakeven_armed:
                     favorable = (
                         tick.bid - position.entry_price if position.direction == Direction.BUY

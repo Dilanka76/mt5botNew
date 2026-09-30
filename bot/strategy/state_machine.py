@@ -120,6 +120,7 @@ class OpenPosition:
     opened_monotonic: float = field(default_factory=time.monotonic)
     stop_loss: float | None = None  # None = no stop-loss configured for this account
     breakeven_armed: bool = False  # set True once price has moved breakeven_trigger_usd in favor
+    partial_closed: bool = False  # one-shot: has the scale-out already fired for this position?
     invalid: bool = False  # True once EMA13/21 no longer matches `direction` — see module docstring
 
 

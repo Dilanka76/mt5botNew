@@ -406,6 +406,14 @@ class AppConfig:
     # VPS failing, not a trading rule -- the software stop still governs
     # every ordinary exit. None = off.
     broker_backstop_usd: float | None = None
+    # SCALE OUT: close part of a position this many dollars BEFORE its
+    # take-profit, and let the rest run to the target. One number covers
+    # both targets -- with the M15 trend the target is $8 so a value of 2
+    # scales at $6; against it the target is $6 so the same 2 scales at $4.
+    # None (default) = never scale out, which is every account's behaviour
+    # until one asks for it.
+    partial_close_before_target_usd: float | None = None
+    partial_close_fraction: float = 0.5
 
     # Be flat for the weekend: once it is Friday past this UTC time, no new
     # entries, and any open position is closed. None = off (previous
@@ -733,6 +741,8 @@ def load_config(account: str, settings_path: str | Path | None = None) -> AppCon
         tp_runner_arm_before_usd=_float_or_default(raw, "tp_runner_arm_before_usd", 0.20),
         tp_runner_lock_below_usd=_float_or_default(raw, "tp_runner_lock_below_usd", 0.0),
         broker_backstop_usd=raw.get("broker_backstop_usd"),
+        partial_close_before_target_usd=raw.get("partial_close_before_target_usd"),
+        partial_close_fraction=raw.get("partial_close_fraction", 0.5),
         weekend_flat_utc=raw.get("weekend_flat_utc"),
         htf_trend_timeframe=raw.get("htf_trend_timeframe"),
         consolidation_filter=consolidation_filter,
