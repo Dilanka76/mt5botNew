@@ -30,15 +30,22 @@ tick_poll_interval_seconds: 1
 # mid/slow ARE the cross. Setting them to 5 and 9 makes this his EMA5/EMA9
 # rule with no code change -- bot/indicators/ema.py names the columns
 # ema13/ema21 but computes them from these periods.
+# mid/slow ARE the cross: EMA3 x EMA9. `fast` is the line the pullback
+# waits for, so it is 3 as well -- the columns are still named ema5/ema13
+# in the code, but they hold EMA3 here. reversal_slow stays 9.
 ema_periods:
   fast: 3
-  mid: 5
+  mid: 3
   slow: 9
   reversal_slow: 9
 
-# Large on purpose: every confirmed cross enters immediately, no waiting
-# for a pullback. That is "enter the same way".
-gap_threshold_usd: 999.0
+# ZERO on purpose, changed 2026-09-30. calculate: the engine enters
+# immediately when |close - EMA3| is BELOW this, and otherwise waits for
+# price to come back and touch EMA3. At 0 the immediate path can never
+# fire, so EVERY confirmed cross becomes a pending setup that only enters
+# on the pullback. Expect noticeably fewer trades: a setup is cancelled if
+# the opposite cross confirms before price returns.
+gap_threshold_usd: 0.0
 
 take_profit_usd: 1.0
 # A $2.50 stop, added 2026-09-27 at his request. It is the FIRST stop this
@@ -48,7 +55,21 @@ take_profit_usd: 1.0
 # the cross.
 stop_loss_usd: 2.5
 broker_backstop_usd: 30.0    # disaster insurance only, and the config requires one
-breakeven_trigger_usd: null
+# Once floating profit reaches $0.90, the stop moves to entry + $0.10 --
+# one-way, it never un-arms. The $2.50 stop is the only protection before
+# that point.
+#
+# READ THIS BEFORE TRUSTING THE $0.10: both the trigger and the exit are
+# checked by the BOT, once per second, and the stop lives in the bot's
+# memory rather than at the broker. So a spike to +$0.95 that retreats
+# inside one second is missed, the close is a market order that can fill a
+# few cents worse, and nothing arms in the first 5 seconds of a trade
+# (POSITION_CLOSE_GRACE_PERIOD_SECONDS in bot/strategy/state_machine.py).
+# With a $0.12 spread and $0.06/oz commission already paid, +$0.10 gross is
+# about +$0.04 net -- the value here is escaping a -$2.50 loss, not banking
+# ten cents.
+breakeven_trigger_usd: 0.9
+breakeven_lock_usd: 0.1
 
 strategy_variant: dual_cross_confirmed_swap
 
