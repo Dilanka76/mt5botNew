@@ -338,6 +338,21 @@ def run() -> None:
 
                 latest_closed_time = df.iloc[-2].name
                 if latest_closed_time != last_closed_candle_time:
+                    # DIAGNOSTIC, 2026-10-01. demo2_m3 refused six crosses in
+                    # a day with the gap ALWAYS exactly two M3 candles, while
+                    # heartbeats stayed regular and nothing raised. If the
+                    # loop saw every candle the gap would be one bar and
+                    # nothing would be stale, so it is processing every OTHER
+                    # candle -- and reading the code did not explain why. This
+                    # prints what the loop actually picks up, one line per
+                    # candle, so the pattern can be read instead of guessed.
+                    logger.info(
+                        "[CANDLE] processing %s | previous %s | gap %s | rows=%d last_forming=%s",
+                        latest_closed_time, last_closed_candle_time,
+                        (latest_closed_time - last_closed_candle_time)
+                        if last_closed_candle_time is not None else "first",
+                        len(df), df.index[-1],
+                    )
                     # Isolated on purpose: on_new_candle() failing must
                     # NEVER prevent on_tick() below from running -- on_tick
                     # is where the stop-loss check lives, and it's the
